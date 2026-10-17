@@ -2637,11 +2637,27 @@ mounted() {
     this.updateResponsivePageSize();
     window.addEventListener('resize', this.updateResponsivePageSize);
 
-    // 其他页面（如系统状态「最近上传」的分类列）通过 sessionStorage 指定初始目录
-    const initialFolder = sessionStorage.getItem('dashboardInitialFolder');
-    if (initialFolder) {
+    /*
+     * 其他页面通过 sessionStorage 指定进入本页时的初始视图：
+     *   dashboardInitialFolder —— 系统状态「最近上传」的分类列、文件详情里的「文件分类」
+     *   dashboardInitialTag    —— 文件详情里的「文件标签」，进入后按该标签筛出文件
+     * 标签优先：带标签进来时回到根目录，避免当前分类里恰好没有该标签的文件导致空列表。
+     */
+    const initialTag = sessionStorage.getItem('dashboardInitialTag');
+    if (initialTag) {
+        sessionStorage.removeItem('dashboardInitialTag');
         sessionStorage.removeItem('dashboardInitialFolder');
-        this.currentPath = initialFolder.replace(/\/+$/, '') ? initialFolder.replace(/\/+$/, '') + '/' : '';
+        this.currentPath = '';
+        this.filters.tagNames = [initialTag];
+        this.filters.tagMode = 'or';
+        this.tagDraft = [initialTag];
+        this.tagModeDraft = 'or';
+    } else {
+        const initialFolder = sessionStorage.getItem('dashboardInitialFolder');
+        if (initialFolder) {
+            sessionStorage.removeItem('dashboardInitialFolder');
+            this.currentPath = initialFolder.replace(/\/+$/, '') ? initialFolder.replace(/\/+$/, '') + '/' : '';
+        }
     }
 
     this.loading = true;
@@ -2750,13 +2766,22 @@ beforeUnmount() {
     gap: 6px;
     padding: 6px 12px;
     border: 1px solid var(--el-border-color);
-    border-radius: 999px;
+    /* 圆角按钮（原来是 999px 的胶囊/圆圈，PC 端显得过大） */
+    border-radius: 8px;
     background: var(--el-fill-color-blank);
     color: var(--el-text-color-primary);
     font-size: 13px;
     font-family: inherit;
     cursor: pointer;
+    outline: none;
+    -webkit-tap-highlight-color: transparent;
     transition: all 0.18s ease;
+}
+/* PC 端点击后不要出现聚焦边框 */
+.tag-filter-chip:focus,
+.tag-filter-chip:focus-visible {
+    outline: none;
+    box-shadow: none;
 }
 .tag-filter-chip:hover {
     border-color: var(--el-color-primary);

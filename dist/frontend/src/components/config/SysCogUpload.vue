@@ -275,9 +275,9 @@
                                     >
                                         <font-awesome-icon icon="times" style="margin-right: 6px;"/>取消主/备标记
                                     </el-dropdown-item>
-                                    <el-dropdown-item divided command="delete">
+                                    <el-dropdown-item divided command="delete" :disabled="channel.type === 'local'">
                                         <span style="color: var(--el-color-danger);">
-                                            <font-awesome-icon icon="trash-alt" style="margin-right: 6px;"/>删除渠道
+                                            <font-awesome-icon icon="trash-alt" style="margin-right: 6px;"/>{{ channel.type === 'local' ? '内置渠道不可删除' : '删除渠道' }}
                                         </span>
                                     </el-dropdown-item>
                                 </el-dropdown-menu>
@@ -303,7 +303,7 @@
             <el-form :model="newChannel" label-position="top" ref="addForm" :rules="formRules">
                 <el-form-item label="渠道类型" prop="type">
                     <el-select v-model="newChannel.type" placeholder="请选择渠道类型" style="width: 100%;" @change="onChannelTypeChange">
-                        <el-option v-for="ch in channels" :key="ch.value" :label="ch.label" :value="ch.value">
+                        <el-option v-for="ch in addableChannels" :key="ch.value" :label="ch.label" :value="ch.value">
                             <span class="channel-type-option">
                                 <ChannelIcon :type="ch.value" class="select-option-icon"/>
                                 <span>{{ ch.label }}</span>
@@ -459,7 +459,7 @@ import fetchWithAuth from '@/utils/fetchWithAuth';
 import ChannelIcon from '@/components/icons/ChannelIcon.vue';
 import ChannelFields from './ChannelFields.vue';
 import CustomSelect from './CustomSelect.vue';
-import { CHANNEL_TYPES, SUMMARY_KEYS, TYPE_TIPS, fieldsOf, buildDefaults, visibleFields } from './channel-schema';
+import { CHANNEL_TYPES, ADDABLE_CHANNEL_TYPES, SUMMARY_KEYS, TYPE_TIPS, fieldsOf, buildDefaults, visibleFields } from './channel-schema';
 import { copyText } from '@/utils/clipboard';
 
 export default {
@@ -517,6 +517,10 @@ export default {
         };
     },
     computed: {
+        /** 「添加渠道」可选的类型 —— 系统内置的本地存储不允许再新建 */
+        addableChannels() {
+            return ADDABLE_CHANNEL_TYPES;
+        },
         filterOptions() {
             return [
                 { value: '', label: '全部类型' },

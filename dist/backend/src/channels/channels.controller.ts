@@ -9,6 +9,7 @@ import { StorageChannelService, StorageChannelInfo } from '../storage/storage-ch
 
 /** 各渠道配置中的敏感字段名 —— 返回时脱敏、保存时加密（须与适配器读取的字段名一致） */
 const SECRET_FIELDS: Record<string, string[]> = {
+  local: [],
   cos: ['secretId', 'secretKey'],
   minio: ['accessKeyId', 'secretAccessKey'],
   r2: ['accessKeyId', 'secretAccessKey'],
@@ -20,7 +21,18 @@ const SECRET_FIELDS: Record<string, string[]> = {
   custom: ['tokenValue'],
 };
 
+/**
+ * 可通过「添加渠道」创建的类型。
+ * 注意：**不包含 local** —— 本地存储是系统内置渠道，随安装自动存在，
+ * 不允许用户再添加第二个（否则无法区分默认落盘位置）。
+ */
 export const CHANNEL_TYPES = ['cos', 'minio', 'r2', 's3', 'aliyun', 'easyimages', 'lsky', 'webdav', 'immich', 'custom'] as const;
+
+/** 系统内置、不可新增也不可删除的渠道类型（列表里排在最后） */
+export const BUILTIN_CHANNEL_TYPES = ['local'] as const;
+
+/** 内置本地渠道的固定业务 ID（6 位），全站以它识别 */
+export const LOCAL_CHANNEL_CODE = '100000';
 
 /**
  * 生成「测试连接」用的测试图：512×512 的合法 PNG。
@@ -93,6 +105,51 @@ export class ChannelsService {
   /** 账户指纹（用于主/备渠道去重） */
   identityOf(type: string, configJson: string): string {
     return channelIdentity(type, this.decryptConfig(type, configJson));
+  }
+
+  /**
+   * 确保「本地存储」内置渠道存在（幂等，每次启动都跑）。
+   *
+   * 规则：
+   *   1) 按固定 code（100000）查找；不存在则创建（排序值 9999，永远排在列表最后）；
+   *   2) 已存在时只修复三件事：type 被改坏、被意外禁用、以及「库里一条主渠道都没有」时兜底为主渠道
+   *      —— 不去覆盖用户改过的名字与容量设置；
+   *   3) 库里已有主渠道时一律尊重用户设置，绝不抢占。
+   */
+  async ensureBuiltinLocalChannel(): Promise<void> {
+    const existing = await prisma.channel.findUnique({ where: { code: LOCAL_CHANNEL_CODE } });
+    if (existing) {
+      const patch: { type?: string; enabled?: boolean; isMain?: boolean } = {};
+      if (existing.type !== 'local') patch.type = 'local';
+      if (!existing.enabled) patch.enabled = true;
+      // 没有任何主渠道 → 用本地存储兜底，避免上传时报「未配置可用的主渠道」
+      if (!existing.isMain && !existing.isBackup) {
+        const hasMain = await prisma.channel.count({
+          where: { isMain: true, enabled: true, NOT: { id: existing.id } },
+        });
+        if (hasMain === 0) patch.isMain = true;
+      }
+      if (Object.keys(patch).length) {
+        await prisma.channel.update({ where: { id: existing.id }, data: patch });
+      }
+      return;
+    }
+    // 名字冲突时加后缀，避免唯一约束报错导致启动失败
+    let name = '本地存储';
+    if (await prisma.channel.findUnique({ where: { name } })) name = '本地存储（系统）';
+    const hasMain = await prisma.channel.count({ where: { isMain: true } });
+    await prisma.channel.create({
+      data: {
+        code: LOCAL_CHANNEL_CODE,
+        name,
+        type: 'local',
+        enabled: true,
+        isMain: hasMain === 0,
+        isBackup: false,
+        sortOrder: 9999,
+        config: JSON.stringify({ quotaEnabled: 'false', quotaLimitGB: '10', quotaThreshold: '95' }),
+      },
+    });
   }
 }
 
@@ -238,6 +295,8 @@ export class ChannelManageController {
 
     const grouped: Record<string, unknown[]> = {};
     for (const type of CHANNEL_TYPES) grouped[type] = [];
+    // 内置类型（本地存储）排在最后
+    for (const type of BUILTIN_CHANNEL_TYPES) grouped[type] = [];
     for (const c of channels) {
       const config = this.svc.maskConfig(c.type, c.config);
       (grouped[c.type] ||= []).push({
@@ -301,13 +360,19 @@ export class ChannelManageController {
     return null;
   }
 
-  /** 生成唯一的 6 位数字渠道 ID（内部识别用；渠道名可改，ID 不变） */
+  /**
+   * 生成唯一的 6 位数字渠道 ID（内部识别用；渠道名可改，ID 不变）。
+   * 必须避开 LOCAL_CHANNEL_CODE（100000）—— 那是内置本地存储的固定 ID，
+   * 一旦被普通渠道占用，启动时的幂等修复会把它的类型改写成 local。
+   */
   private async nextCode(): Promise<string> {
     for (let i = 0; i < 60; i++) {
       const code = String(100000 + Math.floor(Math.random() * 900000));
+      if (code === LOCAL_CHANNEL_CODE) continue;
       if (!(await prisma.channel.findUnique({ where: { code } }))) return code;
     }
-    return String(Date.now()).slice(-6);
+    const fallback = String(Date.now()).slice(-6);
+    return fallback === LOCAL_CHANNEL_CODE ? '100001' : fallback;
   }
 
   @Post()
@@ -453,6 +518,11 @@ export class ChannelManageController {
 
   @Delete(':id')
   async remove(@Param('id') id: string) {
+    // 内置渠道（本地存储）不允许删除：它是「零配置可用」的兜底落盘位置
+    const target = await prisma.channel.findUnique({ where: { id } });
+    if (target && (BUILTIN_CHANNEL_TYPES as readonly string[]).includes(target.type)) {
+      return { success: false, message: '本地存储是系统内置渠道，不能删除（可以禁用以停用）' };
+    }
     const copies = await prisma.fileCopy.count({ where: { channelId: id } });
     if (copies > 0) {
       return { success: false, message: `该渠道仍有 ${copies} 个文件副本，请先迁移或清理` };

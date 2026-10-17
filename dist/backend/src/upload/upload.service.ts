@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { createHash } from 'crypto';
+import { promises as fsp } from 'fs';
 import { prisma } from '../common/prisma';
 import { CryptoService } from '../common/crypto.service';
 import { SettingsService } from '../settings/settings.service';
@@ -7,6 +8,7 @@ import { SysConfigService } from '../settings/sysconfig.service';
 import { ChannelsService } from '../channels/channels.controller';
 import { StorageChannelService, StorageChannelInfo } from '../storage/storage-channel.service';
 import { createAdapter, toCopyInfo } from '../adapters/adapter.factory';
+import { localFileAbs } from '../adapters/local.adapter';
 import { ChannelInfo } from '../adapters/adapter.interface';
 import { normalizeUploadSource, fileTypeOf, channelShort } from '../common/file-view';
 import { appLog } from '../common/app-log';
@@ -1214,11 +1216,25 @@ export class UploadService {
     if (!mainCh) throw new Error('主渠道记录不存在');
     const mainInfo = this.toChannelInfo(mainCh);
     const mainAdapter = createAdapter(mainInfo);
-    const url = mainAdapter.buildDirectUrl(toCopyInfo(mainCopy), mainInfo);
-    if (!url) throw new Error('无法构造主渠道直链');
-    const resp = await fetch(url);
-    if (!resp.ok) throw new Error(`源文件拉取失败 HTTP ${resp.status}`);
-    const buf = Buffer.from(await resp.arrayBuffer());
+
+    /*
+     * 取源文件字节：
+     *   普通渠道 → 用直链 HTTP 拉取；
+     *   本地渠道 → 没有直链（buildDirectUrl 恒为 null），直接读磁盘。
+     * 早期实现只走 HTTP，导致「主渠道是本地存储」时备份功能直接报「无法构造直链」。
+     */
+    let buf: Buffer;
+    if (mainCh.type === 'local') {
+      const abs = localFileAbs(mainCopy.remoteKey);
+      if (!abs) throw new Error('本地文件不存在，无法备份');
+      buf = await fsp.readFile(abs);
+    } else {
+      const url = mainAdapter.buildDirectUrl(toCopyInfo(mainCopy), mainInfo);
+      if (!url) throw new Error('无法构造主渠道直链');
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error(`源文件拉取失败 HTTP ${resp.status}`);
+      buf = Buffer.from(await resp.arrayBuffer());
+    }
     const info = this.toChannelInfo(backup);
     const adapter = createAdapter(info);
     const result = await adapter.upload(

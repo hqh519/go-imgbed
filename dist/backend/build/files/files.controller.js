@@ -23,6 +23,7 @@ const node_path_1 = require("node:path");
 const sharp_1 = __importDefault(require("sharp"));
 const prisma_1 = require("../common/prisma");
 const adapter_factory_1 = require("../adapters/adapter.factory");
+const local_adapter_1 = require("../adapters/local.adapter");
 const channels_controller_1 = require("../channels/channels.controller");
 const storage_channel_service_1 = require("../storage/storage-channel.service");
 const upload_service_1 = require("../upload/upload.service");
@@ -186,6 +187,52 @@ let LinkController = class LinkController {
             return t;
         const origin = `${req.protocol}://${req.get('host')}`;
         return t.startsWith('/') ? `${origin}${t}` : `${origin}/${t}`;
+    }
+    sendLocalFile(req, res, abs, record) {
+        let stat;
+        try {
+            stat = (0, node_fs_1.statSync)(abs);
+        }
+        catch {
+            return res.status(404).send('Not Found');
+        }
+        const total = stat.size;
+        const mime = record.mime || 'application/octet-stream';
+        res.setHeader('Content-Type', mime);
+        res.setHeader('Accept-Ranges', 'bytes');
+        res.setHeader('Cache-Control', 'public, max-age=86400');
+        const range = String(req.headers['range'] || '');
+        if (range) {
+            const m = /^bytes=(\d*)-(\d*)$/.exec(range.trim());
+            if (m) {
+                let start = m[1] ? Number(m[1]) : NaN;
+                let end = m[2] ? Number(m[2]) : NaN;
+                if (Number.isNaN(start)) {
+                    if (Number.isNaN(end) || end <= 0) {
+                        res.status(416).setHeader('Content-Range', `bytes */${total}`).end();
+                        return;
+                    }
+                    start = Math.max(0, total - end);
+                    end = total - 1;
+                }
+                else {
+                    if (Number.isNaN(end))
+                        end = total - 1;
+                    end = Math.min(end, total - 1);
+                }
+                if (start > end || start >= total) {
+                    res.status(416).setHeader('Content-Range', `bytes */${total}`).end();
+                    return;
+                }
+                res.status(206);
+                res.setHeader('Content-Range', `bytes ${start}-${end}/${total}`);
+                res.setHeader('Content-Length', String(end - start + 1));
+                (0, node_fs_1.createReadStream)(abs, { start, end }).on('error', () => res.end()).pipe(res);
+                return;
+            }
+        }
+        res.setHeader('Content-Length', String(total));
+        (0, node_fs_1.createReadStream)(abs).on('error', () => res.end()).pipe(res);
     }
     async proxyStream(req, res, candidates, extraHeaders) {
         const timeoutMs = Number(await this.settings.get('proxyTimeoutMs', '15000')) || 15000;
@@ -418,6 +465,14 @@ let LinkController = class LinkController {
             const ch = channels.find((c) => c.id === copy.channelId);
             if (!ch)
                 continue;
+            if (ch.type === 'local') {
+                if (candidates.length > 0)
+                    continue;
+                const abs = (0, local_adapter_1.localFileAbs)(copy.remoteKey);
+                if (!abs)
+                    continue;
+                return this.sendLocalFile(req, res, abs, record);
+            }
             const info = {
                 id: ch.id,
                 name: ch.name,

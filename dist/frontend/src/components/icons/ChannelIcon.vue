@@ -38,7 +38,8 @@ const CHANNEL_BADGE = {
     lsky: 'LS',
     webdav: 'WD',
     immich: 'IM',
-    custom: 'DIY'
+    custom: 'DIY',
+    local: 'LOCAL'
 };
 
 const CHANNEL_LABEL = {
@@ -51,7 +52,8 @@ const CHANNEL_LABEL = {
     lsky: 'Lsky Pro 兰空图床',
     webdav: 'WebDAV',
     immich: 'Immich',
-    custom: '自定义 Web 存储'
+    custom: '自定义 Web 存储',
+    local: '本地存储'
 };
 
 export default {

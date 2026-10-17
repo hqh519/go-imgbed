@@ -37,12 +37,14 @@ export const CHANNEL_LABEL: Record<string, string> = {
   webdav: 'WebDAV',
   immich: 'Immich',
   custom: 'External',
+  local: 'Local',
 };
 
 /**
  * 渠道类型 → 简称（全站唯一来源）。
  *   腾讯云 COS = COS ｜ 阿里云 OSS = ALI ｜ 简单图床 = EI ｜ 兰空图床 = LS
  *   Immich = IM ｜ MinIO = MI ｜ R2 = R2 ｜ S3 = S3 ｜ WebDAV = WD ｜ 自定义 Web = DIY
+ *   本地存储 = LOCAL
  * 文件管理卡片左上角角标、上传后自动标签、元数据 ChannelShort 均调用 channelShort()，
  * 新增渠道类型只需在这里加一行。
  */
@@ -57,6 +59,7 @@ export const CHANNEL_SHORT: Record<string, string> = {
   s3: 'S3',
   webdav: 'WD',
   custom: 'DIY',
+  local: 'LOCAL',
 };
 
 /**

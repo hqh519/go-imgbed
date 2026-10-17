@@ -28,10 +28,12 @@ let TokenApiController = class TokenApiController {
     uploadSvc;
     sysConfig;
     settings;
-    constructor(uploadSvc, sysConfig, settings) {
+    storageChannel;
+    constructor(uploadSvc, sysConfig, settings, storageChannel) {
         this.uploadSvc = uploadSvc;
         this.sysConfig = sysConfig;
         this.settings = settings;
+        this.storageChannel = storageChannel;
     }
     encodePath(id) {
         return String(id || '')
@@ -90,20 +92,43 @@ let TokenApiController = class TokenApiController {
             return res.status(400).json({ success: false, message: '该 Token 为 S3 类型，请使用 S3 协议上传' });
         }
         const tokenMetas = JSON.parse(auth.token.metas || '{}');
-        const categoryParam = body.category ?? body.folder ?? tokenMetas.defaultCategory;
-        const explicitBucket = body.bucket !== undefined ? String(body.bucket) : '';
-        const explicitBackup = body.backup !== undefined ? String(body.backup) : '';
-        const channelId = await this.resolveChannelId(explicitBucket);
-        const backupFlag = (explicitBackup || String(tokenMetas.defaultBackup || '')).trim().toLowerCase();
-        const backupOff = storage_channel_service_1.NO_BACKUP_VALUES.includes(backupFlag);
-        const backupChannelId = backupOff ? '' : await this.resolveChannelId(explicitBackup);
+        const usernameParam = String(body.username || '').trim();
+        const userstoreRaw = String(body.userstore ?? '').trim().toLowerCase();
+        const useUserStore = !!usernameParam && userstoreRaw !== 'false' && userstoreRaw !== '0';
+        if (useUserStore) {
+            const tokenOwner = String(tokenMetas.owner || '').trim();
+            const admin = await this.adminUsername();
+            const isAdminToken = !tokenOwner || tokenOwner === 'admin' || tokenOwner === admin;
+            if (!isAdminToken && tokenOwner !== usernameParam) {
+                app_log_1.appLog.warn('token', 'API Token 越权尝试', `token=${auth.token.prefix} owner=${tokenOwner} username=${usernameParam}`);
+                return res.status(403).json({ success: false, message: `该 Token 仅可为账户「${tokenOwner}」上传` });
+            }
+            const targetUser = await prisma_1.prisma.user.findUnique({ where: { username: usernameParam } });
+            if (!targetUser || !targetUser.enabled) {
+                return res.status(400).json({ success: false, message: `username「${usernameParam}」对应的账户不存在或已禁用` });
+            }
+        }
         const ip = String(req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '').replace(/^::ffff:/, '');
-        const rawOwner = String(tokenMetas.owner || '').trim();
-        const owner = rawOwner && rawOwner !== 'admin' ? rawOwner : await this.adminUsername();
+        let channelId = '';
+        let backupChannelId = '';
+        let owner = '';
+        if (useUserStore) {
+            const mainCh = await this.storageChannel.getStorageChannel(usernameParam, '');
+            const backupCh = await this.storageChannel.getStorageChannel(usernameParam, 'backup');
+            channelId = mainCh?.id || '';
+            backupChannelId = backupCh?.id || '';
+            owner = usernameParam;
+        }
+        else {
+            const rawOwner = String(tokenMetas.owner || '').trim();
+            owner = rawOwner && rawOwner !== 'admin' ? rawOwner : await this.adminUsername();
+        }
+        const tokenBackupFlag = String(tokenMetas.defaultBackup || '').trim().toLowerCase();
+        const backupOff = !useUserStore && storage_channel_service_1.NO_BACKUP_VALUES.includes(tokenBackupFlag);
         const opts = {
             channelId: channelId || undefined,
-            tokenId: auth.token.id,
-            uploadFolder: String(categoryParam || '').trim(),
+            tokenId: useUserStore ? undefined : auth.token.id,
+            uploadFolder: '',
             uploadNameType: String(body.nameType || 'default'),
             uploader: owner,
             ip,
@@ -402,5 +427,6 @@ exports.TokenApiController = TokenApiController = __decorate([
     (0, common_1.Controller)(),
     __metadata("design:paramtypes", [upload_service_1.UploadService,
         sysconfig_service_1.SysConfigService,
-        settings_service_1.SettingsService])
+        settings_service_1.SettingsService,
+        storage_channel_service_1.StorageChannelService])
 ], TokenApiController);

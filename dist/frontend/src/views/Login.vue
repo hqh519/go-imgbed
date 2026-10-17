@@ -38,7 +38,8 @@ export default {
             return this.userConfig?.ownerName || 'go-imgbed'
         },
         loginTitle() {
-            return this.$t('login.title', { owner: this.ownerName })
+            // 登录页标题只显示图床名称，不再加「登录到 …」前后缀
+            return this.ownerName
         }
     },
     components: {

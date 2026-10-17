@@ -546,7 +546,8 @@ export default {
 
     .success-tag,
     .fail-tag,
-    .primary-tag {
+    .primary-tag,
+    .backup-tag {
         max-width: 72px;
         padding: 2px 5px;
         border-radius: 5px;

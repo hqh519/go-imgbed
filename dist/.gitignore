@@ -16,6 +16,9 @@ data/
 *.db-shm
 logs/
 *.log
+# 内置「本地存储」渠道的实体文件（属于运行期数据，不进仓库）
+uploads/
+**/uploads/
 
 # 依赖与构建缓存（各机自装）
 node_modules/

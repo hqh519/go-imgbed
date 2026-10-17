@@ -37,7 +37,7 @@ props: {
 data() {
     return {
         expandedWidth: null,
-        scrollHidden: false, // 移动端：页面下滑时隐藏悬浮菜单，上滑/到底时显示
+        scrollHidden: false, // 移动端：页面下滑时隐藏悬浮菜单，上滑时显示
         lastScrollY: 0,
         menuItems: [
             { index: 'status', icon: 'chart-bar', titleKey: 'sysConfigTabs.systemStatus' },
@@ -79,20 +79,16 @@ methods: {
         this.$emit('update:activeIndex', index);
     },
     handlePageScroll() {
-        // 仅移动端启用滚动显隐：向下滚动隐藏，向上滚动或已滚动到最底部时显示
+        // 仅移动端启用滚动显隐：纯按方向 —— 向下滚隐藏、向上滚显示（不再「到底部强制显示」）
         if (window.innerWidth > 768) {
             this.scrollHidden = false;
             this.lastScrollY = window.scrollY;
             return;
         }
         const y = window.scrollY;
-        const doc = document.documentElement;
-        const atBottom = window.innerHeight + y >= doc.scrollHeight - 4;
-        if (atBottom || y < this.lastScrollY) {
-            this.scrollHidden = false;
-        } else if (y > this.lastScrollY && y > 40) {
-            this.scrollHidden = true;
-        }
+        const delta = y - this.lastScrollY;
+        if (Math.abs(delta) < 2) return;
+        this.scrollHidden = !(y <= 40 || delta < 0);
         this.lastScrollY = y;
     },
     measureWidth() {

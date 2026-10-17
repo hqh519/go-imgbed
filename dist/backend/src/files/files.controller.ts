@@ -18,13 +18,14 @@ import {
 } from '@nestjs/common';
 import { Request, Response } from 'express';
 import { Readable } from 'node:stream';
-import { existsSync } from 'node:fs';
+import { createReadStream, existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { FileRecord } from '@prisma/client';
 import sharp from 'sharp'; // 图片尺寸处理（?width=&height=&fit= 缩放）
 import { prisma } from '../common/prisma';
 import { createAdapter, toCopyInfo } from '../adapters/adapter.factory';
 import type { ChannelInfo } from '../adapters/adapter.interface';
+import { localFileAbs } from '../adapters/local.adapter';
 import { ChannelsService } from '../channels/channels.controller';
 import { StorageChannelService, StorageChannelInfo } from '../storage/storage-channel.service';
 import { UploadService } from '../upload/upload.service';
@@ -267,6 +268,61 @@ export class LinkController {
     if (/^https?:\/\//i.test(t)) return t;
     const origin = `${req.protocol}://${req.get('host')}`;
     return t.startsWith('/') ? `${origin}${t}` : `${origin}/${t}`;
+  }
+
+  /**
+   * 本地存储渠道：直接读磁盘下发文件。
+   *
+   * 与 proxyStream 保持同样的对外行为：
+   *   - 支持 Range（206），视频拖动进度条、音频 seek 都依赖它；
+   *   - 带 Accept-Ranges 与长缓存（key 唯一，内容不会变）。
+   * 差异：本地文件是「自己的磁盘」，不走 HTTP 拉取，所以没有任何超时/带宽中转损耗。
+   */
+  private sendLocalFile(req: Request, res: Response, abs: string, record: FileRecord) {
+    let stat;
+    try {
+      stat = statSync(abs);
+    } catch {
+      return res.status(404).send('Not Found');
+    }
+    const total = stat.size;
+    const mime = record.mime || 'application/octet-stream';
+    res.setHeader('Content-Type', mime);
+    res.setHeader('Accept-Ranges', 'bytes');
+    // 文件名由 key 决定且永不复用 → 可以长缓存
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+
+    const range = String(req.headers['range'] || '');
+    if (range) {
+      const m = /^bytes=(\d*)-(\d*)$/.exec(range.trim());
+      if (m) {
+        let start = m[1] ? Number(m[1]) : NaN;
+        let end = m[2] ? Number(m[2]) : NaN;
+        if (Number.isNaN(start)) {
+          // 后缀范围：bytes=-500 表示最后 500 字节
+          if (Number.isNaN(end) || end <= 0) {
+            res.status(416).setHeader('Content-Range', `bytes */${total}`).end();
+            return;
+          }
+          start = Math.max(0, total - end);
+          end = total - 1;
+        } else {
+          if (Number.isNaN(end)) end = total - 1;
+          end = Math.min(end, total - 1);
+        }
+        if (start > end || start >= total) {
+          res.status(416).setHeader('Content-Range', `bytes */${total}`).end();
+          return;
+        }
+        res.status(206);
+        res.setHeader('Content-Range', `bytes ${start}-${end}/${total}`);
+        res.setHeader('Content-Length', String(end - start + 1));
+        createReadStream(abs, { start, end }).on('error', () => res.end()).pipe(res);
+        return;
+      }
+    }
+    res.setHeader('Content-Length', String(total));
+    createReadStream(abs).on('error', () => res.end()).pipe(res);
   }
 
   /** 代理模式：拉取上游并流式转发，支持 Range（206）与关键响应头透传 */
@@ -544,9 +600,20 @@ export class LinkController {
     for (const c of active) if (!ordered.includes(c)) ordered.push(c);
 
     const candidates: { url: string; label: string }[] = [];
+    /**
+     * 本地存储渠道没有「渠道直链」，必须由服务端直接读盘下发。
+     * 只有在它之前没有任何可用的 URL 候选时才走本地 —— 保持「主渠道优先」的既有语义：
+     *   主渠道是 COS → 走 COS；主渠道是本地存储 → 直接读盘。
+     */
     for (const copy of ordered) {
       const ch = channels.find((c) => c.id === copy.channelId);
       if (!ch) continue;
+      if (ch.type === 'local') {
+        if (candidates.length > 0) continue;
+        const abs = localFileAbs(copy.remoteKey);
+        if (!abs) continue;
+        return this.sendLocalFile(req, res, abs, record);
+      }
       const info = {
         id: ch.id,
         name: ch.name,

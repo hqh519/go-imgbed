@@ -35,7 +35,7 @@ export default {
             isMobile: window.innerWidth <= 768,
             reservedSpace: null,
             headerScrollProgress: 0,
-            // 滚动方向：向下滚 → 顶栏上滑隐藏；向上滚 / 滚到底 → 立刻显示（与移动端侧边菜单一致）
+            // 滚动方向：向下滚 → 顶栏上滑隐藏；向上滚 → 立刻显示（与移动端侧边菜单一致）
             scrollHidden: false,
             lastScrollY: 0
         };
@@ -55,27 +55,17 @@ export default {
             this.updateScrollHidden(y, scroller);
         },
         /**
-         * 顶栏滚动显隐：
-         *   向下滚动且已离开顶部（> 40px）→ 隐藏
-         *   向上滚动，或已经滑到页面底部 → 显示
+         * 顶栏滚动显隐（纯方向驱动，不再有「到页面底部就强制显示」的行为）：
+         *   页面向上滚动 → 显示
+         *   页面向下滚动（且已离开顶部 40px）→ 隐藏
          * 页面本身不可滚动（内容不足一屏）时永远显示。
          */
-        updateScrollHidden(y, scroller) {
-            const el = scroller || document.scrollingElement;
-            const viewport = el?.clientHeight || window.innerHeight;
-            const total = el?.scrollHeight || 0;
-            const atBottom = total > 0 && y + viewport >= total - 4;
+        updateScrollHidden(y, _scroller) {
             const delta = y - this.lastScrollY;
-            if (Math.abs(delta) < 2) {
-                if (atBottom && this.scrollHidden) this.scrollHidden = false;
-                return;
-            }
+            // 小于 2px 的抖动不改变状态，避免触控板惯性滚动时顶栏闪烁
+            if (Math.abs(delta) < 2) return;
             this.lastScrollY = y;
-            if (atBottom || y <= 40 || delta < 0) {
-                this.scrollHidden = false;
-            } else {
-                this.scrollHidden = true;
-            }
+            this.scrollHidden = !(y <= 40 || delta < 0);
         },
         handleHeaderScroll(event) {
             const elements = this.getHeaderScrollElements();

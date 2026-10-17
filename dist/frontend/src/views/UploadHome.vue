@@ -185,7 +185,7 @@
                 :aria-selected="uploadMethod === 'paste'"
                 @click="setUploadMethod('paste')"
             >
-                <font-awesome-icon icon="paste" class="upload-method-tab-icon"/>
+                <font-awesome-icon icon="link" class="upload-method-tab-icon"/>
                 <span>{{ $t('upload.linkTab') }}</span>
             </button>
         </div>

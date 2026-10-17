@@ -45,7 +45,7 @@ var __param = (this && this.__param) || function (paramIndex, decorator) {
     return function (target, key) { decorator(target, key, paramIndex); }
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.ChannelManageController = exports.StorageSettingsController = exports.ChannelsController = exports.ChannelsService = exports.CHANNEL_TYPES = void 0;
+exports.ChannelManageController = exports.StorageSettingsController = exports.ChannelsController = exports.ChannelsService = exports.LOCAL_CHANNEL_CODE = exports.BUILTIN_CHANNEL_TYPES = exports.CHANNEL_TYPES = void 0;
 const common_1 = require("@nestjs/common");
 const prisma_1 = require("../common/prisma");
 const crypto_service_1 = require("../common/crypto.service");
@@ -54,6 +54,7 @@ const settings_service_1 = require("../settings/settings.service");
 const adapter_factory_1 = require("../adapters/adapter.factory");
 const storage_channel_service_1 = require("../storage/storage-channel.service");
 const SECRET_FIELDS = {
+    local: [],
     cos: ['secretId', 'secretKey'],
     minio: ['accessKeyId', 'secretAccessKey'],
     r2: ['accessKeyId', 'secretAccessKey'],
@@ -65,6 +66,8 @@ const SECRET_FIELDS = {
     custom: ['tokenValue'],
 };
 exports.CHANNEL_TYPES = ['cos', 'minio', 'r2', 's3', 'aliyun', 'easyimages', 'lsky', 'webdav', 'immich', 'custom'];
+exports.BUILTIN_CHANNEL_TYPES = ['local'];
+exports.LOCAL_CHANNEL_CODE = '100000';
 async function makeTestPng() {
     try {
         const sharp = (await Promise.resolve().then(() => __importStar(require('sharp')))).default;
@@ -116,6 +119,43 @@ let ChannelsService = class ChannelsService {
     }
     identityOf(type, configJson) {
         return channelIdentity(type, this.decryptConfig(type, configJson));
+    }
+    async ensureBuiltinLocalChannel() {
+        const existing = await prisma_1.prisma.channel.findUnique({ where: { code: exports.LOCAL_CHANNEL_CODE } });
+        if (existing) {
+            const patch = {};
+            if (existing.type !== 'local')
+                patch.type = 'local';
+            if (!existing.enabled)
+                patch.enabled = true;
+            if (!existing.isMain && !existing.isBackup) {
+                const hasMain = await prisma_1.prisma.channel.count({
+                    where: { isMain: true, enabled: true, NOT: { id: existing.id } },
+                });
+                if (hasMain === 0)
+                    patch.isMain = true;
+            }
+            if (Object.keys(patch).length) {
+                await prisma_1.prisma.channel.update({ where: { id: existing.id }, data: patch });
+            }
+            return;
+        }
+        let name = '本地存储';
+        if (await prisma_1.prisma.channel.findUnique({ where: { name } }))
+            name = '本地存储（系统）';
+        const hasMain = await prisma_1.prisma.channel.count({ where: { isMain: true } });
+        await prisma_1.prisma.channel.create({
+            data: {
+                code: exports.LOCAL_CHANNEL_CODE,
+                name,
+                type: 'local',
+                enabled: true,
+                isMain: hasMain === 0,
+                isBackup: false,
+                sortOrder: 9999,
+                config: JSON.stringify({ quotaEnabled: 'false', quotaLimitGB: '10', quotaThreshold: '95' }),
+            },
+        });
     }
 };
 exports.ChannelsService = ChannelsService;
@@ -265,6 +305,8 @@ let ChannelManageController = class ChannelManageController {
         const grouped = {};
         for (const type of exports.CHANNEL_TYPES)
             grouped[type] = [];
+        for (const type of exports.BUILTIN_CHANNEL_TYPES)
+            grouped[type] = [];
         for (const c of channels) {
             const config = this.svc.maskConfig(c.type, c.config);
             (grouped[c.type] ||= []).push({
@@ -319,10 +361,13 @@ let ChannelManageController = class ChannelManageController {
     async nextCode() {
         for (let i = 0; i < 60; i++) {
             const code = String(100000 + Math.floor(Math.random() * 900000));
+            if (code === exports.LOCAL_CHANNEL_CODE)
+                continue;
             if (!(await prisma_1.prisma.channel.findUnique({ where: { code } })))
                 return code;
         }
-        return String(Date.now()).slice(-6);
+        const fallback = String(Date.now()).slice(-6);
+        return fallback === exports.LOCAL_CHANNEL_CODE ? '100001' : fallback;
     }
     async create(body) {
         if (!exports.CHANNEL_TYPES.includes(body.type)) {
@@ -451,6 +496,10 @@ let ChannelManageController = class ChannelManageController {
         }
     }
     async remove(id) {
+        const target = await prisma_1.prisma.channel.findUnique({ where: { id } });
+        if (target && exports.BUILTIN_CHANNEL_TYPES.includes(target.type)) {
+            return { success: false, message: '本地存储是系统内置渠道，不能删除（可以禁用以停用）' };
+        }
         const copies = await prisma_1.prisma.fileCopy.count({ where: { channelId: id } });
         if (copies > 0) {
             return { success: false, message: `该渠道仍有 ${copies} 个文件副本，请先迁移或清理` };

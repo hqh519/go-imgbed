@@ -41,11 +41,12 @@
                     <!-- 如果是boolean类型则使用切换按钮 -->
                     <el-switch v-else-if="setting.type === 'boolean'" v-model="setting.value" :disabled="setting.fixed"></el-switch>
                     <!-- 如果是textarea类型则使用可拖拽文本域 -->
+                    <!-- 默认行高：公告 4 行、页脚传送门链接 8 行、其余 2 行 -->
                     <el-input
                         v-else-if="setting.type === 'textarea'"
                         v-model="setting.value"
                         type="textarea"
-                        :autosize="{ minRows: 2, maxRows: setting.id === 'announcement' ? 8 : undefined }"
+                        :autosize="{ minRows: textareaMinRows(setting), maxRows: setting.id === 'announcement' ? 8 : undefined }"
                         resize="vertical"
                         :disabled="setting.fixed"
                         :placeholder="localized(setting, 'placeholder')"
@@ -153,6 +154,16 @@ methods: {
     localized(item, field) {
         if (this.isEn && item[field + '_en']) return item[field + '_en'];
         return item[field] || '';
+    },
+    /**
+     * 多行文本框的默认行高。
+     * 公告偏短（4 行），页脚传送门链接通常要贴统计代码 / 多条链接（8 行），
+     * 其余多行字段保持 2 行，避免表单过长。
+     */
+    textareaMinRows(setting) {
+        if (setting?.id === 'announcement') return 4;
+        if (setting?.id === 'footerLink') return 8;
+        return 2;
     },
     localizedOption(option) {
         if (this.isEn && option.label_en) return option.label_en;

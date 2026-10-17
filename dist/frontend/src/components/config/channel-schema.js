@@ -11,9 +11,10 @@
  */
 
 /**
- * 10 种渠道类型，顺序即界面展示顺序（上传设置 / 筛选下拉均按此排序）。
+ * 渠道类型，顺序即界面展示顺序（上传设置 / 筛选下拉均按此排序）。
  *   dedicated = 走自有专属通道（后端有独立适配器实现）
  *   generic   = 与「自定义 Web 通道」共用同一套通用 HTTP 上传适配器
+ *   builtin   = 系统内置渠道，随安装自动存在，**不允许通过「添加渠道」创建**（排在最后）
  */
 export const CHANNEL_TYPES = [
     { value: 'easyimages', label: 'EasyImages 简单图床', dedicated: false, generic: true },
@@ -25,8 +26,15 @@ export const CHANNEL_TYPES = [
     { value: 'r2', label: 'Cloudflare R2', dedicated: true },
     { value: 's3', label: 'S3 兼容存储', dedicated: true },
     { value: 'webdav', label: 'WebDAV 协议存储', dedicated: true },
-    { value: 'custom', label: '自定义 Web 通道', dedicated: false, generic: true }
+    { value: 'custom', label: '自定义 Web 通道', dedicated: false, generic: true },
+    { value: 'local', label: '本地存储', dedicated: true, builtin: true }
 ];
+
+/** 「添加渠道」时可选类型 —— 排除系统内置渠道 */
+export const ADDABLE_CHANNEL_TYPES = CHANNEL_TYPES.filter((t) => !t.builtin);
+
+/** 内置渠道的固定业务 ID（与后端 LOCAL_CHANNEL_CODE 保持一致） */
+export const LOCAL_CHANNEL_CODE = '100000';
 
 /**
  * 渠道类型 → 后端 CHANNEL_LABEL（用于「渠道类型」筛选参数、卡片角标）。
@@ -42,7 +50,8 @@ export const CHANNEL_SHORT_LABEL = {
     lsky: 'Lsky',
     webdav: 'WebDAV',
     immich: 'Immich',
-    custom: 'External'
+    custom: 'External',
+    local: 'Local'
 };
 
 /** 卡片上展示的摘要字段 */
@@ -56,11 +65,14 @@ export const SUMMARY_KEYS = {
     lsky: [['apiUrl', '接口地址'], ['publicDomain', '外链域名']],
     webdav: [['baseUri', 'WebDAV 地址'], ['directory', '目录']],
     immich: [['serverUrl', '服务地址'], ['albumId', '相册 ID']],
-    custom: [['apiUrl', '接口地址'], ['publicDomain', '外链域名']]
+    custom: [['apiUrl', '接口地址'], ['publicDomain', '外链域名']],
+    // 本地存储没有可配置项（落盘位置由程序决定），摘要留空，靠类型提示说明
+    local: []
 };
 
 /** 各类型顶部提示 */
 export const TYPE_TIPS = {
+    local: '系统内置渠道，无需任何配置：文件直接写入服务端自身的 uploads 目录，零外部依赖、开箱即用。实体文件固定按「年份/月份」归档（如 uploads/2026/10/），与后台给文件设置的「文件分类」相互独立 —— 在文件管理里改分类只改数据库的虚拟目录，不会搬运实体文件。外链统一由本站 /file/ 代理下发。该渠道不可删除，但可以禁用。',
     cos: '腾讯云 COS 走专属通道：填写地域后可自动生成 Endpoint，也可手填 CDN 加速域名作为外链。',
     minio: 'MinIO 走专属通道：默认使用 Path-Style 寻址，桶需设置为「公开读」才能直接访问外链。若 MinIO 与图床同机 / 同 docker 网络，Endpoint 可直接填容器名（如 minio:9000）走内网通信。',
     r2: 'Cloudflare R2 走专属通道：Endpoint 可只填账户 ID（自动补全 r2.cloudflarestorage.com），外链需填写 r2.dev 子域或自定义域名。',
@@ -103,6 +115,12 @@ const PUBLIC_DOMAIN_TIP =
 
 /** 各类型的业务字段 */
 export const CHANNEL_FIELDS = {
+    /**
+     * 本地存储：没有任何连接配置。
+     * 落盘位置固定为「后端根目录/uploads」，实体目录按年份/月份自动归档，
+     * 容量限制由通用字段（QUOTA_FIELDS）提供 —— 磁盘快满时可以在这里设告警阈值。
+     */
+    local: () => [],
     cos: () => [
         f('bucket', '存储桶名称 (Bucket)', { required: true, placeholder: 'mybucket（可只填前缀，由 AppID 自动补全）' }),
         f('appid', 'APPID', {

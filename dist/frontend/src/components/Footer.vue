@@ -1,12 +1,15 @@
 <template>
     <div class="page-footer" v-if="!disableFooter">
-        <p>© 2024-{{ thisYear }} Powered by <a class="footer-name" href="/" target="_blank">{{ siteName }}</a>
-            <a href="/" target="_blank">
+        <p class="footer-line">
+            <span>© 2024-{{ thisYear }} Powered by </span>
+            <!-- 图床名称：纯文本署名，不再是链接（点击跳转由 logoLink / 页脚自定义代码承担） -->
+            <span class="footer-name">{{ siteName }}</span>
+            <a href="/" target="_blank" class="footer-link-icon-wrap" aria-hidden="true">
                 <font-awesome-icon icon="paper-plane" class="footer-link-icon"/>
             </a>
+            <!-- 页脚自定义代码：后台「页脚设置 → 页脚传送门链接」，支持 HTML / JS（如统计代码） -->
+            <span v-if="footerCode" ref="footerCodeHost" class="footer-custom-code"></span>
         </p>
-        <!-- 页脚自定义代码：后台「页脚设置 → 页脚自定义代码」，支持 HTML / JS（如统计代码） -->
-        <div v-if="footerCode" ref="footerCodeHost" class="footer-custom-code"></div>
     </div>
 </template>
 
@@ -72,32 +75,30 @@ export default {
     font-size: large;
     user-select: none;
 }
+.footer-line {
+    display: inline-flex;
+    align-items: center;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 0 2px;
+    margin: 0;
+    line-height: 1.6;
+}
 @media (max-width: 768px) {
     .page-footer {
         font-size: small;
     }
 }
+/* 图床名称：纯文本，颜色/字号与 Powered by 保持一致，仅保留加粗以突出署名 */
 .footer-name {
     color: var(--page-footer-name-color);
     font-weight: bold;
+}
+
+.footer-link-icon-wrap {
+    display: inline-flex;
+    align-items: center;
     text-decoration: none;
-    position: relative;
-    transition: all 0.3s ease;
-}
-
-.footer-name::after {
-    content: '';
-    position: absolute;
-    width: 0;
-    height: 2px;
-    bottom: -2px;
-    left: 0;
-    background-color: var(--page-footer-name-color);
-    transition: width 0.3s ease-in-out;
-}
-
-.footer-name:hover::after {
-    width: 100%;
 }
 
 .footer-link-icon {
@@ -110,10 +111,27 @@ export default {
     transform: scale(1.2) rotate(-12deg);
 }
 
-/* 页脚自定义代码容器：与默认页脚文字同行区域，样式尽量不干预（交给插入的代码自定） */
+/*
+ * 页脚自定义代码（传送门链接 / 统计代码）容器：
+ * 颜色与字号严格继承「Powered by」所在行的样式，只给超链接加下划线，
+ * 鼠标悬浮时变为蓝色，避免默认浏览器蓝色链接把页脚视觉打散。
+ */
 .footer-custom-code {
-    display: inline-flex;
-    align-items: center;
-    margin-left: 10px;
+    display: inline;
+    color: inherit;
+    font-size: inherit;
+    margin-left: 6px;
+}
+
+.footer-custom-code :deep(a) {
+    color: inherit;
+    font-size: inherit;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    transition: color 0.2s ease;
+}
+
+.footer-custom-code :deep(a:hover) {
+    color: #409eff;
 }
 </style>

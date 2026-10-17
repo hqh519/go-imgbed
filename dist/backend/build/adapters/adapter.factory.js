@@ -8,8 +8,11 @@ const aliyun_adapter_1 = require("./aliyun.adapter");
 const http_post_adapter_1 = require("./http-post.adapter");
 const webdav_adapter_1 = require("./webdav.adapter");
 const immich_adapter_1 = require("./immich.adapter");
+const local_adapter_1 = require("./local.adapter");
 function createAdapter(channel) {
     switch (channel.type) {
+        case 'local':
+            return new local_adapter_1.LocalAdapter();
         case 'cos':
         case 'minio':
         case 'r2':
@@ -33,6 +36,7 @@ function toCopyInfo(c) {
     return { remoteKey: c.remoteKey, remoteUrl: c.remoteUrl, metas: {} };
 }
 exports.ADAPTER_META = {
+    local: { label: '本地存储', secretFields: [] },
     cos: { label: '腾讯云 COS', secretFields: ['secretId', 'secretKey'] },
     minio: { label: 'MinIO', secretFields: ['accessKeyId', 'secretAccessKey'] },
     r2: { label: 'Cloudflare R2', secretFields: ['accessKeyId', 'secretAccessKey'] },

@@ -8,6 +8,7 @@ import express from 'express';
 import { join } from 'path';
 import { existsSync } from 'fs';
 import { AppModule } from './app.module';
+import { ChannelsService } from './channels/channels.controller';
 import { prisma } from './common/prisma';
 import { SESSION_COOKIE, parseSession } from './auth/auth.guard';
 import { rateLimiter } from './common/rate-limit';
@@ -196,6 +197,17 @@ async function bootstrap() {
   app.enableCors({ origin: true, credentials: true });
 
   await app.init();
+
+  /*
+   * 内置「本地存储」渠道：随启动幂等创建。
+   * 必须放在 app.init() 之后（此时 Prisma 已连接、db push 已完成建表），
+   * 且要在开始接请求之前 —— 否则首次安装的头几个请求会因找不到任何渠道而失败。
+   */
+  try {
+    await app.get(ChannelsService).ensureBuiltinLocalChannel();
+  } catch (err) {
+    console.warn(`[local-channel] 内置本地存储渠道初始化失败：${(err as Error).message}`);
+  }
 
   const port = Number(process.env.PORT || 3618);
   await app.listen(port, '0.0.0.0');

@@ -7,7 +7,7 @@ import { CryptoService } from '../common/crypto.service';
 import { UploadService } from '../upload/upload.service';
 import { SysConfigService } from '../settings/sysconfig.service';
 import { SettingsService } from '../settings/settings.service';
-import { NO_BACKUP_VALUES } from '../storage/storage-channel.service';
+import { NO_BACKUP_VALUES, StorageChannelService } from '../storage/storage-channel.service';
 import { extSuffixFor } from '../common/file-view';
 import { appLog } from '../common/app-log';
 
@@ -18,11 +18,18 @@ import { appLog } from '../common/app-log';
  *    POST /api/token/upload
  *    鉴权：`Authorization: Bearer <token>` 或 `X-Api-Token: <token>` 或表单字段 token
  *    入参（multipart 或 JSON）：
- *      file     文件（multipart）；或 url 从远端链接转存
- *      token    API Token
- *      category 指定分类目录（如 /2026/测试）；缺省用系统默认
- *      bucket   指定存储渠道 —— **只接受渠道 ID**（6 位 code 或主键 id）；缺省用全局主渠道
- *      backup   指定备份渠道 —— 同上，只接受渠道 ID；传 none/__none__ 关闭备份
+ *      file      文件（multipart）；或 url 从远端链接转存
+ *      token     API Token
+ *      username  可选：按该账户的「用户管理」渠道绑定上传（并归属该账户）
+ *                ⚠ 越权防护：Token 的 owner 绑定了具体账户时，username 只允许传该账户名，
+ *                  否则 403；只有管理员 Token 可以驱动任意账户。账户不存在/已禁用返回 400。
+ *      userstore 可选：'false' 表示忽略 username，改按 Token / 全局渠道
+ *    渠道规则（v1.7.0 起，已移除 category / bucket / backup 三个参数）：
+ *      传了 username 且 userstore !== false
+ *        → 主渠道 = getStorageChannel(username, '')，备份渠道 = getStorageChannel(username, 'backup')
+ *      否则
+ *        → 主渠道 = Token 上配置的渠道 || 全局主渠道
+ *          备份渠道 = Token 上配置的备份渠道 || 全局备份渠道
  *    出参：{ success, data: { name, url, dedup } }
  *      url 是 go-imgbed 的【签发链接】，已套用全站外链前缀（自定义访问域名优先）
  *
@@ -66,6 +73,7 @@ export class TokenApiController {
     private uploadSvc: UploadService,
     private sysConfig: SysConfigService,
     private settings: SettingsService,
+    private storageChannel: StorageChannelService,
   ) {}
 
   /* ------------------------------------------------------------------ */
@@ -181,43 +189,91 @@ export class TokenApiController {
       return res.status(400).json({ success: false, message: '该 Token 为 S3 类型，请使用 S3 协议上传' });
     }
 
-    // Token 上可预置默认值（创建 Token 时选填）：请求未显式传参时用它们兜底
+    // Token 上可预置默认值（创建 Token 时选填）：归属账户 + 默认主/备渠道
     const tokenMetas = JSON.parse(auth.token.metas || '{}') as {
       owner?: string;
       defaultBucket?: string;
       defaultBackup?: string;
-      defaultCategory?: string;
     };
 
-    const categoryParam = body.category ?? body.folder ?? tokenMetas.defaultCategory;
+    /*
+     * =====「Web 通用」渠道规则（v1.7.0 重构）=====
+     *
+     * 请求参数：{ token, username, userstore }
+     *   已移除 category / bucket / backup —— 分类改由系统默认规则决定
+     *   （网页设置里的默认上传目录，留空则按「年份/月份」）。
+     *
+     * 判定：
+     *   username 非空 && userstore !== false
+     *     → 主渠道 = 该账户在「用户管理」里绑定的渠道，备份渠道同理；
+     *       文件也归属该账户（这样在按账户归集里能对上）。
+     *   否则
+     *     → 主渠道 = Token 上配置的渠道 || 全局主渠道
+     *       备份渠道 = Token 上配置的备份渠道 || 全局备份渠道
+     *
+     * 注意 userstore 只认显式的 false / 0 为「不用账户渠道」，
+     * 未传或传 true 都按账户渠道处理 —— 避免调用方漏传字段导致渠道意外变化。
+     */
+    const usernameParam = String(body.username || '').trim();
+    const userstoreRaw = String(body.userstore ?? '').trim().toLowerCase();
+    const useUserStore = !!usernameParam && userstoreRaw !== 'false' && userstoreRaw !== '0';
 
     /*
-     * 渠道解析规则（与全站统一）：
-     *   1) 请求里显式传入的 channel → 优先使用；
-     *   2) 没传 → 由 StorageChannelService 读【该 Token 配置的默认主/备渠道】；
-     *   3) Token 上也没配 → 账户级（用户管理）→ 全局（后台上传设置）。
-     * 这里只负责把「显式传参」解析成渠道 ID，其余交给 tokenId 让统一入口兜底。
+     * ===== 越权防护（v1.7.0 新增 username 参数时同步加固）=====
+     *
+     * username 让调用方「以某个账户的身份」把文件写进该账户绑定的渠道，
+     * 因此必须确认调用方有权代表这个账户：
+     *   1) Token 上已绑定具体账户（owner 既不是空也不是管理员）→ 只允许该账户名；
+     *      Token 的 owner 是管理员建 Token 时明确指定的，属于「专属凭证」。
+     *   2) Token 属于管理员（owner 为空 / 'admin' / 等于当前管理员名）→ 视为服务级 Token，
+     *      可以驱动任意账户，保留「一个 Token 服务多用户」的用法。
+     * 另外要求账户存在且启用，避免把文件挂到一个不存在的用户名上
+     * （那样文件归属会查无此人，文件管理里谁也看不到）。
      */
-    const explicitBucket = body.bucket !== undefined ? String(body.bucket) : '';
-    const explicitBackup = body.backup !== undefined ? String(body.backup) : '';
-    const channelId = await this.resolveChannelId(explicitBucket);
-
-    // 是否关闭备份：请求参数或 Token 默认值命中「关闭哨兵」（none/__none__/false/0）即关闭
-    const backupFlag = (explicitBackup || String(tokenMetas.defaultBackup || '')).trim().toLowerCase();
-    const backupOff = NO_BACKUP_VALUES.includes(backupFlag);
-    const backupChannelId = backupOff ? '' : await this.resolveChannelId(explicitBackup);
+    if (useUserStore) {
+      const tokenOwner = String(tokenMetas.owner || '').trim();
+      const admin = await this.adminUsername();
+      const isAdminToken = !tokenOwner || tokenOwner === 'admin' || tokenOwner === admin;
+      if (!isAdminToken && tokenOwner !== usernameParam) {
+        appLog.warn('token', 'API Token 越权尝试', `token=${auth.token.prefix} owner=${tokenOwner} username=${usernameParam}`);
+        return res.status(403).json({ success: false, message: `该 Token 仅可为账户「${tokenOwner}」上传` });
+      }
+      const targetUser = await prisma.user.findUnique({ where: { username: usernameParam } });
+      if (!targetUser || !targetUser.enabled) {
+        return res.status(400).json({ success: false, message: `username「${usernameParam}」对应的账户不存在或已禁用` });
+      }
+    }
 
     const ip = String(req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '').replace(/^::ffff:/, '');
-    // 归属账户：Token 上配置的 owner；缺省或历史占位值 'admin' 一律落到真实管理员账户，
-    // 否则文件会在「按用户账户归集」里挂到一个并不存在的账户下。
-    const rawOwner = String(tokenMetas.owner || '').trim();
-    const owner = rawOwner && rawOwner !== 'admin' ? rawOwner : await this.adminUsername();
+
+    let channelId = '';
+    let backupChannelId = '';
+    let owner = '';
+    if (useUserStore) {
+      const mainCh = await this.storageChannel.getStorageChannel(usernameParam, '');
+      const backupCh = await this.storageChannel.getStorageChannel(usernameParam, 'backup');
+      channelId = mainCh?.id || '';
+      backupChannelId = backupCh?.id || '';
+      owner = usernameParam;
+    } else {
+      // 归属账户：Token 上配置的 owner；缺省或历史占位值 'admin' 一律落到真实管理员账户
+      const rawOwner = String(tokenMetas.owner || '').trim();
+      owner = rawOwner && rawOwner !== 'admin' ? rawOwner : await this.adminUsername();
+    }
+
+    // 备份开关：走账户分支时只要账户/全局有备份渠道就备份；
+    // 走 Token 分支时仍尊重 Token 上配置的「关闭备份」哨兵值。
+    const tokenBackupFlag = String(tokenMetas.defaultBackup || '').trim().toLowerCase();
+    const backupOff = !useUserStore && NO_BACKUP_VALUES.includes(tokenBackupFlag);
+
     const opts = {
       channelId: channelId || undefined,
-      tokenId: auth.token.id, // Token 上配置的默认主/备渠道由 StorageChannelService 读取
-      uploadFolder: String(categoryParam || '').trim(),
+      // 账户分支下不再让 Token 的默认渠道参与优先级（规则要求以账户为准）
+      tokenId: useUserStore ? undefined : auth.token.id,
+      // 分类：已取消 category 参数，统一走系统默认（默认上传目录 → 年份/月份）
+      uploadFolder: '',
       uploadNameType: String(body.nameType || 'default'),
-      uploader: owner, // API Token 上传统一归属管理员账户
+      uploader: owner,
       ip,
       serverCompress: body.compress === 'true' || body.compress === '1',
       compressPercent: Number(body.compressPercent || 0) || 0,

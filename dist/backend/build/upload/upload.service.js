@@ -46,6 +46,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.UploadService = void 0;
 const common_1 = require("@nestjs/common");
 const crypto_1 = require("crypto");
+const fs_1 = require("fs");
 const prisma_1 = require("../common/prisma");
 const crypto_service_1 = require("../common/crypto.service");
 const settings_service_1 = require("../settings/settings.service");
@@ -53,6 +54,7 @@ const sysconfig_service_1 = require("../settings/sysconfig.service");
 const channels_controller_1 = require("../channels/channels.controller");
 const storage_channel_service_1 = require("../storage/storage-channel.service");
 const adapter_factory_1 = require("../adapters/adapter.factory");
+const local_adapter_1 = require("../adapters/local.adapter");
 const file_view_1 = require("../common/file-view");
 const app_log_1 = require("../common/app-log");
 let UploadService = class UploadService {
@@ -936,13 +938,22 @@ let UploadService = class UploadService {
             throw new Error('主渠道记录不存在');
         const mainInfo = this.toChannelInfo(mainCh);
         const mainAdapter = (0, adapter_factory_1.createAdapter)(mainInfo);
-        const url = mainAdapter.buildDirectUrl((0, adapter_factory_1.toCopyInfo)(mainCopy), mainInfo);
-        if (!url)
-            throw new Error('无法构造主渠道直链');
-        const resp = await fetch(url);
-        if (!resp.ok)
-            throw new Error(`源文件拉取失败 HTTP ${resp.status}`);
-        const buf = Buffer.from(await resp.arrayBuffer());
+        let buf;
+        if (mainCh.type === 'local') {
+            const abs = (0, local_adapter_1.localFileAbs)(mainCopy.remoteKey);
+            if (!abs)
+                throw new Error('本地文件不存在，无法备份');
+            buf = await fs_1.promises.readFile(abs);
+        }
+        else {
+            const url = mainAdapter.buildDirectUrl((0, adapter_factory_1.toCopyInfo)(mainCopy), mainInfo);
+            if (!url)
+                throw new Error('无法构造主渠道直链');
+            const resp = await fetch(url);
+            if (!resp.ok)
+                throw new Error(`源文件拉取失败 HTTP ${resp.status}`);
+            buf = Buffer.from(await resp.arrayBuffer());
+        }
         const info = this.toChannelInfo(backup);
         const adapter = (0, adapter_factory_1.createAdapter)(info);
         const result = await adapter.upload({ buffer: buf, mime: rec.mime, originalName: rec.originalName }, mainCopy.remoteKey, info);

@@ -63,6 +63,21 @@
                         </el-checkbox-group>
                     </div>
                 </div>
+                <!-- 标签：只看有标签 / 只看没有标签（具体标签用筛选栏右侧的「标签筛选」按钮）
+                     位置紧随「文件类型」之后 -->
+                <div class="filter-section">
+                    <div class="filter-title">{{ $t('filter.tags') }}</div>
+                    <div class="filter-options">
+                        <el-checkbox-group v-model="localFilters.tags" @change="handleFilterChange('tags')">
+                            <el-checkbox
+                                v-for="option in tagPresenceOptions"
+                                :key="'tags-' + option.value"
+                                :label="option.value">
+                                {{ option.label }}
+                            </el-checkbox>
+                        </el-checkbox-group>
+                    </div>
+                </div>
                 <!-- 备份状态 -->
                 <div class="filter-section">
                     <div class="filter-title">{{ $t('filter.backupStatus') }}</div>
@@ -120,20 +135,6 @@
                                     {{ option.name }}
                                 </el-checkbox>
                             </template>
-                        </el-checkbox-group>
-                    </div>
-                </div>
-                <!-- 标签：只看有标签 / 只看没有标签（具体标签用筛选栏右侧的「标签筛选」按钮） -->
-                <div class="filter-section">
-                    <div class="filter-title">{{ $t('filter.tags') }}</div>
-                    <div class="filter-options">
-                        <el-checkbox-group v-model="localFilters.tags" @change="handleFilterChange('tags')">
-                            <el-checkbox
-                                v-for="option in tagPresenceOptions"
-                                :key="'tags-' + option.value"
-                                :label="option.value">
-                                {{ option.label }}
-                            </el-checkbox>
                         </el-checkbox-group>
                     </div>
                 </div>

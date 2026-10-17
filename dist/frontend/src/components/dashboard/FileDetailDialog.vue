@@ -160,7 +160,15 @@
             </el-descriptions-item>
             <el-descriptions-item :label="$t('fileDetail.fileTags')">
                 <div v-if="file?.metadata?.Tags && file?.metadata?.Tags.length > 0" style="display: flex; flex-wrap: wrap; gap: 5px;">
-                    <el-tag v-for="tag in file?.metadata?.Tags" :key="tag" size="small">{{ tag }}</el-tag>
+                    <!-- 点击标签 → 跳到文件管理页并按该标签筛选 -->
+                    <el-tag
+                        v-for="tag in file?.metadata?.Tags"
+                        :key="tag"
+                        size="small"
+                        class="detail-tag-link"
+                        :title="$t('fileDetail.jumpToTag')"
+                        @click="jumpToTag(tag)"
+                    >{{ tag }}</el-tag>
                 </div>
                 <span v-else style="color: var(--el-text-color-secondary);">{{ $t('fileDetail.noTags') }}</span>
             </el-descriptions-item>
@@ -187,7 +195,17 @@
                     <el-option :label="$t('fileDetail.rootCategory')" value="" />
                     <el-option v-for="p in folderOptions" :key="p" :label="p" :value="p" />
                 </el-select>
-                <span v-else>{{ file?.metadata?.Directory || $t('fileDetail.noCategory') }}</span>
+                <template v-else>
+                    <!-- 点击分类值 → 跳到文件管理页的对应分类目录 -->
+                    <a
+                        v-if="file?.metadata?.Directory"
+                        href="#"
+                        class="detail-jump-link"
+                        :title="$t('fileDetail.jumpToCategory')"
+                        @click.prevent="jumpToFolder"
+                    >{{ file.metadata.Directory }}</a>
+                    <span v-else style="color: var(--el-text-color-secondary);">{{ $t('fileDetail.noCategory') }}</span>
+                </template>
             </el-descriptions-item>
             <!-- 重定向状态：单独占满一整行（放在所有字段最后） -->
             <el-descriptions-item :label="$t('dashboard.redirect')" :span="descColumn">
@@ -283,7 +301,7 @@ export default {
                 Directory: ''
             },
             editSaving: false,
-            // 编辑态「文件分类」下拉的可选目录（来自 /api/manage/directoryTree）
+            // 编辑态「文件分类」下拉的可选目录（来自 /api/directoryTree）
             folderOptions: [],
             folderLoading: false,
             showRenameDialog: false,
@@ -515,6 +533,33 @@ export default {
             }
             return `${i === 0 ? v : v.toFixed(2)} ${units[i]}`;
         },
+        /**
+         * 跳到「文件管理」的对应分类目录。
+         * 复用 AdminDashBoard 已支持的 sessionStorage 约定（dashboardInitialFolder），
+         * 跳转后由该页面在 mounted 时读取并设置当前路径。
+         */
+        jumpToFolder() {
+            const dir = String(this.file?.metadata?.Directory || '').replace(/^\/+|\/+$/g, '');
+            sessionStorage.setItem('dashboardInitialFolder', dir ? `${dir}/` : '');
+            this.visible = false;
+            this.goDashboard();
+        },
+        /** 跳到「文件管理」并按该标签筛选（含该标签的文件） */
+        jumpToTag(tag) {
+            const name = String(tag || '').trim();
+            if (!name) return;
+            sessionStorage.setItem('dashboardInitialTag', name);
+            this.visible = false;
+            this.goDashboard();
+        },
+        /** 统一跳转：已在文件管理页时用刷新生效（同路径 push 不会重新挂载） */
+        goDashboard() {
+            if (this.$route && this.$route.path === '/dashboard') {
+                window.location.reload();
+                return;
+            }
+            this.$router.push('/dashboard');
+        },
         startEdit() {
             this.editForm.FileName = this.file?.metadata?.FileName || '';
             this.editForm.FileType = this.file?.metadata?.FileType || '';
@@ -523,11 +568,13 @@ export default {
             this.isEditing = true;
             this.loadFolderOptions();
         },
-        /** 拉取可选的分类目录（目录树 → 扁平路径列表） */
+        /** 拉取可选的分类目录（目录树 → 扁平路径列表）
+         *  注意接口前缀：目录树挂在 /api 根下（不是 /api/manage），
+         *  用错路径会 404，表现为「编辑时分类下拉是空的、选不到已有目录」。 */
         async loadFolderOptions() {
             this.folderLoading = true;
             try {
-                const res = await fetchWithAuth('/api/manage/directoryTree');
+                const res = await fetchWithAuth('/api/directoryTree');
                 const json = await res.json().catch(() => ({}));
                 const out = [];
                 const walk = (node, prefix) => {
@@ -819,6 +866,26 @@ export default {
     align-items: center;
     gap: 2px;
     max-width: 100%;
+}
+
+/* 详情里可点击的「文件分类」值：跳转到文件管理的对应目录 */
+.detail-jump-link {
+    color: var(--el-color-primary);
+    text-decoration: none;
+    word-break: break-all;
+    cursor: pointer;
+}
+.detail-jump-link:hover {
+    text-decoration: underline;
+}
+
+/* 详情里的标签：点击按该标签筛选文件 */
+.detail-tag-link {
+    cursor: pointer;
+}
+.detail-tag-link:hover {
+    color: var(--el-color-primary);
+    border-color: var(--el-color-primary);
 }
 .channel-copy-btn {
     padding: 2px 4px;

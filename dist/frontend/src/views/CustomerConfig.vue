@@ -22,7 +22,7 @@
                  ============================================================ -->
             <template v-if="activeModule === 'accounts'">
                 <div class="collect-switch">
-                    <span class="module-hint">{{ isAdminRole ? $t('userManage.accountsHint') : $t('userManage.accountsHintSelf') }}</span>
+                    <span class="module-hint" v-if="isAdminRole">{{ $t('userManage.accountsHint') }}</span>
                     <el-button v-if="isAdminRole" type="primary" size="small" class="create-user-btn" @click="openCreateDialog">
                         <font-awesome-icon icon="user-plus" class="create-icon"/>{{ $t('userManage.createUser') }}
                     </el-button>

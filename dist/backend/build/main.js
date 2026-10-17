@@ -12,6 +12,7 @@ const express_1 = __importDefault(require("express"));
 const path_1 = require("path");
 const fs_1 = require("fs");
 const app_module_1 = require("./app.module");
+const channels_controller_1 = require("./channels/channels.controller");
 const prisma_1 = require("./common/prisma");
 const auth_guard_1 = require("./auth/auth.guard");
 const rate_limit_1 = require("./common/rate-limit");
@@ -151,6 +152,12 @@ async function bootstrap() {
     const app = await core_1.NestFactory.create(app_module_1.AppModule, new platform_express_1.ExpressAdapter(server), { logger: ['error', 'warn', 'log'] });
     app.enableCors({ origin: true, credentials: true });
     await app.init();
+    try {
+        await app.get(channels_controller_1.ChannelsService).ensureBuiltinLocalChannel();
+    }
+    catch (err) {
+        console.warn(`[local-channel] 内置本地存储渠道初始化失败：${err.message}`);
+    }
     const port = Number(process.env.PORT || 3618);
     await app.listen(port, '0.0.0.0');
     console.log(`go-imgbed 已启动: http://localhost:${port}`);

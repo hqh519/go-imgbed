@@ -29,6 +29,7 @@ exports.CHANNEL_LABEL = {
     webdav: 'WebDAV',
     immich: 'Immich',
     custom: 'External',
+    local: 'Local',
 };
 exports.CHANNEL_SHORT = {
     easyimages: 'EI',
@@ -41,6 +42,7 @@ exports.CHANNEL_SHORT = {
     s3: 'S3',
     webdav: 'WD',
     custom: 'DIY',
+    local: 'LOCAL',
 };
 function channelShort(typeOrLabel) {
     const raw = String(typeOrLabel || '').trim();
