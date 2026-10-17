@@ -1,0 +1,1448 @@
+<template>
+    <div class="upload-settings" v-loading="loading">
+        <!-- 上传数据设置：外链分发 + 主备渠道 + 去重等上传相关全局配置 -->
+        <div class="page-header">
+            <h3 class="first-title">上传数据设置</h3>
+        </div>
+
+        <!-- 外链分发设置：模式 + 访问源一键切换 -->
+        <div class="storage-bar">
+            <div class="storage-row">
+                <div class="mb-item">
+                    <span class="mb-label">外链模式</span>
+                    <el-radio-group
+                        :model-value="storage.linkMode"
+                        size="small"
+                        @change="(v) => saveStorage({ linkMode: v })"
+                    >
+                        <el-radio-button label="proxy">代理模式</el-radio-button>
+                        <el-radio-button label="redirect">302 重定向</el-radio-button>
+                    </el-radio-group>
+                    <el-tooltip placement="top" raw-content>
+                        <template #content>
+                            <div style="max-width: min(360px, 78vw); line-height: 1.7;">
+                                <b>代理模式（默认）</b>：服务端拉取上游字节并转发，外链地址恒定不变，<br>
+                                支持 Range 断点/拖动播放，上游故障可自动降级。<br>
+                                <b>302 重定向</b>：由浏览器直接访问上游图床，服务端流量最小。
+                            </div>
+                        </template>
+                        <font-awesome-icon icon="question-circle" class="help-icon"/>
+                    </el-tooltip>
+                </div>
+                <div class="mb-item">
+                    <span class="mb-label">当前访问源</span>
+                    <el-radio-group
+                        :model-value="storage.accessChannel"
+                        size="small"
+                        :disabled="!backupChannel"
+                        @change="(v) => saveStorage({ accessChannel: v })"
+                    >
+                        <el-radio-button label="main">主渠道</el-radio-button>
+                        <el-radio-button label="backup">备份渠道</el-radio-button>
+                    </el-radio-group>
+                    <span class="mb-hint">切换后所有存量外链立即生效</span>
+                </div>
+                <div class="mb-item mb-right">
+                    <el-button size="small" text type="primary" @click="showProxyConfig = !showProxyConfig">
+                        <font-awesome-icon icon="sliders-h" style="margin-right: 4px;"/>代理参数
+                    </el-button>
+                </div>
+            </div>
+
+            <div class="storage-row">
+                <div class="mb-item">
+                    <span class="mb-label">主渠道（同步上传）</span>
+                    <template v-if="mainChannel">
+                        <ChannelIcon :type="mainChannel.type" class="mb-icon"/>
+                        <span class="mb-name">{{ mainChannel.name }}</span>
+                        <el-tag size="small" type="success">启用中</el-tag>
+                    </template>
+                    <span v-else class="mb-empty">未设置</span>
+                </div>
+                <div class="mb-item">
+                    <span class="mb-label">备份渠道（异步双写）</span>
+                    <template v-if="backupChannel">
+                        <ChannelIcon :type="backupChannel.type" class="mb-icon"/>
+                        <span class="mb-name">{{ backupChannel.name }}</span>
+                        <el-tag size="small" type="warning">已启用</el-tag>
+                    </template>
+                    <span v-else class="mb-empty">未设置（不启用双写）</span>
+                </div>
+            </div>
+
+            <div class="storage-row">
+                <div class="mb-item domain-item">
+                    <span class="mb-label">自定义访问域名</span>
+                    <el-input
+                        v-model="storage.customDomain"
+                        size="small"
+                        placeholder="https://img.example.com（留空则使用本站域名）"
+                        clearable
+                        class="domain-input"
+                        @change="saveStorage({ customDomain: storage.customDomain })"
+                    />
+                    <el-tooltip placement="top" raw-content>
+                        <template #content>
+                            <div style="max-width: min(360px, 78vw); line-height: 1.7;">
+                                上传页生成的文件外链统一使用该域名，例如 <b>https://img.example.com/file/xxx.png</b>。<br>
+                                留空则使用本站访问地址。可带协议，也可只填域名（默认按 <b>https</b> 处理）。
+                            </div>
+                        </template>
+                        <font-awesome-icon icon="question-circle" class="help-icon"/>
+                    </el-tooltip>
+                </div>
+            </div>
+
+            <div class="storage-row">
+                <div class="mb-item">
+                    <span class="mb-label">上传去重</span>
+                    <el-switch
+                        :model-value="storage.dedupEnabled"
+                        @change="(v) => saveStorage({ dedupEnabled: v })"
+                    />
+                    <span class="mb-hint">开启后：先比文件大小（快速过滤），大小一致再比 MD5（精确校验），重复文件不再上传、直接返回已有外链</span>
+                </div>
+                <div class="mb-item mb-right"></div>
+            </div>
+
+            <div class="storage-row">
+                <div class="mb-item">
+                    <span class="mb-label">{{ $t('sysUpload.dedupScope') }}</span>
+                    <el-radio-group
+                        :model-value="storage.dedupScope"
+                        size="small"
+                        :disabled="!storage.dedupEnabled"
+                        @change="(v) => saveStorage({ dedupScope: v })"
+                    >
+                        <el-radio-button label="all">{{ $t('sysUpload.dedupScopeAll') }}</el-radio-button>
+                        <el-radio-button label="channel">{{ $t('sysUpload.dedupScopeChannel') }}</el-radio-button>
+                    </el-radio-group>
+                    <el-tooltip placement="top" raw-content>
+                        <template #content>
+                            <div style="max-width: min(420px, 78vw); line-height: 1.7;" v-html="$t('sysUpload.dedupScopeTip')"></div>
+                        </template>
+                        <font-awesome-icon icon="question-circle" class="help-icon"/>
+                    </el-tooltip>
+                </div>
+            </div>
+
+            <div v-if="showProxyConfig" class="storage-row proxy-config">
+                <div class="mb-item">
+                    <span class="mb-label">上游超时</span>
+                    <el-input-number v-model="storage.proxyTimeoutMs" :min="1000" :max="120000" :step="1000" size="small" controls-position="right"/>
+                    <span class="mb-hint">毫秒</span>
+                </div>
+                <div class="mb-item">
+                    <span class="mb-label">客户端缓存</span>
+                    <el-input-number v-model="storage.proxyCacheSeconds" :min="0" :max="31536000" :step="3600" size="small" controls-position="right"/>
+                    <span class="mb-hint">秒（0 = 不缓存）</span>
+                </div>
+                <div class="mb-item mb-right">
+                    <el-button size="small" type="primary" @click="saveStorage({ proxyTimeoutMs: storage.proxyTimeoutMs, proxyCacheSeconds: storage.proxyCacheSeconds })">保存参数</el-button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 存储渠道管理：渠道分组列表（每类可折叠） -->
+        <div class="page-header channel-section-header">
+            <h3 class="first-title">
+                存储渠道管理
+                <el-tooltip placement="right" raw-content>
+                    <template #content>
+                        <div style="max-width: min(420px, 78vw); line-height: 1.7;">
+                            支持 10 类渠道：EasyImages、Lsky Pro、腾讯云 COS、阿里云 OSS、Immich、MinIO、<br>
+                            Cloudflare R2、S3 兼容存储、WebDAV、自定义 Web 通道。<br>
+                            其中 <b>腾讯云 COS / 阿里云 OSS / MinIO / R2 / S3 / WebDAV / Immich 走各自专属通道</b>；<br>
+                            EasyImages / Lsky Pro / 自定义 Web 通道 走<b>通用 HTTP 上传适配器</b>（按预设字段自动适配）。<br>
+                            可指定 1 个<b>主渠道</b>（同步上传）与 1 个<b>备份渠道</b>（异步上传，不阻塞响应）。
+                        </div>
+                    </template>
+                    <font-awesome-icon icon="question-circle" class="help-icon"/>
+                </el-tooltip>
+            </h3>
+            <div class="header-actions">
+                <CustomSelect
+                    v-model="channelFilter"
+                    :options="filterOptions"
+                    placeholder="按渠道类型筛选"
+                    width="180px"
+                />
+                <el-button type="primary" @click="openAddDialog" class="add-btn">
+                    <font-awesome-icon icon="plus" style="margin-right: 6px;"/>
+                    添加渠道
+                </el-button>
+            </div>
+        </div>
+        <el-divider class="channel-section-divider"/>
+
+        <!-- 渠道卡片列表 - 按类型分组 -->
+        <div v-for="channelType in filteredChannels" :key="channelType.value" class="channel-group">
+            <div class="group-header">
+                <div class="group-title">
+                    <ChannelIcon :type="channelType.value" class="group-icon"/>
+                    <span>{{ channelType.label }}</span>
+                    <el-tag size="small" type="info" class="channel-count">
+                        {{ getChannelList(channelType.value).length }}
+                    </el-tag>
+                    <el-tag v-if="channelType.dedicated" size="small" type="primary" effect="plain" :title="$t('sysUpload.dedicatedChannel')">{{ $t('sysUpload.dedicatedChannel') }}</el-tag>
+                    <el-tooltip v-else-if="channelType.generic" :content="$t('sysUpload.genericChannelTip')" placement="top" raw-content>
+                        <el-tag size="small" type="info" effect="plain">{{ $t('sysUpload.genericChannel') }}</el-tag>
+                    </el-tooltip>
+                </div>
+                <!-- 收缩按钮：折叠/展开该分类下的渠道列表 -->
+                <el-button
+                    class="group-collapse-btn"
+                    text
+                    size="small"
+                    :title="isGroupCollapsed(channelType.value) ? '展开' : '收缩'"
+                    @click="toggleGroup(channelType.value)"
+                >
+                    <font-awesome-icon :icon="isGroupCollapsed(channelType.value) ? 'chevron-down' : 'chevron-up'"/>
+                </el-button>
+            </div>
+
+            <!-- 渠道卡片网格 -->
+            <div class="channel-cards" v-if="getChannelList(channelType.value).length > 0" v-show="!isGroupCollapsed(channelType.value)">
+                <div
+                    v-for="channel in getChannelList(channelType.value)"
+                    :key="channel.id"
+                    class="channel-card"
+                    :class="[channelType.value, { 'disabled': !channel.enabled }]"
+                >
+                    <div class="card-header">
+                        <div class="card-title">
+                            <span class="channel-name">{{ channel.name }}</span>
+                            <el-tag v-if="channel.isMain" size="small" type="success">主渠道</el-tag>
+                            <el-tag v-else-if="channel.isBackup" size="small" type="warning">备份渠道</el-tag>
+                        </div>
+                        <el-switch
+                            :model-value="channel.enabled"
+                            size="small"
+                            @change="(val) => toggleChannelEnabled(channel, val)"
+                        />
+                    </div>
+                    <div class="card-body">
+                        <div class="card-info">
+                            <div
+                                v-for="[k, label] in summaryKeys(channelType.value)"
+                                :key="k"
+                                class="info-item"
+                                v-show="channel.config?.[k]"
+                            >
+                                <font-awesome-icon icon="link" class="info-icon"/>
+                                <span class="info-text" :title="channel.config?.[k]">{{ label }}: {{ channel.config?.[k] }}</span>
+                            </div>
+                            <div v-if="channel.config?.remark" class="info-item">
+                                <font-awesome-icon icon="comment-dots" class="info-icon"/>
+                                <span class="info-text" :title="channel.config.remark">备注: {{ channel.config.remark }}</span>
+                            </div>
+                        </div>
+                        <!-- 容量显示 -->
+                        <div v-if="channel.quota?.enabled" class="quota-mini">
+                            <el-progress
+                                :percentage="quotaPct(channel)"
+                                :status="quotaStatus(channel)"
+                                :stroke-width="6"
+                            />
+                            <span class="quota-text">{{ quotaText(channel) }}</span>
+                        </div>
+                    </div>
+                    <div class="card-actions">
+                        <el-button text type="primary" size="small" @click="testChannel(channel)">
+                            <font-awesome-icon icon="plug" style="margin-right: 4px;"/>测试
+                        </el-button>
+                        <el-button text type="primary" size="small" @click="openDetailDialog(channelType.value, channel)">
+                            <font-awesome-icon icon="eye" style="margin-right: 4px;"/>详情
+                        </el-button>
+                        <el-button text type="primary" size="small" @click="openEditDialog(channelType.value, channel)">
+                            <font-awesome-icon icon="edit" style="margin-right: 4px;"/>编辑
+                        </el-button>
+                        <el-dropdown trigger="click" @command="(cmd) => handleCardCommand(cmd, channel)">
+                            <el-button text type="primary" size="small">
+                                <font-awesome-icon icon="ellipsis-h" style="margin-right: 4px;"/>更多
+                            </el-button>
+                            <template #dropdown>
+                                <el-dropdown-menu>
+                                    <el-dropdown-item command="setMain" :disabled="channel.isMain">
+                                        <font-awesome-icon icon="star" style="margin-right: 6px;"/>设为主渠道
+                                    </el-dropdown-item>
+                                    <el-dropdown-item command="setBackup" :disabled="channel.isBackup">
+                                        <font-awesome-icon icon="copy" style="margin-right: 6px;"/>设为备份渠道
+                                    </el-dropdown-item>
+                                    <el-dropdown-item
+                                        command="clearFlag"
+                                        :disabled="!channel.isMain && !channel.isBackup"
+                                    >
+                                        <font-awesome-icon icon="times" style="margin-right: 6px;"/>取消主/备标记
+                                    </el-dropdown-item>
+                                    <el-dropdown-item divided command="delete">
+                                        <span style="color: var(--el-color-danger);">
+                                            <font-awesome-icon icon="trash-alt" style="margin-right: 6px;"/>删除渠道
+                                        </span>
+                                    </el-dropdown-item>
+                                </el-dropdown-menu>
+                            </template>
+                        </el-dropdown>
+                    </div>
+                </div>
+            </div>
+            <div v-else class="empty-tip" v-show="!isGroupCollapsed(channelType.value)">
+                <font-awesome-icon icon="inbox" class="empty-icon"/>
+                <span>暂无 {{ channelType.label }} 渠道</span>
+            </div>
+        </div>
+
+        <!-- 添加渠道弹窗 -->
+        <el-dialog
+            v-model="showAddDialog"
+            title="添加存储渠道"
+            class="channel-dialog"
+            destroy-on-close
+            @closed="resetAddForm"
+        >
+            <el-form :model="newChannel" label-position="top" ref="addForm" :rules="formRules">
+                <el-form-item label="渠道类型" prop="type">
+                    <el-select v-model="newChannel.type" placeholder="请选择渠道类型" style="width: 100%;" @change="onChannelTypeChange">
+                        <el-option v-for="ch in channels" :key="ch.value" :label="ch.label" :value="ch.value">
+                            <span class="channel-type-option">
+                                <ChannelIcon :type="ch.value" class="select-option-icon"/>
+                                <span>{{ ch.label }}</span>
+                                <el-tag v-if="ch.dedicated" size="small" type="primary" effect="plain" style="margin-left: 6px;">{{ $t('sysUpload.dedicatedChannel') }}</el-tag>
+                                <el-tag v-else-if="ch.generic" size="small" type="info" effect="plain" style="margin-left: 6px;">{{ $t('sysUpload.genericChannel') }}</el-tag>
+                            </span>
+                        </el-option>
+                    </el-select>
+                </el-form-item>
+                <el-form-item label="渠道名称" prop="name">
+                    <el-input v-model="newChannel.name" placeholder="仅支持中英文、数字、下划线、连字符"/>
+                    <template #label>
+                        <span>渠道名称</span>
+                        <el-tooltip content="名称不能重复（重名会拒绝保存）；保存后仍可修改，改完请在保存时留意是否重名。备份渠道需与主渠道不同账户" placement="top">
+                            <font-awesome-icon icon="exclamation-triangle" class="inline-warning-icon"/>
+                        </el-tooltip>
+                    </template>
+                </el-form-item>
+
+                <!-- 动态字段 -->
+                <template v-if="newChannel.type">
+                    <div v-if="currentTypeTip" class="form-warning" style="margin-top: 0;">
+                        <font-awesome-icon icon="info-circle" style="margin-right: 6px;"/>
+                        <span>{{ currentTypeTip }}</span>
+                    </div>
+                    <ChannelFields
+                        :fields="currentFields"
+                        :model="newChannel.config"
+                    />
+                    <el-form-item label="备注（可选）">
+                        <el-input
+                            v-model="newChannel.config.remark"
+                            type="textarea"
+                            :autosize="{ minRows: 2, maxRows: 5 }"
+                            placeholder="给这个渠道写点备注，例如：用途、密钥归属、到期时间等"
+                        />
+                    </el-form-item>
+                    <div class="form-hint-bar">
+                        <span class="hint-text">建议先「测试连接」确认配置可用，再保存。</span>
+                        <el-button size="small" :loading="testing" @click="testDraft">测试连接</el-button>
+                    </div>
+                    <div v-if="testResult" class="test-result" :class="testResult.success ? 'ok' : 'fail'">
+                        <font-awesome-icon :icon="testResult.success ? 'check-circle' : 'times-circle'" style="margin-right: 6px;"/>
+                        <span>{{ testResult.message }}</span>
+                        <a v-if="testResult.url" :href="testResult.url" target="_blank" rel="noreferrer" style="margin-left: 8px;">查看直链</a>
+                    </div>
+                </template>
+            </el-form>
+            <template #footer>
+                <el-button @click="showAddDialog = false">取消</el-button>
+                <el-button type="primary" :loading="saving" @click="confirmAddChannel">确认添加</el-button>
+            </template>
+        </el-dialog>
+
+        <!-- 详情弹窗 -->
+        <el-dialog v-model="showDetailDialog" :title="`渠道详情 - ${currentChannel?.name || ''}`" class="channel-dialog">
+            <el-descriptions :column="1" border class="channel-details">
+                <el-descriptions-item label="渠道名称">{{ currentChannel?.name }}</el-descriptions-item>
+                <el-descriptions-item label="渠道 ID">
+                    <div class="channel-id-row">
+                        <span class="channel-id-value">{{ currentChannel?.code || '-' }}</span>
+                        <el-button text size="small" :disabled="!currentChannel?.code" @click="copyChannelId(currentChannel.code)">
+                            <font-awesome-icon icon="copy"/>
+                        </el-button>
+                    </div>
+                </el-descriptions-item>
+                <el-descriptions-item label="渠道类型">{{ getChannelTypeLabel(currentChannelType) }}</el-descriptions-item>
+                <el-descriptions-item label="状态">
+                    <el-tag :type="currentChannel?.enabled ? 'success' : 'info'">
+                        {{ currentChannel?.enabled ? '已启用' : '已禁用' }}
+                    </el-tag>
+                    <el-tag v-if="currentChannel?.isMain" type="success" style="margin-left: 6px;">主渠道</el-tag>
+                    <el-tag v-if="currentChannel?.isBackup" type="warning" style="margin-left: 6px;">备份渠道</el-tag>
+                </el-descriptions-item>
+                <el-descriptions-item
+                    v-for="f in detailFields"
+                    :key="f.key"
+                    :label="f.label"
+                >
+                    <el-input
+                        v-if="f.type === 'textarea'"
+                        :model-value="displayConfigValue(f)"
+                        type="textarea"
+                        :autosize="{ minRows: 2 }"
+                        readonly
+                    />
+                    <span v-else>{{ displayConfigValue(f) }}</span>
+                </el-descriptions-item>
+                <el-descriptions-item label="备注">
+                    <span v-if="currentChannel?.config?.remark" style="white-space: pre-wrap;">{{ currentChannel.config.remark }}</span>
+                    <span v-else style="color: var(--el-text-color-secondary);">无</span>
+                </el-descriptions-item>
+            </el-descriptions>
+            <template #footer>
+                <el-button @click="showDetailDialog = false">关闭</el-button>
+                <el-button @click="testChannel(currentChannel)">测试连接</el-button>
+                <el-button type="primary" @click="openEditFromDetail">编辑</el-button>
+            </template>
+        </el-dialog>
+
+        <!-- 编辑弹窗 -->
+        <el-dialog v-model="showEditDialog" :title="`编辑渠道 - ${editChannel?.name || ''}`" class="channel-dialog" destroy-on-close>
+            <el-form label-position="top">
+                <el-form-item label="渠道 ID">
+                    <!-- 渠道 ID = 6 位 code，API Token / S3 协议的 bucket、外链 ?channel= 都用它 -->
+                    <div class="channel-id-row">
+                        <span class="channel-id-value" :title="editChannel.code">{{ editChannel.code || '-' }}</span>
+                        <el-button text size="small" :disabled="!editChannel.code" @click="copyChannelId(editChannel.code)">
+                            <font-awesome-icon icon="copy"/>
+                        </el-button>
+                    </div>
+                </el-form-item>
+                <el-form-item label="渠道名称">
+                    <el-input v-model="editChannel.name" placeholder="仅支持中英文、数字、下划线、连字符"/>
+                    <div class="form-hint-bar form-hint-bar--inline">
+                        <span class="hint-text">名称可以修改；保存时会校验是否与其它渠道重名，重名无法保存。</span>
+                    </div>
+                </el-form-item>
+                <el-form-item label="启用该渠道">
+                    <el-switch v-model="editChannel.enabled"/>
+                </el-form-item>
+                <ChannelFields
+                    :fields="currentFields"
+                    :model="editChannel.config"
+                />
+                <el-form-item label="备注（可选）">
+                    <el-input
+                        v-model="editChannel.config.remark"
+                        type="textarea"
+                        :autosize="{ minRows: 2, maxRows: 5 }"
+                        placeholder="给这个渠道写点备注，例如：用途、密钥归属、到期时间等"
+                    />
+                </el-form-item>
+                <div class="form-hint-bar">
+                    <span class="hint-text">密钥留空或显示 **** 表示不修改原值。</span>
+                    <el-button size="small" :loading="testing" @click="testEditChannel">测试连接</el-button>
+                </div>
+                <div v-if="testResult" class="test-result" :class="testResult.success ? 'ok' : 'fail'">
+                    <font-awesome-icon :icon="testResult.success ? 'check-circle' : 'times-circle'" style="margin-right: 6px;"/>
+                    <span>{{ testResult.message }}</span>
+                </div>
+            </el-form>
+            <template #footer>
+                <el-button @click="showEditDialog = false">取消</el-button>
+                <el-button type="primary" :loading="saving" @click="confirmEditChannel">保存修改</el-button>
+            </template>
+        </el-dialog>
+    </div>
+</template>
+
+<script>
+import fetchWithAuth from '@/utils/fetchWithAuth';
+import ChannelIcon from '@/components/icons/ChannelIcon.vue';
+import ChannelFields from './ChannelFields.vue';
+import CustomSelect from './CustomSelect.vue';
+import { CHANNEL_TYPES, SUMMARY_KEYS, TYPE_TIPS, fieldsOf, buildDefaults, visibleFields } from './channel-schema';
+import { copyText } from '@/utils/clipboard';
+
+export default {
+    name: 'SysCogUpload',
+    components: {
+        ChannelIcon,
+        ChannelFields,
+        CustomSelect
+    },
+    data() {
+        return {
+            channelFilter: '',
+            channels: CHANNEL_TYPES,
+
+            // 每个渠道分类的折叠状态（key = 渠道类型 value）
+            collapsedGroups: {},
+
+            // 按类型分组的渠道数据（来自 /api/manage/channels）
+            groups: {},
+
+            // 外链分发设置（/api/manage/storage）
+            storage: {
+                linkMode: 'proxy',
+                accessChannel: 'main',
+                proxyTimeoutMs: 15000,
+                proxyCacheSeconds: 86400,
+                dedupEnabled: false,
+                dedupScope: 'all',
+                customDomain: ''
+            },
+            showProxyConfig: false,
+
+            showAddDialog: false,
+            showDetailDialog: false,
+            showEditDialog: false,
+
+            currentChannelType: '',
+            currentChannel: null,
+            editChannel: { name: '', enabled: true, config: {} },
+
+            newChannel: { type: '', name: '', config: {} },
+
+            testing: false,
+            testResult: null,
+            saving: false,
+            loading: false,
+
+            formRules: {
+                type: [{ required: true, message: '请选择渠道类型', trigger: 'change' }],
+                name: [
+                    { required: true, message: '请输入渠道名称', trigger: 'blur' },
+                    { pattern: /^[\u4e00-\u9fa5a-zA-Z0-9_-]+$/, message: '仅支持中英文、数字、下划线、连字符', trigger: 'blur' }
+                ]
+            }
+        };
+    },
+    computed: {
+        filterOptions() {
+            return [
+                { value: '', label: '全部类型' },
+                ...this.channels.map((ch) => ({ value: ch.value, label: ch.label, channelType: ch.value }))
+            ];
+        },
+        filteredChannels() {
+            if (!this.channelFilter) return this.channels;
+            return this.channels.filter((ch) => ch.value === this.channelFilter);
+        },
+        allChannels() {
+            const out = [];
+            for (const t of this.channels) {
+                for (const c of (this.groups[t.value] || [])) out.push(c);
+            }
+            return out;
+        },
+        mainChannel() {
+            return this.allChannels.find((c) => c.isMain) || null;
+        },
+        backupChannel() {
+            return this.allChannels.find((c) => c.isBackup) || null;
+        },
+        currentFields() {
+            const type = this.showAddDialog ? this.newChannel.type : this.currentChannelType;
+            return type ? fieldsOf(type) : [];
+        },
+        detailFields() {
+            // 「启用容量限制」未开启时不展示容量上限 / 告警阈值
+            return visibleFields(this.currentFields, this.currentChannel?.config);
+        },
+        currentTypeTip() {
+            return TYPE_TIPS[this.newChannel.type] || '';
+        }
+    },
+    methods: {
+        /** 渠道分类折叠 / 展开 */
+        isGroupCollapsed(type) {
+            return this.collapsedGroups[type] === true
+        },
+        toggleGroup(type) {
+            this.collapsedGroups = { ...this.collapsedGroups, [type]: !this.collapsedGroups[type] }
+        },
+        getChannelList(type) {
+            return this.groups[type] || [];
+        },
+        getChannelTypeLabel(type) {
+            const ch = this.channels.find((c) => c.value === type);
+            return ch ? ch.label : type;
+        },
+        summaryKeys(type) {
+            return SUMMARY_KEYS[type] || [];
+        },
+        displayConfigValue(f) {
+            const v = this.currentChannel?.config?.[f.key];
+            if (v === undefined || v === null || v === '') return '未设置';
+            if (f.type === 'switch') return v === 'true' ? '是' : '否';
+            return v;
+        },
+
+        /* ------------ 数据加载 ------------ */
+        async loadChannels() {
+            this.loading = true;
+            try {
+                const resp = await fetchWithAuth('/api/manage/channels');
+                if (resp.ok) {
+                    const data = await resp.json();
+                    const next = {};
+                    for (const t of this.channels) next[t.value] = data[t.value] || [];
+                    this.groups = next;
+                }
+            } catch (e) {
+                console.error('加载渠道失败', e);
+            } finally {
+                this.loading = false;
+            }
+        },
+
+        /* ------------ 外链分发设置 ------------ */
+        async loadStorage() {
+            try {
+                const resp = await fetchWithAuth('/api/manage/storage');
+                if (resp.ok) {
+                    const d = await resp.json();
+                    this.storage = {
+                        linkMode: d.linkMode || 'proxy',
+                        accessChannel: d.accessChannel || 'main',
+                        proxyTimeoutMs: d.proxyTimeoutMs ?? 15000,
+                        proxyCacheSeconds: d.proxyCacheSeconds ?? 86400,
+                        dedupEnabled: d.dedupEnabled === true,
+                        dedupScope: d.dedupScope === 'channel' ? 'channel' : 'all',
+                        customDomain: d.customDomain || ''
+                    };
+                }
+            } catch (e) {
+                console.error('加载分发设置失败', e);
+            }
+        },
+        async saveStorage(patch) {
+            try {
+                const resp = await fetchWithAuth('/api/manage/storage', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(patch)
+                });
+                const d = await resp.json();
+                if (d.success) {
+                    Object.assign(this.storage, patch);
+                    this.$message.success('已生效');
+                } else {
+                    this.$message.error(d.message || '保存失败');
+                }
+            } catch (e) {
+                this.$message.error('保存失败：' + e.message);
+            }
+        },
+
+        /* ------------ 表单 ------------ */
+        openAddDialog() {
+            this.resetAddForm();
+            this.showAddDialog = true;
+        },
+        resetAddForm() {
+            this.newChannel = { type: '', name: '', config: {} };
+            this.testResult = null;
+        },
+        onChannelTypeChange(type) {
+            this.newChannel.config = buildDefaults(type);
+            this.testResult = null;
+        },
+        collectConfig(model) {
+            // 全部转换为字符串，布尔转 'true'/'false'（与后端适配器约定一致）
+            const out = {};
+            for (const [k, v] of Object.entries(model || {})) {
+                if (v === undefined || v === null) continue;
+                if (typeof v === 'boolean') out[k] = v ? 'true' : 'false';
+                else out[k] = String(v);
+            }
+            return out;
+        },
+
+        async confirmAddChannel() {
+            this.$refs.addForm.validate(async (valid) => {
+                if (!valid) return;
+                this.saving = true;
+                try {
+                    const resp = await fetchWithAuth('/api/manage/channels', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            name: this.newChannel.name,
+                            type: this.newChannel.type,
+                            config: this.collectConfig(this.newChannel.config)
+                        })
+                    });
+                    const data = await resp.json();
+                    if (data.success) {
+                        this.$message.success('渠道添加成功');
+                        this.showAddDialog = false;
+                        await this.loadChannels();
+                    } else {
+                        this.$message.error(data.message || '添加失败');
+                    }
+                } catch (e) {
+                    this.$message.error('添加失败：' + e.message);
+                } finally {
+                    this.saving = false;
+                }
+            });
+        },
+
+        openDetailDialog(type, channel) {
+            this.currentChannelType = type;
+            this.currentChannel = channel;
+            this.showDetailDialog = true;
+        },
+        async openEditDialog(type, channel) {
+            this.currentChannelType = type;
+            this.editChannel = {
+                id: channel.id,
+                code: channel.code || '',
+                name: channel.name,
+                enabled: channel.enabled,
+                config: this.normalizeForEdit(type, channel.config || {})
+            };
+            this.testResult = null;
+            this.showEditDialog = true;
+            /*
+             * 列表接口出于安全只回脱敏值（形如 AKID****1234），「小眼睛」点开看到的也只是掩码。
+             * 这里单独取一次明文回填，让凭据在编辑弹窗里真正完整可见。
+             * 拉取失败不影响编辑：表单保持脱敏值，保存时后端会跳过含 **** 的字段（不覆盖原密文）。
+             */
+            try {
+                const resp = await fetchWithAuth(`/api/manage/channels/${channel.id}/plain`);
+                const data = await resp.json();
+                if (data && data.success && data.config) {
+                    const plain = this.normalizeForEdit(type, data.config);
+                    Object.keys(plain).forEach((k) => { this.editChannel.config[k] = plain[k]; });
+                }
+            } catch (e) {
+                /* 明文拉取失败：保持脱敏值即可 */
+            }
+        },
+        async copyChannelId(code) {
+            if (!code) return;
+            const ok = await copyText(String(code));
+            this.$message({ type: ok ? 'success' : 'error', message: ok ? '已复制渠道 ID' : '复制失败，请手动选择复制' });
+        },
+        openEditFromDetail() {
+            this.showDetailDialog = false;
+            this.openEditDialog(this.currentChannelType, this.currentChannel);
+        },
+        /** 回填编辑表单：switch 字段转为布尔，缺省字段补默认值 */
+        normalizeForEdit(type, config) {
+            const out = { ...config };
+            for (const f of fieldsOf(type)) {
+                if (f.type === 'switch') {
+                    out[f.key] = out[f.key] === true || out[f.key] === 'true';
+                } else if (out[f.key] === undefined) {
+                    out[f.key] = f.def !== undefined ? f.def : '';
+                }
+            }
+            return out;
+        },
+
+        async confirmEditChannel() {
+            this.saving = true;
+            try {
+                const resp = await fetchWithAuth(`/api/manage/channels/${this.editChannel.id}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        name: this.editChannel.name,
+                        enabled: this.editChannel.enabled,
+                        config: this.collectConfig(this.editChannel.config)
+                    })
+                });
+                const data = await resp.json();
+                if (data.success) {
+                    this.$message.success('保存成功');
+                    this.showEditDialog = false;
+                    await this.loadChannels();
+                } else {
+                    this.$message.error(data.message || '保存失败');
+                }
+            } catch (e) {
+                this.$message.error('保存失败：' + e.message);
+            } finally {
+                this.saving = false;
+            }
+        },
+
+        /* ------------ 渠道操作 ------------ */
+        async toggleChannelEnabled(channel, enabled) {
+            await this.patchChannel(channel.id, { enabled });
+        },
+        async handleCardCommand(cmd, channel) {
+            if (cmd === 'setMain') return this.patchChannel(channel.id, { isMain: true, isBackup: false });
+            if (cmd === 'setBackup') return this.patchChannel(channel.id, { isBackup: true, isMain: false });
+            if (cmd === 'clearFlag') return this.patchChannel(channel.id, { isMain: false, isBackup: false });
+            if (cmd === 'delete') return this.deleteChannel(channel);
+        },
+        async patchChannel(id, patch) {
+            try {
+                const resp = await fetchWithAuth(`/api/manage/channels/${id}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(patch)
+                });
+                const data = await resp.json();
+                if (data.success) {
+                    await this.loadChannels();
+                } else {
+                    this.$message.error(data.message || '操作失败');
+                }
+            } catch (e) {
+                this.$message.error('操作失败：' + e.message);
+            }
+        },
+        deleteChannel(channel) {
+            this.$confirm(
+                `确定删除渠道「${channel.name}」吗？若该渠道仍有文件副本将无法删除。`,
+                '删除确认',
+                { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' }
+            ).then(async () => {
+                try {
+                    const resp = await fetchWithAuth(`/api/manage/channels/${channel.id}`, { method: 'DELETE' });
+                    const data = await resp.json();
+                    if (data.success) {
+                        this.$message.success('已删除');
+                        await this.loadChannels();
+                    } else {
+                        this.$message.error(data.message || '删除失败');
+                    }
+                } catch (e) {
+                    this.$message.error('删除失败：' + e.message);
+                }
+            }).catch(() => {});
+        },
+
+        /* ------------ 连通性测试 ------------ */
+        async runTest(payload) {
+            this.testing = true;
+            this.testResult = null;
+            try {
+                const resp = await fetchWithAuth('/api/manage/channels/test', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await resp.json();
+                this.testResult = {
+                    success: !!data.success,
+                    message: data.message || (data.success ? '连接正常' : '连接失败'),
+                    url: data.data?.url || ''
+                };
+            } catch (e) {
+                this.testResult = { success: false, message: '测试失败：' + e.message, url: '' };
+            } finally {
+                this.testing = false;
+            }
+        },
+        testDraft() {
+            if (!this.newChannel.type) return this.$message.warning('请先选择渠道类型');
+            return this.runTest({
+                type: this.newChannel.type,
+                config: this.collectConfig(this.newChannel.config)
+            });
+        },
+        testEditChannel() {
+            return this.runTest({
+                id: this.editChannel.id,
+                type: this.currentChannelType,
+                config: this.collectConfig(this.editChannel.config)
+            });
+        },
+        testChannel(channel) {
+            if (!channel) return;
+            return this.runTest({ id: channel.id, type: channel.type, config: {} });
+        },
+
+        /* ------------ 容量展示（由后端返回的 quota 字段驱动） ------------ */
+        quotaPct(channel) {
+            const used = Number(channel.quota?.usedMB || 0) / 1024;
+            const limit = Number(channel.quota?.limitGB || 10) || 10;
+            return Math.min(100, Math.round((used / limit) * 1000) / 10);
+        },
+        quotaStatus(channel) {
+            const p = this.quotaPct(channel);
+            const threshold = Number(channel.quota?.threshold || 95);
+            if (p >= threshold) return 'exception';
+            if (p >= 80) return 'warning';
+            return 'success';
+        },
+        quotaText(channel) {
+            const used = Number(channel.quota?.usedMB || 0) / 1024;
+            const limit = Number(channel.quota?.limitGB || 10) || 10;
+            return `${used.toFixed(2)} / ${limit} GB`;
+        }
+    },
+    mounted() {
+        this.loadChannels();
+        this.loadStorage();
+    }
+};
+</script>
+
+<style scoped>
+.upload-settings {
+    min-height: 500px;
+    overflow-x: hidden;
+}
+
+/* 页面头部 */
+.page-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 18px;
+    flex-wrap: wrap;
+    gap: 12px;
+}
+
+.first-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0;
+    font-size: 20px;
+    font-weight: 600;
+}
+
+.help-icon {
+    cursor: pointer;
+    color: var(--el-text-color-secondary);
+    font-size: 14px;
+}
+
+.inline-warning-icon {
+    color: var(--el-text-color-secondary);
+    cursor: pointer;
+    font-size: 13px;
+    margin-left: 6px;
+    transition: color 0.2s;
+}
+
+.inline-warning-icon:hover {
+    color: var(--el-color-primary);
+}
+
+.add-btn {
+    border-radius: 8px;
+    transition: background-color 0.2s ease, border-color 0.2s ease;
+}
+
+.header-actions {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+}
+
+.header-actions :deep(.el-button) {
+    border-radius: 8px;
+}
+
+/* 外链分发设置条 */
+.storage-bar {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-bottom: 24px;
+    padding: 14px 20px;
+    border-radius: 14px;
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
+    box-shadow: var(--glass-shadow);
+}
+
+.storage-row {
+    display: flex;
+    align-items: center;
+    gap: 22px;
+    flex-wrap: wrap;
+}
+
+.storage-row.proxy-config {
+    padding-top: 10px;
+    border-top: 1px dashed var(--el-border-color-lighter);
+}
+
+.mb-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    min-width: 0;
+}
+
+.mb-item.mb-right {
+    margin-left: auto;
+}
+
+.mb-label {
+    color: var(--el-text-color-secondary);
+    flex-shrink: 0;
+}
+
+.mb-icon {
+    font-size: 18px;
+}
+
+/* 自定义访问域名：原先 flex:1 1 320px 会把输入框拉满整行，框体过长、右侧留白突兀；
+   这里收窄为固定宽度，窄屏（移动端）时再退回整行撑满。 */
+.domain-item {
+    flex: 0 1 auto;
+    min-width: 0;
+}
+
+.domain-item .domain-input {
+    width: 240px;
+}
+
+@media (max-width: 768px) {
+    .domain-item {
+        flex: 1 1 100%;
+        width: 100%;
+    }
+
+    .domain-item .domain-input {
+        width: 100%;
+    }
+}
+
+.mb-name {
+    font-weight: 600;
+    color: var(--el-text-color-primary);
+}
+
+.mb-empty {
+    color: var(--el-text-color-placeholder);
+}
+
+.mb-hint {
+    font-size: 12px;
+    color: var(--el-text-color-placeholder);
+}
+
+/* 渠道分组 */
+.channel-group {
+    margin-bottom: 32px;
+    background: var(--glass-bg);
+    border-radius: 16px;
+    border: 1px solid var(--glass-border);
+    overflow: hidden;
+    box-shadow: var(--glass-shadow);
+}
+
+.group-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 16px 20px;
+    background: var(--glass-header-bg);
+    border-bottom: 1px solid var(--glass-header-border);
+}
+
+/* 分类标题栏右侧的收缩按钮 */
+.group-collapse-btn {
+    flex: 0 0 auto;
+    color: var(--el-text-color-secondary);
+    padding: 4px 8px;
+}
+.group-collapse-btn:hover {
+    color: var(--primary-color);
+}
+
+/* 「存储渠道管理」分区标题与分割线 */
+.channel-section-header {
+    margin-top: 26px;
+}
+.channel-section-divider {
+    margin: 0 0 18px;
+}
+
+.group-title {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--el-text-color-primary);
+}
+
+.group-icon {
+    font-size: 20px;
+}
+
+.channel-count {
+    font-size: 12px;
+}
+
+/* 渠道卡片网格 */
+.channel-cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 16px;
+    padding: 20px;
+}
+
+.channel-card {
+    background: var(--glass-bg);
+    border-radius: 10px;
+    border: 1px solid var(--glass-border);
+    overflow: hidden;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    box-shadow: var(--glass-shadow);
+    backdrop-filter: blur(20px) saturate(1.4);
+    -webkit-backdrop-filter: blur(20px) saturate(1.4);
+}
+
+.channel-card.disabled {
+    opacity: 0.6;
+    background: var(--el-fill-color-lighter);
+}
+
+.card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 14px 16px;
+    background: var(--glass-header-bg);
+    border-bottom: 1px solid var(--glass-header-border);
+}
+
+.card-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.channel-name {
+    font-weight: 600;
+    font-size: 14px;
+    color: var(--el-text-color-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 150px;
+}
+
+.card-body {
+    padding: 14px 16px;
+    min-height: 60px;
+    text-align: left;
+}
+
+.card-info {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    align-items: flex-start;
+    width: 100%;
+    overflow: hidden;
+}
+
+.info-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--el-text-color-secondary);
+    min-width: 0;
+    width: 100%;
+    max-width: 100%;
+}
+
+.info-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+    min-width: 0;
+    text-align: left;
+}
+
+.info-icon {
+    width: 14px;
+    flex-shrink: 0;
+    color: var(--el-text-color-placeholder);
+}
+
+.quota-mini {
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px dashed var(--el-border-color-lighter);
+}
+
+.quota-mini :deep(.el-progress) {
+    margin-bottom: 4px;
+}
+
+.quota-text {
+    font-size: 11px;
+    color: var(--el-text-color-secondary);
+}
+
+.card-actions {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 4px;
+    padding: 10px 16px;
+    border-top: 1px solid var(--glass-header-border);
+    background: var(--glass-header-bg);
+    margin-top: auto;
+    flex-wrap: wrap;
+}
+
+.empty-tip {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 36px 20px;
+    color: var(--el-text-color-placeholder);
+    gap: 12px;
+}
+
+.empty-icon {
+    font-size: 30px;
+}
+
+.channel-type-option {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    line-height: 1;
+}
+
+.select-option-icon {
+    width: 16px;
+    height: 16px;
+    font-size: 16px;
+    text-align: center;
+}
+
+.form-warning {
+    padding: 10px 14px;
+    font-size: 13px;
+    color: var(--el-color-warning);
+    background: var(--el-color-warning-light-9);
+    border-radius: 6px;
+    border-left: 3px solid var(--el-color-warning);
+    margin-bottom: 14px;
+    line-height: 1.6;
+}
+
+.form-hint-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-top: 4px;
+    margin-bottom: 12px;
+    padding: 10px 14px;
+    border-radius: 8px;
+    background: var(--el-fill-color-light);
+    border: 1px dashed var(--el-border-color);
+}
+
+/* 表单项内的小提示（不占独立一行） */
+.form-hint-bar--inline {
+    margin: 6px 0 0;
+    padding: 0;
+    border: none;
+    background: none;
+    justify-content: flex-start;
+}
+.form-hint-bar--inline .hint-text {
+    font-size: 12px;
+    color: var(--el-text-color-secondary);
+}
+
+/* 渠道 ID（6 位 code）：只读展示 + 复制 */
+.channel-id-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.channel-id-value {
+    font-family: 'Courier New', monospace;
+    font-size: 13px;
+    letter-spacing: 1px;
+    padding: 2px 8px;
+    border-radius: 6px;
+    background: var(--el-fill-color-light);
+    color: var(--el-text-color-primary);
+    user-select: all;
+}
+
+.hint-text {
+    font-size: 12px;
+    color: var(--el-text-color-secondary);
+}
+
+.test-result {
+    padding: 10px 14px;
+    border-radius: 6px;
+    font-size: 13px;
+    line-height: 1.6;
+    word-break: break-all;
+}
+
+.test-result.ok {
+    color: var(--el-color-success);
+    background: var(--el-color-success-light-9);
+    border-left: 3px solid var(--el-color-success);
+}
+
+.test-result.fail {
+    color: var(--el-color-danger);
+    background: var(--el-color-danger-light-9);
+    border-left: 3px solid var(--el-color-danger);
+}
+
+:deep(.channel-details .el-descriptions__table) {
+    table-layout: fixed;
+    width: 100%;
+}
+
+:deep(.channel-details .el-descriptions__label) {
+    width: 34%;
+}
+
+:deep(.channel-details .el-descriptions__cell) {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+
+:deep(.channel-dialog) {
+    width: 620px !important;
+    max-width: 92vw !important;
+}
+
+/* 平板端：卡片密度随可用宽度调整（桌面端保持 auto-fill 300px 基准） */
+@media (min-width: 769px) and (max-width: 1199px) {
+    .channel-cards {
+        grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+        gap: 14px;
+        padding: 16px;
+    }
+
+    .page-header {
+        gap: 10px;
+    }
+
+    .storage-bar {
+        padding: 12px 16px;
+    }
+
+    .storage-row {
+        gap: 16px;
+    }
+}
+
+@media (max-width: 768px) {
+    .page-header {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
+    .header-actions {
+        width: 100%;
+    }
+
+    .header-actions > * {
+        flex: 1 1 auto;
+        min-width: 0;
+    }
+
+    .first-title {
+        font-size: 17px;
+        line-height: 1.45;
+        align-items: flex-start;
+    }
+
+    .channel-cards {
+        grid-template-columns: 1fr;
+        padding: 12px;
+    }
+
+    .group-header {
+        flex-direction: column;
+        gap: 12px;
+        align-items: flex-start;
+    }
+
+    /* 分发设置条：窄屏改为纵向堆叠，避免标签与控件相互挤压换行 */
+    .storage-bar {
+        padding: 12px 14px;
+        gap: 10px;
+    }
+
+    .storage-row {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 10px;
+    }
+
+    .mb-item {
+        flex-wrap: wrap;
+        row-gap: 6px;
+    }
+
+    .mb-item.mb-right {
+        margin-left: 0;
+    }
+
+    .storage-row.proxy-config .mb-item {
+        justify-content: space-between;
+    }
+
+    /* 卡片操作区：左对齐并允许换行，避免「更多」被挤出卡片 */
+    .card-actions {
+        justify-content: flex-start;
+        padding: 10px 12px;
+    }
+
+    .channel-name {
+        max-width: none;
+        flex: 1;
+    }
+
+    :deep(.channel-dialog) {
+        width: 92vw !important;
+    }
+}
+
+@media (max-width: 480px) {
+    .channel-cards {
+        padding: 10px;
+        gap: 12px;
+    }
+
+    .group-title {
+        font-size: 15px;
+        flex-wrap: wrap;
+        row-gap: 6px;
+    }
+
+    .card-header,
+    .card-body {
+        padding: 12px;
+    }
+
+    /* 极窄屏下「测试/详情/编辑/更多」两行排布 */
+    .card-actions {
+        gap: 2px;
+    }
+
+    .card-actions :deep(.el-button) {
+        padding-left: 6px;
+        padding-right: 6px;
+    }
+}
+</style>

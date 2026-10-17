@@ -1,0 +1,339 @@
+import { AdapterError, ChannelInfo, CopyInfo, StorageAdapter, UploadResult } from './adapter.interface';
+import { ensureProtocol } from '../common/endpoint';
+
+/**
+ * 通用 HTTP 上传适配器 —— 覆盖 3 个渠道类型：
+ *   easyimages  EasyImages 简单图床
+ *   lsky        Lsky Pro 兰空图床
+ *   custom      自定义 Web 存储
+ *
+ * 三者本质相同：HTTP 请求一张图 → 解析响应拿 URL。
+ * 差异仅在 endpoint / 认证字段 / 响应解析路径，全部做成配置模板，
+ * 未来接任何新图床 = 填一个模板。
+ *
+ * 配置字段：
+ *   apiUrl        上传接口完整 URL（支持 {filename} 等占位符）
+ *   httpMethod    请求方法（默认 POST，少数图床用 PUT）
+ *   requestFormat multipart（默认）| json —— json 时文件以 base64 data-url 放入 JSON body，
+ *                 用于只接受 base64 的接口（如 SM.MS / ImgBB / 聚合图床一类）
+ *   fileField     文件字段名（默认 file；EasyImages 为 image）
+ *   tokenHeader   认证请求头名（如 lsky 的 Authorization）
+ *   tokenValue    认证值（可含 {token} 占位，如 "Bearer {token}"）
+ *   tokenField    或以表单字段认证（如 easyimages 的 token）
+ *   extraFields   附加表单字段 JSON，如 {"strategy_id":"1"}
+ *   body          附加表单字段 JSON（等价 extraFields，对齐 PHP 案例的 custom_body）
+ *   headers       附加请求头 JSON，对齐 PHP 案例的 custom_headers
+ *   responsePath  响应中取 URL 的 JSON 路径，如 data.url 或 [0].src；
+ *                 支持 "|" 分隔多候选（如 data.url|url|data.links.url），
+ *                 留空时自动按主流图床常见路径逐个尝试
+ *   codePath      业务成功码字段路径（EasyImages 默认 code，须等于 200 才算成功）
+ *   codeValue     业务成功码期望值（默认 200）
+ *   publicDomain  域名重写（可选）：把响应 URL 的域名替换为此值
+ *   customDeleteUrl 删除接口模板，含 {url} / {key} 占位（可选）
+ *
+ * 兼容要点（对齐 PHP 联调案例，并对主流通用 API 做超集）：
+ *   1. 响应 URL 为相对路径（如 /file/xxx）时，自动用 publicDomain 或 apiUrl 的源补全；
+ *   2. responsePath 支持多候选与常见路径兜底，接任意图床基本免调路径；
+ *   3. 请求体同时支持 multipart 与 JSON+base64 两种主流形态；
+ *   4. apiUrl / headers / body / tokenValue 均支持 {filename} {name} {ext} {mime} {size} {timestamp} {random} 占位符。
+ */
+const TOKEN_SECRET_FIELDS = ['tokenValue'];
+
+export function httpAdapterSecretFields(): string[] {
+  return TOKEN_SECRET_FIELDS;
+}
+
+/** 主流图床响应中 URL 的常见位置，responsePath 留空时按序尝试 */
+const COMMON_RESPONSE_PATHS = [
+  'url',
+  'data.url',
+  'data.link',
+  'data.src',
+  'data.path',
+  'data.full_url',
+  'data.image.url',
+  'image.url',
+  'links.url',
+  'data.links.url',
+  'result',
+  'result.url',
+  'path',
+  'src',
+  'file',
+  '[0].src',
+  '[0].url',
+  'data.0.url',
+  'data[0].url',
+  'data.list.0.url',
+];
+
+export class HttpPostAdapter implements StorageAdapter {
+  constructor(private channel: ChannelInfo) {}
+
+  /** 安全解析 JSON 配置（非法直接忽略，不影响上传） */
+  private jsonCfg(raw: string | undefined): Record<string, unknown> {
+    if (!raw) return {};
+    try {
+      const v = JSON.parse(raw);
+      return v && typeof v === 'object' ? (v as Record<string, unknown>) : {};
+    } catch {
+      return {};
+    }
+  }
+
+  /** 占位符替换：兼容需要把文件名/时间戳写进 URL 或表单的接口 */
+  private fill(tpl: string, file: { buffer: Buffer; mime: string; originalName: string }): string {
+    if (!tpl) return tpl;
+    const name = file.originalName || 'file';
+    const dot = name.lastIndexOf('.');
+    const base = dot > 0 ? name.slice(0, dot) : name;
+    const ext = dot > 0 ? name.slice(dot + 1) : '';
+    const map: Record<string, string> = {
+      filename: name,
+      name: base,
+      ext,
+      mime: file.mime || '',
+      size: String(file.buffer?.length ?? 0),
+      timestamp: String(Math.floor(Date.now() / 1000)),
+      random: Math.random().toString(36).slice(2, 10),
+    };
+    return tpl.replace(/\{(filename|name|ext|mime|size|timestamp|random)\}/g, (_, k: string) => map[k] ?? '');
+  }
+
+  /**
+   * 上传文件名去重：优先取 key 的末段（本系统生成的随机 ID，天然唯一），
+   * 若 key 末段缺少扩展名则补上原文件扩展名。
+   * 目的：防止 Lsky/EasyImages 等功能床「同名覆盖」引发缩略图错乱。
+   */
+  private uniqueName(originalName: string, key: string): string {
+    const base = (key || '').split('/').pop() || originalName || 'file';
+    if (/\.[A-Za-z0-9]{1,8}$/.test(base)) return base;
+    const dot = (originalName || '').lastIndexOf('.');
+    return dot > 0 ? base + originalName.slice(dot) : base;
+  }
+
+  async upload(file: { buffer: Buffer; mime: string; originalName: string }, key: string, channel: ChannelInfo): Promise<UploadResult> {
+    const cfg = channel.config;
+    // apiUrl 支持内网 IP / Docker 容器名（如 lsky:8080、192.168.1.10:8080）：
+    // 缺协议时按地址类型补（内网 http、公网 https），请求由服务端发起，
+    // 因此图床对外是 https 不影响用内网地址上传。
+    const rawApiUrl = ensureProtocol(this.fill(cfg.apiUrl || '', file));
+    if (!rawApiUrl) throw new AdapterError('缺少 apiUrl 配置', channel.type);
+
+    // 附加字段按「优先级从低到高」合并后一次性写入，避免同名字段重复提交。
+    // extraFields（旧）< body（对齐 PHP custom_body）< tokenField/tokenValue（认证字段，最高）
+    const fileField = cfg.fileField || 'file';
+    const extra: Record<string, string> = {};
+    for (const raw of [cfg.extraFields, cfg.body]) {
+      for (const [k, v] of Object.entries(this.jsonCfg(raw))) {
+        if (!k) continue;
+        extra[k] = this.fill(typeof v === 'string' ? v : JSON.stringify(v), file);
+      }
+    }
+    if (cfg.tokenField && cfg.tokenValue) extra[cfg.tokenField] = this.fill(String(cfg.tokenValue), file);
+    // 文件字段名不允许被覆盖
+    delete extra[fileField];
+
+    const headers: Record<string, string> = { Accept: 'application/json' };
+    // 认证方式二选一：tokenHeader（请求头认证，如 lsky 的 Authorization: Bearer xxx）
+    // 或 tokenField（表单字段认证，如 easyimages 的 token）
+    if (cfg.tokenHeader && cfg.tokenValue) {
+      let token = this.fill(String(cfg.tokenValue).trim(), file);
+      // Authorization 缺 scheme 时自动补 Bearer（避免用户漏填前缀导致 401）
+      if (/^authorization$/i.test(cfg.tokenHeader) && token && !/^[A-Za-z]+\s/.test(token)) {
+        token = `Bearer ${token}`;
+      }
+      headers[cfg.tokenHeader] = token;
+    }
+    // 附加请求头（对齐 PHP custom_headers）
+    for (const [k, v] of Object.entries(this.jsonCfg(cfg.headers))) {
+      if (k) headers[k] = this.fill(String(v), file);
+    }
+
+    // 请求体形态：multipart（默认）或 JSON + base64（部分图床只收 base64）
+    const useJson = /^json$/i.test(String(cfg.requestFormat || '').trim());
+    let body: BodyInit;
+    if (useJson) {
+      const payload: Record<string, string> = { ...extra };
+      payload[fileField] = `data:${file.mime || 'application/octet-stream'};base64,${file.buffer.toString('base64')}`;
+      body = JSON.stringify(payload);
+      headers['Content-Type'] = 'application/json';
+    } else {
+      const form = new FormData();
+      const blob = new Blob([new Uint8Array(file.buffer)], { type: file.mime });
+      // 以 key 的末段作为上传文件名（随机 ID + 扩展名），避免同名文件互相覆盖 ——
+      // Lsky Pro 等图床按文件名落盘，重复上传同名图片会导致后一张覆盖前一张，
+      // 于是「缩略图与实际文件不一致」。
+      form.append(fileField, blob, this.uniqueName(file.originalName, key));
+      for (const [k, v] of Object.entries(extra)) form.append(k, v);
+      body = form;
+    }
+
+    const method = (cfg.httpMethod || 'POST').toUpperCase();
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 60000);
+    let resp: Response;
+    try {
+      resp = await fetch(rawApiUrl, { method, body, headers, signal: ctrl.signal });
+    } catch (err) {
+      throw new AdapterError(`请求失败: ${(err as Error).message}`, channel.type);
+    } finally {
+      clearTimeout(timer);
+    }
+    const text = await resp.text();
+    if (!resp.ok) {
+      throw new AdapterError(`HTTP ${resp.status}: ${text.slice(0, 300)}`, channel.type);
+    }
+
+    let url = '';
+    try {
+      const json = JSON.parse(text);
+      // 业务成功码校验（EasyImages：code 必须为 200，否则即使有 url 也是失败）
+      const codePath = cfg.codePath || (channel.type === 'easyimages' ? 'code' : '');
+      if (codePath) {
+        const code = pickPath(json, codePath);
+        const expect = cfg.codeValue || '200';
+        if (code !== '' && code !== expect) {
+          throw new AdapterError(`接口返回失败码 ${code}（期望 ${expect}）：${responseMessage(json, text)}`, channel.type);
+        }
+      }
+      // 未显式配置成功码时，仍识别主流的 {success:false} / {ok:false} 失败响应
+      if (!codePath) {
+        const flag = pickPath(json, 'success') || pickPath(json, 'ok');
+        if (flag === 'false') {
+          throw new AdapterError(`接口返回失败：${responseMessage(json, text)}`, channel.type);
+        }
+      }
+      url = extractUrl(json, cfg.responsePath);
+    } catch (err) {
+      if (err instanceof AdapterError) throw err;
+      // 非 JSON 响应：整段视为 URL
+      url = text.trim();
+    }
+    if (!url) {
+      throw new AdapterError(
+        `响应中未找到 URL（responsePath=${cfg.responsePath || '自动探测'}）: ${text.slice(0, 200)}`,
+        channel.type
+      );
+    }
+    url = normalizeUrl(url, cfg.publicDomain, rawApiUrl);
+    return { remoteKey: key, remoteUrl: url };
+  }
+
+  async delete(copy: CopyInfo, channel: ChannelInfo): Promise<void> {
+    const cfg = channel.config;
+    if (!cfg.customDeleteUrl) return; // 未配置删除接口则跳过
+    const target = copy.remoteUrl || copy.remoteKey;
+    const url = ensureProtocol(
+      cfg.customDeleteUrl
+        .replace('{url}', encodeURIComponent(target))
+        .replace('{key}', encodeURIComponent(copy.remoteKey || '')),
+    );
+    try {
+      const headers: Record<string, string> = {};
+      if (cfg.tokenHeader && cfg.tokenValue) {
+        let token = String(cfg.tokenValue).trim();
+        if (/^authorization$/i.test(cfg.tokenHeader) && token && !/^[A-Za-z]+\s/.test(token)) {
+          token = `Bearer ${token}`;
+        }
+        headers[cfg.tokenHeader] = token;
+      }
+      await fetch(url, { method: (cfg.customDeleteMethod || 'GET').toUpperCase(), headers });
+    } catch (err) {
+      throw new AdapterError(`删除失败: ${(err as Error).message}`, channel.type);
+    }
+  }
+
+  /** 直链：custom 渠道存了完整 URL（remoteUrl），访问时检测域名是否需替换 */
+  buildDirectUrl(copy: CopyInfo, channel: ChannelInfo): string | null {
+    const cfg = channel.config;
+    let url = copy.remoteUrl;
+    if (!url) return null;
+    url = normalizeUrl(url, cfg.publicDomain, cfg.apiUrl);
+    return url;
+  }
+}
+
+/**
+ * 多候选 JSON 路径取值：
+ *   - responsePath 支持 "|" 分隔的候选列表，按序命中即返回
+ *   - 留空时按 COMMON_RESPONSE_PATHS 自动探测主流图床的常见位置
+ */
+function extractUrl(json: unknown, responsePath?: string): string {
+  const raw = (responsePath || '').trim();
+  const candidates = raw && !/^auto$/i.test(raw)
+    ? raw.split('|').map((s) => s.trim()).filter(Boolean)
+    : COMMON_RESPONSE_PATHS;
+  for (const p of candidates) {
+    const v = pickPath(json, p);
+    if (v) return v;
+  }
+  return '';
+}
+
+/** 提取错误信息（兼容 message / msg / error / error.message） */
+function responseMessage(json: unknown, fallback: string): string {
+  for (const p of ['message', 'msg', 'error', 'error.message', 'data.message', 'errmsg']) {
+    const v = pickPath(json, p);
+    if (v) return v;
+  }
+  return fallback.slice(0, 200);
+}
+
+/**
+ * URL 归一化：
+ *   1. 配置了 publicDomain → 用其替换域名（保留路径与查询串）
+ *   2. 协议相对 //host/path → 补 https:
+ *   3. 绝对路径 /file/xxx → 用 publicDomain 或上传接口的源补全
+ *   4. 裸路径 file/xxx → 同上，带斜杠拼接
+ */
+function normalizeUrl(url: string, publicDomain?: string, apiUrl?: string): string {
+  let val = String(url).trim();
+  if (!val) return val;
+  // 外链域名同样允许不写协议（如填 lsky:8080 走内网）：内网补 http、公网补 https
+  const domain = ensureProtocol(publicDomain || '').replace(/\/+$/, '');
+
+  // 1) 显式域名重写
+  if (domain) {
+    try {
+      const parsed = new URL(val, apiUrl || undefined);
+      return domain + parsed.pathname + parsed.search;
+    } catch {
+      /* 继续走下面的补全逻辑 */
+    }
+  }
+  // 2) 协议相对：沿用上传接口的协议，接口不可解析时退回 https
+  if (val.startsWith('//')) {
+    const proto = /^(https?):/i.exec(apiUrl || '')?.[1] || 'https';
+    return `${proto}:${val}`;
+  }
+  // 3) / 4) 相对路径补全
+  if (/^https?:\/\//i.test(val)) return val;
+  try {
+    return new URL(val, apiUrl || undefined).toString();
+  } catch {
+    return val;
+  }
+}
+
+/** 简易 JSON 路径取值：支持 a.b.c、[0].src、data.list.0.url */
+function pickPath(obj: unknown, path: string): string {
+  let cur: unknown = obj;
+  for (const seg of path.split('.')) {
+    if (cur == null) return '';
+    const m = seg.match(/^\[(\d+)\]$/);
+    const idx = m ? Number(m[1]) : Number.NaN;
+    if (!Number.isNaN(idx)) {
+      cur = (cur as unknown[])[idx];
+    } else if (Array.isArray(cur)) {
+      cur = (cur as unknown[])[Number(seg)];
+    } else {
+      cur = (cur as Record<string, unknown>)[seg];
+    }
+  }
+  if (cur == null) return '';
+  if (typeof cur === 'string') return cur;
+  if (typeof cur === 'number' || typeof cur === 'boolean') return String(cur);
+  // 落到对象/数组上说明路径写错了，返回空让调用方报出明确错误
+  return '';
+}

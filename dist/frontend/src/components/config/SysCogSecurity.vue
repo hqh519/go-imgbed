@@ -1,0 +1,1830 @@
+<template>
+    <div class="security-settings" v-loading="loading">
+        <!-- 一级设置：认证管理 -->
+        <div class="first-settings">
+            <h3 class="first-title">{{ $t('sysSecurity.authManagement') }}</h3>
+
+            <h4 class="second-title">{{ $t('sysSecurity.userAuth') }}</h4>
+            <el-form 
+                :model="authSettings.user" 
+                :disabled="saving"
+                :rules = "userPassRules"
+                ref = "userPassForm"
+                label-width="120px"
+            >
+                <el-form-item :label="$t('sysSecurity.uploadPassword')" prop="authCode">
+                    <div style="display: flex; gap: 8px; width: 100%;">
+                        <el-input v-model="authSettings.user.authCode" type="password" show-password @input="handleUserPassInput" autocomplete="new-password" :placeholder="authSettings.user._hasPassword ? $t('sysSecurity.passwordUnchanged') : ''" :disabled="clearUserPassword"/>
+                        <el-checkbox v-if="authSettings.user._hasPassword" v-model="clearUserPassword" @change="handleClearUserPassword">{{ $t('sysSecurity.clearPassword') }}</el-checkbox>
+                    </div>
+                </el-form-item>
+
+                <transition name="fade-slide" mode="out-in">
+                    <el-form-item :label="$t('sysSecurity.confirmPassword')" prop="confirmNewUserPassword" v-if="showUserPassConfirm" key="user-confirm">
+                        <el-input v-model="authSettings.user.confirmNewUserPassword" type="password" show-password autocomplete="new-password"/>
+                    </el-form-item>
+                </transition>
+            </el-form>
+            
+            <h4 class="second-title">{{ $t('sysSecurity.adminAuth') }}</h4>
+            <el-form 
+                :model="authSettings.admin"
+                :disabled="saving"
+                :rules = "adminPassRules"
+                ref = "adminPassForm"
+                label-width="120px"
+            >
+                <el-form-item :label="$t('sysSecurity.adminUsername')" prop="adminUsername">
+                    <el-input v-model="authSettings.admin.adminUsername" autocomplete="new-password" :disabled="clearAdminPassword"/>
+                </el-form-item>
+                <el-form-item :label="$t('sysSecurity.adminPassword')" prop="adminPassword">
+                    <div style="display: flex; gap: 8px; width: 100%;">
+                        <el-input v-model="authSettings.admin.adminPassword" type="password" show-password @input="handleAdminPassInput" autocomplete="new-password" :placeholder="authSettings.admin._hasPassword ? $t('sysSecurity.passwordUnchanged') : ''" :disabled="clearAdminPassword"/>
+                        <el-checkbox v-if="authSettings.admin._hasPassword" v-model="clearAdminPassword" @change="handleClearAdminPassword">{{ $t('sysSecurity.clearPassword') }}</el-checkbox>
+                    </div>
+                </el-form-item>
+
+                <transition name="fade-slide" mode="out-in">
+                    <el-form-item :label="$t('sysSecurity.confirmPassword')" prop="confirmNewAdminPassword" v-if="showAdminPassConfirm" key="admin-confirm">
+                        <el-input v-model="authSettings.admin.confirmNewAdminPassword" type="password" show-password autocomplete="new-password"/>
+                    </el-form-item>
+                </transition>
+            </el-form>
+
+            <h4 class="second-title token-title">{{ $t('sysSecurity.apiTokenManagement') }}
+                <a class="token-actions">
+                    <el-button type="primary" size="small" @click="showCreateTokenDialog = true" circle>
+                        <font-awesome-icon icon="plus"/>
+                    </el-button>
+                </a>
+            </h4>
+            <div class="token-table-container">
+                <el-table 
+                    :data="apiTokens" 
+                    class="token-table"
+                    v-loading="tokenLoading"
+                >
+                    <el-table-column prop="name" :label="$t('sysSecurity.tokenName')" header-align="center">
+                        <template #default="scope">
+                            <div class="table-cell-content">{{ scope.row.name }}</div>
+                        </template>
+                    </el-table-column>
+                    <el-table-column :label="$t('sysSecurity.tokenType')" header-align="center" width="120">
+                        <template #default="scope">
+                            <div class="table-cell-content">
+                                <el-tag :type="scope.row.type === 's3' ? 'warning' : 'primary'" size="small" effect="plain">
+                                    {{ scope.row.type === 's3' ? $t('sysSecurity.typeS3') : $t('sysSecurity.typeWeb') }}
+                                </el-tag>
+                            </div>
+                        </template>
+                    </el-table-column>
+                    <el-table-column prop="token" :label="$t('sysSecurity.tokenValue')" header-align="center" min-width="240">
+                        <template #default="scope">
+                            <!-- 凭据一直可查看、可复制（S3 类型表内显示 AccessKey） -->
+                            <div class="table-cell-content token-cell">
+                                <span class="token-display" :title="tokenDisplay(scope.row)">{{ tokenDisplay(scope.row) }}</span>
+                                <el-button class="inline-copy-btn" size="small" text @click="copyValue(tokenDisplay(scope.row))">
+                                    <font-awesome-icon icon="copy"/>
+                                </el-button>
+                            </div>
+                        </template>
+                    </el-table-column>
+                    <el-table-column prop="permissions" :label="$t('sysSecurity.permissions')" header-align="center">
+                        <template #default="scope">
+                            <div class="table-cell-content">
+                                <el-tag 
+                                    v-for="perm in scope.row.permissions" 
+                                    :key="perm" 
+                                    size="small" 
+                                    class="permission-tag"
+                                >
+                                    {{ getPermissionText(perm) }}
+                                </el-tag>
+                            </div>
+                        </template>
+                    </el-table-column>
+                    <el-table-column prop="createdAt" :label="$t('sysSecurity.createdAt')" header-align="center">
+                        <template #default="scope">
+                            <div class="table-cell-content">{{ formatDate(scope.row.createdAt) }}</div>
+                        </template>
+                    </el-table-column>
+                    <el-table-column :label="$t('sysSecurity.status')" header-align="center" width="90">
+                        <template #default="scope">
+                            <div class="table-cell-content">
+                                <el-tag
+                                    :type="getTokenStatus(scope.row.expiresAt).status === 'active' ? 'success' : 'danger'"
+                                    size="small"
+                                >
+                                    {{ getTokenStatus(scope.row.expiresAt).label }}
+                                </el-tag>
+                            </div>
+                        </template>
+                    </el-table-column>
+                    <el-table-column :label="$t('sysSecurity.expiresAt')" header-align="center">
+                        <template #default="scope">
+                            <div class="table-cell-content">{{ getTokenStatus(scope.row.expiresAt).expiresText }}</div>
+                        </template>
+                    </el-table-column>
+                    <!-- 操作列：移动端不固定，与其他列一起左右滚动 -->
+                    <el-table-column :label="$t('sysSecurity.operation')" :fixed="windowWidth <= 768 ? false : 'right'" header-align="center" width="210">
+                        <template #default="scope">
+                            <div class="table-cell-content action-buttons">
+                                <el-button class="action-button" size="small" @click="showCredential(scope.row)">{{ $t('sysSecurity.viewCredential') }}</el-button>
+                                <el-button class="action-button" size="small" @click="editToken(scope.row)">{{ $t('sysSecurity.editBtn') }}</el-button>
+                                <el-button class="action-button" size="small" type="danger" @click="deleteToken(scope.row.id)">{{ $t('sysSecurity.deleteBtn') }}</el-button>
+                            </div>
+                        </template>
+                    </el-table-column>
+                </el-table>
+            </div>
+
+            <!-- 对外 WebDAV 服务（原「其他设置」页迁移至此，紧随 API Token 管理之下）：
+                 把图床挂成网盘，用任意 WebDAV 客户端浏览/上传。
+                 上传渠道不再单独配置 —— 统一走用户管理里为该账户指定的渠道，
+                 账户未指定时回退「上传设置」里的全局主/备渠道。 -->
+            <h4 class="second-title">{{ $t('sysOthers.webdav') }}
+                <el-tooltip placement="top" raw-content>
+                    <template #content>
+                        <div style="max-width: 340px; line-height: 1.7;" v-html="$t('sysOthers.webdavTooltip')"></div>
+                    </template>
+                    <font-awesome-icon icon="question-circle" style="margin-left: 5px; cursor: pointer;"/>
+                </el-tooltip>
+            </h4>
+            <el-form :model="webdavSettings" label-width="120px" :disabled="saving">
+                <el-form-item :label="$t('sysOthers.enable')">
+                    <el-switch v-model="webdavSettings.enabled"></el-switch>
+                </el-form-item>
+                <el-form-item :label="$t('sysOthers.webdavRootPath')">
+                    <el-input
+                        v-model="webdavSettings.rootPath"
+                        :disabled="!webdavSettings.enabled"
+                        placeholder="dav-root"
+                    ></el-input>
+                </el-form-item>
+                <el-form-item :label="$t('sysOthers.webdavReadonly')">
+                    <el-switch v-model="webdavSettings.readonly" :disabled="!webdavSettings.enabled"></el-switch>
+                </el-form-item>
+                <el-form-item :label="$t('sysOthers.webdavAddress')">
+                    <el-input :model-value="webdavAddress" readonly>
+                        <template #append>
+                            <el-button @click="copyWebdavAddress">{{ $t('sysOthers.copy') }}</el-button>
+                        </template>
+                    </el-input>
+                </el-form-item>
+                <!-- 访问域名：与「API 接入信息」取同一个来源（自定义访问域名 > 默认URL前缀 > 本站） -->
+                <el-form-item :label="$t('sysOthers.webdavAccessDomain')">
+                    <el-input :model-value="webdavAccessDomain" readonly>
+                        <template #append>
+                            <el-button @click="copyWebdavAccessDomain">{{ $t('sysOthers.copy') }}</el-button>
+                        </template>
+                    </el-input>
+                </el-form-item>
+                <!-- 统一说明（账号来源 + 渠道来源 + 类型/大小限制开关）：
+                     直接并入上方表单框内，不再单独占一个提示框 -->
+                <el-form-item>
+                    <div class="webdav-note">{{ $t('sysOthers.webdavAccountNote') }}</div>
+                </el-form-item>
+            </el-form>
+        </div>
+
+        <!-- 一级设置：上传管理 -->
+        <div class="first-settings">
+            <h3 class="first-title">{{ $t('sysSecurity.uploadManagement') }}</h3>            
+            <h4 class="second-title">{{ $t('sysSecurity.imageReview') }}
+                <el-tooltip :content="$t('sysSecurity.imageReviewTooltip')" placement="top">
+                    <font-awesome-icon icon="question-circle" style="margin-left: 5px; cursor: pointer;"/>
+                </el-tooltip>
+            </h4>         
+            <el-form :model="uploadSettings.moderate" label-width="120px" :disabled="saving">
+                <el-form-item :label="$t('sysSecurity.enableReview')">
+                    <el-switch v-model="uploadSettings.moderate.enabled"/>
+                </el-form-item>
+                <el-form-item :label="$t('sysSecurity.reviewChannel')">
+                    <el-select v-model="uploadSettings.moderate.channel" :placeholder="$t('sysSecurity.reviewChannelPlaceholder')">
+                        <el-option label="moderatecontent.com" value="moderatecontent.com"></el-option>
+                        <el-option label="nsfwjs" value="nsfwjs"></el-option>
+                    </el-select>
+                </el-form-item>
+                <el-form-item v-if="uploadSettings.moderate.channel === 'moderatecontent.com'" :label="$t('sysSecurity.apiKey')">
+                    <el-input v-model="uploadSettings.moderate.moderateContentApiKey"/>
+                </el-form-item>
+                <el-form-item v-if="uploadSettings.moderate.channel === 'nsfwjs'" :label="$t('sysSecurity.apiPath')">
+                    <el-input v-model="uploadSettings.moderate.nsfwApiPath" placeholder="https://nsfwjs.your.domain"/>
+                </el-form-item>
+            </el-form>
+
+            <h4 class="second-title">{{ $t('sysSecurity.ipQuery') }}
+                <el-tooltip :content="$t('sysSecurity.ipQueryTooltip')" placement="top">
+                    <font-awesome-icon icon="question-circle" style="margin-left: 5px; cursor: pointer;"/>
+                </el-tooltip>
+            </h4>
+            <el-form :model="uploadSettings.ipQuery" label-width="120px" :disabled="saving">
+                <el-form-item :label="$t('sysSecurity.enableIpQuery')">
+                    <el-switch v-model="uploadSettings.ipQuery.enabled"/>
+                </el-form-item>
+                <el-form-item :label="$t('sysSecurity.ipQueryChannel')">
+                    <el-select v-model="uploadSettings.ipQuery.channel" :placeholder="$t('sysSecurity.ipQueryChannelPlaceholder')">
+                        <el-option :label="$t('sysSecurity.customApi')" value="customApi"></el-option>
+                    </el-select>
+                </el-form-item>
+                <template v-if="uploadSettings.ipQuery.channel === 'customApi'">
+                    <el-form-item :label="$t('sysSecurity.apiPath')">
+                        <el-input
+                            v-model="uploadSettings.ipQuery.customApi.url"
+                            placeholder="https://api.example.com/ip"
+                        />
+                    </el-form-item>
+                    <el-form-item :label="$t('sysSecurity.queryParams')">
+                        <div class="query-param-list">
+                            <div
+                                v-for="(param, index) in uploadSettings.ipQuery.customApi.params"
+                                :key="index"
+                                class="query-param-row"
+                            >
+                                <el-input
+                                    v-model="param.key"
+                                    :placeholder="$t('sysSecurity.paramNamePlaceholder')"
+                                />
+                                <el-input
+                                    v-model="param.value"
+                                    :placeholder="$t('sysSecurity.paramValuePlaceholder')"
+                                />
+                                <el-button
+                                    type="danger"
+                                    plain
+                                    circle
+                                    @click="removeIpQueryParam(index)"
+                                    :disabled="uploadSettings.ipQuery.customApi.params.length <= 1"
+                                >
+                                    <font-awesome-icon icon="trash-alt"/>
+                                </el-button>
+                            </div>
+                            <el-button type="primary" plain @click="addIpQueryParam">
+                                <font-awesome-icon icon="plus"/>
+                                <span>{{ $t('sysSecurity.addQueryParam') }}</span>
+                            </el-button>
+                        </div>
+                    </el-form-item>
+                    <el-form-item>
+                        <template #label>
+                            {{ $t('sysSecurity.responseFields') }}
+                            <el-tooltip :content="$t('sysSecurity.responseFieldsTip')" placement="top">
+                                <font-awesome-icon icon="question-circle" style="margin-left: 5px; cursor: pointer;"/>
+                            </el-tooltip>
+                        </template>
+                        <div class="query-param-list">
+                            <div
+                                v-for="(field, index) in uploadSettings.ipQuery.customApi.responseFields"
+                                :key="index"
+                                class="response-field-row"
+                            >
+                                <el-input
+                                    v-model="uploadSettings.ipQuery.customApi.responseFields[index]"
+                                    :placeholder="$t('sysSecurity.responseFieldPathPlaceholder')"
+                                />
+                                <el-button
+                                    plain
+                                    circle
+                                    @click="moveIpQueryResponseField(index, -1)"
+                                    :disabled="index === 0"
+                                >
+                                    <font-awesome-icon icon="arrow-up"/>
+                                </el-button>
+                                <el-button
+                                    plain
+                                    circle
+                                    @click="moveIpQueryResponseField(index, 1)"
+                                    :disabled="index === uploadSettings.ipQuery.customApi.responseFields.length - 1"
+                                >
+                                    <font-awesome-icon icon="arrow-down"/>
+                                </el-button>
+                                <el-button
+                                    type="danger"
+                                    plain
+                                    circle
+                                    @click="removeIpQueryResponseField(index)"
+                                >
+                                    <font-awesome-icon icon="trash-alt"/>
+                                </el-button>
+                            </div>
+                            <el-button type="primary" plain @click="addIpQueryResponseField">
+                                <font-awesome-icon icon="plus"/>
+                                <span>{{ $t('sysSecurity.addResponseField') }}</span>
+                            </el-button>
+                        </div>
+                    </el-form-item>
+                </template>
+            </el-form>
+        </div>
+
+        <!-- 一级设置：访问管理 -->
+        <div class="first-settings">
+            <h3 class="first-title">{{ $t('sysSecurity.accessManagement') }}</h3>
+            <h4 class="second-title">{{ $t('sysSecurity.domainFilter') }}</h4>
+            <el-form :model="accessSettings" label-width="120px" :disabled="saving">
+                <el-form-item>
+                    <template #label>
+                        {{ $t('sysSecurity.allowedDomains') }}
+                        <el-tooltip :content="$t('sysSecurity.allowedDomainsTooltip')" placement="top" raw-content>
+                            <font-awesome-icon icon="question-circle" style="margin-left: 5px; cursor: pointer;"/>
+                        </el-tooltip>
+                    </template>
+                    <!-- 一行一个域名，后端按行拆分并做「包含式」匹配 -->
+                    <el-input
+                        v-model="accessSettings.allowedDomains"
+                        type="textarea"
+                        :autosize="{ minRows: 4, maxRows: 12 }"
+                        placeholder="一行一个域名，例如：&#10;hhh555.top&#10;example.com&#10;（域名包含清单中的字符串即放行）"
+                    />
+                </el-form-item>
+            </el-form>
+            <h4 class="second-title">{{ $t('sysSecurity.whiteListMode') }}</h4>
+            <el-form :model="accessSettings" :rules="accessRules" ref="accessForm" label-width="120px" :disabled="saving">
+                <el-form-item>
+                    <template #label>
+                        {{ $t('sysSecurity.enableWhiteList') }}
+                        <el-tooltip :content="$t('sysSecurity.enableWhiteListTooltip')" placement="top" raw-content>
+                            <font-awesome-icon icon="question-circle" style="margin-left: 5px; cursor: pointer;"/>
+                        </el-tooltip>
+                    </template>
+                    <el-switch v-model="accessSettings.whiteListMode"/>
+                </el-form-item>
+            </el-form>
+            <!-- 图片尺寸处理已迁移到「其他设置 → 图片尺寸处理」 -->
+            <h4 class="second-title">{{ $t('sysSecurity.sessionSecurityPolicy') }}</h4>
+            <el-form :model="accessSettings" label-width="120px" :disabled="saving">
+                <el-form-item>
+                    <template #label>
+                        {{ $t('sysSecurity.secureMode') }}
+                        <el-tooltip :content="$t('sysSecurity.secureModeTooltip')" placement="top">
+                            <font-awesome-icon icon="question-circle" style="margin-left: 5px; cursor: pointer;"/>
+                        </el-tooltip>
+                    </template>
+                    <el-switch v-model="accessSettings.sessionSecure"/>
+                </el-form-item>
+                <el-form-item :label="$t('sysSecurity.userSessionMaxAge')" prop="userSessionMaxAge">
+                    <el-input-number
+                        v-model="accessSettings.userSessionMaxAge"
+                        :min="1"
+                        :max="3650"
+                        :step="1"
+                        :precision="0"
+                        controls-position="right"
+                    />
+                    <span class="form-item-hint">{{ $t('sysSecurity.sessionMaxAgeUnit') }}</span>
+                </el-form-item>
+                <el-form-item :label="$t('sysSecurity.adminSessionMaxAge')" prop="adminSessionMaxAge">
+                    <el-input-number
+                        v-model="accessSettings.adminSessionMaxAge"
+                        :min="1"
+                        :max="3650"
+                        :step="1"
+                        :precision="0"
+                        controls-position="right"
+                    />
+                    <span class="form-item-hint">{{ $t('sysSecurity.sessionMaxAgeUnit') }}</span>
+                </el-form-item>
+            </el-form>
+        </div>
+
+        <!-- 悬浮保存按钮 -->
+        <FloatingSaveButton :show="!loading" :loading="saving" :dirty="hasUnsavedChanges" @click="saveSettings" />
+
+        <!-- 创建Token对话框 -->
+        <el-dialog v-model="showCreateTokenDialog" :title="$t('sysSecurity.createTokenTitle')" :width="dialogWidth">
+            <el-form :model="newToken" :rules="tokenRules" ref="tokenForm" label-width="100px">
+                <el-form-item :label="$t('sysSecurity.tokenType')">
+                    <el-radio-group v-model="newToken.type" class="token-type-group">
+                        <el-radio-button label="web">
+                            <font-awesome-icon icon="globe" class="token-type-icon"/>
+                            {{ $t('sysSecurity.typeWeb') }}
+                        </el-radio-button>
+                        <el-radio-button label="s3">
+                            <font-awesome-icon icon="database" class="token-type-icon"/>
+                            {{ $t('sysSecurity.typeS3') }}
+                        </el-radio-button>
+                    </el-radio-group>
+                    <div class="token-type-desc">
+                        {{ newToken.type === 's3' ? $t('sysSecurity.typeS3Desc') : $t('sysSecurity.typeWebDesc') }}
+                    </div>
+                </el-form-item>
+                <el-form-item :label="$t('sysSecurity.tokenNameLabel')" prop="name">
+                    <el-input v-model="newToken.name" :placeholder="$t('sysSecurity.tokenNamePlaceholder')"/>
+                </el-form-item>
+                <!--
+                    S3 的「区域 Region」不再让用户配置：服务端不校验 Region 取值，
+                    接入信息里统一提示使用 us-east-1 即可，减少一个必填但无意义的配置项。
+                -->
+                <el-form-item :label="$t('sysSecurity.permissionsLabel')" prop="permissions">
+                    <el-checkbox-group v-model="newToken.permissions">
+                        <el-checkbox label="upload">{{ $t('sysSecurity.permUpload') }}</el-checkbox>
+                        <el-checkbox label="delete">{{ $t('sysSecurity.permDelete') }}</el-checkbox>
+                        <el-checkbox label="list">{{ $t('sysSecurity.permList') }}</el-checkbox>
+                        <el-checkbox label="manage">{{ $t('sysSecurity.permManage') }}</el-checkbox>
+                    </el-checkbox-group>
+                </el-form-item>
+                <el-form-item :label="$t('sysSecurity.advancedDefaults')">
+                    <div class="token-defaults">
+                        <div class="token-defaults-tip">{{ $t('sysSecurity.advancedDefaultsTip') }}</div>
+                        <el-input v-model="newToken.defaultCategory" :placeholder="$t('sysSecurity.defaultCategoryPlaceholder')">
+                            <template #prepend>{{ $t('sysSecurity.defaultCategory') }}</template>
+                        </el-input>
+                        <div class="token-default-field">
+                            <span class="token-default-label">{{ $t('sysSecurity.defaultBucket') }}</span>
+                            <ChannelSelect v-model="newToken.defaultBucket" kind="main"/>
+                        </div>
+                        <div class="token-default-field">
+                            <span class="token-default-label">{{ $t('sysSecurity.defaultBackup') }}</span>
+                            <!-- 备份渠道下拉：统一由 ChannelSelect 提供
+                                 默认（'' = 跟随全局）→ none（不备份）→ 各存储渠道 -->
+                            <ChannelSelect v-model="newToken.defaultBackup" kind="backup"/>
+                        </div>
+                    </div>
+                </el-form-item>
+                <!-- 类型和大小限制：开启（默认）→ 该 Token 传入的文件受「允许上传格式 + 单文件大小上限」约束；
+                     关闭 → 跳过这两项限制。Web 通用与 S3 协议两种 Token 均适用 -->
+                <el-form-item :label="$t('sysSecurity.enforceLimits')">
+                    <div class="token-limit-field">
+                        <el-switch v-model="newToken.enforceLimits"/>
+                        <el-tooltip :content="$t('sysSecurity.enforceLimitsTooltip')" placement="top" :show-after="600">
+                            <span class="token-limit-tip">{{ $t('sysSecurity.enforceLimitsHint') }}</span>
+                        </el-tooltip>
+                    </div>
+                </el-form-item>
+                <el-form-item :label="$t('sysSecurity.neverExpire')">
+                    <el-switch v-model="newToken.neverExpire" @change="onCreateNeverExpireChange"/>
+                </el-form-item>
+                <el-form-item v-if="!newToken.neverExpire" :label="$t('sysSecurity.validPeriod')" prop="expirationValue">
+                    <div style="display: flex; gap: 10px; width: 100%;">
+                        <el-input-number v-model="newToken.expirationValue" :min="1" :step="1" controls-position="right" style="flex: 1;"/>
+                        <el-select v-model="newToken.expirationUnit" style="width: 100px;">
+                            <el-option v-for="opt in timeUnitOptions" :key="opt.value" :label="$t(opt.labelKey)" :value="opt.value"/>
+                        </el-select>
+                    </div>
+                </el-form-item>
+                <el-form-item v-if="!newToken.neverExpire" :label="$t('sysSecurity.autoDeleteOnExpire')">
+                    <el-switch v-model="newToken.autoDelete"/>
+                </el-form-item>
+            </el-form>
+            <template #footer>
+                <span class="dialog-footer">
+                    <el-button @click="showCreateTokenDialog = false">{{ $t('common.cancel') }}</el-button>
+                    <el-button type="primary" @click="createToken">{{ $t('sysSecurity.createBtn') }}</el-button>
+                </span>
+            </template>
+        </el-dialog>
+
+        <!-- 编辑Token对话框 -->
+        <el-dialog v-model="showEditTokenDialog" :title="$t('sysSecurity.editTokenTitle')" :width="dialogWidth">
+            <el-form :model="editingToken" :rules="editTokenRules" ref="editTokenForm" label-width="100px">
+                <el-form-item :label="$t('sysSecurity.tokenNameLabel')">
+                    <el-input v-model="editingToken.name"/>
+                </el-form-item>
+                <el-form-item :label="$t('sysSecurity.tokenType')">
+                    <el-tag size="small" effect="plain" :type="editingToken.type === 's3' ? 'warning' : 'primary'">
+                        {{ editingToken.type === 's3' ? $t('sysSecurity.typeS3') : $t('sysSecurity.typeWeb') }}
+                    </el-tag>
+                </el-form-item>
+                <!-- S3 的「区域 Region」固定 us-east-1（见接入信息），不再单独配置 -->
+                <el-form-item :label="$t('sysSecurity.permissionsLabel')" prop="permissions">
+                    <el-checkbox-group v-model="editingToken.permissions">
+                        <el-checkbox label="upload">{{ $t('sysSecurity.permUpload') }}</el-checkbox>
+                        <el-checkbox label="delete">{{ $t('sysSecurity.permDelete') }}</el-checkbox>
+                        <el-checkbox label="list">{{ $t('sysSecurity.permList') }}</el-checkbox>
+                        <el-checkbox label="manage">{{ $t('sysSecurity.permManage') }}</el-checkbox>
+                    </el-checkbox-group>
+                </el-form-item>
+                <el-form-item :label="$t('sysSecurity.advancedDefaults')">
+                    <div class="token-defaults">
+                        <div class="token-defaults-tip">{{ $t('sysSecurity.advancedDefaultsTip') }}</div>
+                        <el-input v-model="editingToken.defaultCategory" :placeholder="$t('sysSecurity.defaultCategoryPlaceholder')">
+                            <template #prepend>{{ $t('sysSecurity.defaultCategory') }}</template>
+                        </el-input>
+                        <div class="token-default-field">
+                            <span class="token-default-label">{{ $t('sysSecurity.defaultBucket') }}</span>
+                            <ChannelSelect v-model="editingToken.defaultBucket" kind="main"/>
+                        </div>
+                        <div class="token-default-field">
+                            <span class="token-default-label">{{ $t('sysSecurity.defaultBackup') }}</span>
+                            <!-- 备份渠道下拉：统一由 ChannelSelect 提供
+                                 默认（'' = 跟随全局）→ none（不备份）→ 各存储渠道 -->
+                            <ChannelSelect v-model="editingToken.defaultBackup" kind="backup"/>
+                        </div>
+                    </div>
+                </el-form-item>
+                <!-- 类型和大小限制：开启（默认）→ 该 Token 传入的文件受「允许上传格式 + 单文件大小上限」约束；
+                     关闭 → 跳过这两项限制。Web 通用与 S3 协议两种 Token 均适用 -->
+                <el-form-item :label="$t('sysSecurity.enforceLimits')">
+                    <div class="token-limit-field">
+                        <el-switch v-model="editingToken.enforceLimits"/>
+                        <el-tooltip :content="$t('sysSecurity.enforceLimitsTooltip')" placement="top" :show-after="600">
+                            <span class="token-limit-tip">{{ $t('sysSecurity.enforceLimitsHint') }}</span>
+                        </el-tooltip>
+                    </div>
+                </el-form-item>
+                <el-form-item :label="$t('sysSecurity.neverExpire')">
+                    <el-switch v-model="editingToken.neverExpire" @change="onEditNeverExpireChange"/>
+                </el-form-item>
+                <el-form-item v-if="!editingToken.neverExpire" :label="$t('sysSecurity.validPeriod')" prop="expirationValue">
+                    <div style="display: flex; gap: 10px; width: 100%;">
+                        <el-input-number v-model="editingToken.expirationValue" :min="1" :step="1" controls-position="right" style="flex: 1;"/>
+                        <el-select v-model="editingToken.expirationUnit" style="width: 100px;">
+                            <el-option v-for="opt in timeUnitOptions" :key="opt.value" :label="$t(opt.labelKey)" :value="opt.value"/>
+                        </el-select>
+                    </div>
+                </el-form-item>
+                <el-form-item v-if="!editingToken.neverExpire" :label="$t('sysSecurity.autoDeleteOnExpire')">
+                    <el-switch v-model="editingToken.autoDelete"/>
+                </el-form-item>
+            </el-form>
+            <template #footer>
+                <span class="dialog-footer">
+                    <el-button @click="showEditTokenDialog = false">{{ $t('common.cancel') }}</el-button>
+                    <el-button type="primary" @click="updateToken">{{ $t('sysSecurity.updateBtn') }}</el-button>
+                </span>
+            </template>
+        </el-dialog>
+
+        <!-- Token创建成功对话框 -->
+        <el-dialog v-model="showTokenResultDialog" :title="$t('sysSecurity.tokenCreatedTitle')" :width="dialogWidth">
+            <div class="token-result">
+                <p class="token-result-tip">
+                    <font-awesome-icon icon="check" style="margin-right: 5px;"/>
+                    {{ $t('sysSecurity.tokenCreatedWarning') }}
+                </p>
+                <el-form label-width="110px">
+                    <el-form-item :label="$t('sysSecurity.tokenNameLabel')">
+                        <span>{{ createdToken.name }}</span>
+                    </el-form-item>
+                    <el-form-item :label="$t('sysSecurity.tokenType')">
+                        <el-tag size="small" effect="plain" :type="createdToken.type === 's3' ? 'warning' : 'primary'">
+                            {{ createdToken.type === 's3' ? $t('sysSecurity.typeS3') : $t('sysSecurity.typeWeb') }}
+                        </el-tag>
+                    </el-form-item>
+                </el-form>
+                <TokenCredentialCard :token="createdToken" @copy="copyValue"/>
+            </div>
+            <template #footer>
+                <span class="dialog-footer">
+                    <el-button type="primary" @click="showTokenResultDialog = false">{{ $t('sysSecurity.savedBtn') }}</el-button>
+                </span>
+            </template>
+        </el-dialog>
+
+        <!-- 已有 Token 的接入信息（凭据长期可查看、可复制） -->
+        <el-dialog v-model="showCredentialDialog" :title="$t('sysSecurity.credentialTitle')" :width="dialogWidth">
+            <div class="token-result">
+                <el-form label-width="110px">
+                    <el-form-item :label="$t('sysSecurity.tokenNameLabel')">
+                        <span>{{ credentialToken.name }}</span>
+                    </el-form-item>
+                    <el-form-item :label="$t('sysSecurity.tokenType')">
+                        <el-tag size="small" effect="plain" :type="credentialToken.type === 's3' ? 'warning' : 'primary'">
+                            {{ credentialToken.type === 's3' ? $t('sysSecurity.typeS3') : $t('sysSecurity.typeWeb') }}
+                        </el-tag>
+                    </el-form-item>
+                </el-form>
+                <TokenCredentialCard :token="credentialToken" @copy="copyValue"/>
+                <p class="token-result-tip token-result-tip--muted">{{ $t('sysSecurity.credentialKeptTip') }}</p>
+            </div>
+            <template #footer>
+                <span class="dialog-footer">
+                    <el-button @click="showCredentialDialog = false">{{ $t('common.close') }}</el-button>
+                </span>
+            </template>
+        </el-dialog>
+    </div>
+</template>
+
+<script>
+import fetchWithAuth from '@/utils/fetchWithAuth';
+import FloatingSaveButton from '@/components/FloatingSaveButton.vue';
+import TokenCredentialCard from '@/components/config/TokenCredentialCard.vue';
+import { resolveAccessDomain } from '@/utils/accessDomain';
+import ChannelSelect from '@/components/config/ChannelSelect.vue';
+import { computeExpiresAt, getTokenStatus } from '@/utils/tokenExpiration';
+import { copyText } from '@/utils/clipboard';
+import unsavedSettings from '@/mixins/unsavedSettings';
+
+export default {
+mixins: [unsavedSettings],
+components: {
+    FloatingSaveButton,
+    TokenCredentialCard,
+    ChannelSelect
+},
+data() {
+    return {
+        windowWidth: window.innerWidth,
+        authSettings: {
+            user: {},
+            admin: {}
+        },
+        uploadSettings: {
+            moderate: {},
+            ipQuery: {
+                enabled: false,
+                channel: 'customApi',
+                customApi: {
+                    url: '',
+                    params: [{ key: 'ip', value: '{ip}' }],
+                    responseFields: []
+                }
+            }
+        },
+        accessSettings: {},
+        // 对外 WebDAV（原「其他设置」页的区块迁移到本页）：
+        // 数据仍存在 sysConfig 的 others 分区（others.webdav），保存时整段回写
+        webdavSettings: { enabled: false, rootPath: '', readonly: false },
+        othersSnapshot: null,
+        apiTokens: [], // API Token列表
+        // 加载状态
+        loading: true,
+        saving: false,
+        tokenLoading: false,
+
+        // 修改密码相关
+        oriUserPassword: '', // 原上传密码
+        oriAdminPassword: '', // 原管理端密码
+
+        showUserPassConfirm: false, // 显示用户密码确认框
+        showAdminPassConfirm: false, // 显示管理密码确认框
+        clearUserPassword: false, // 清除用户密码开关
+        clearAdminPassword: false, // 清除管理密码开关
+
+        // Token对话框相关
+        showCreateTokenDialog: false,
+        showEditTokenDialog: false,
+        showTokenResultDialog: false,
+        // 已有 Token 的接入信息（凭据一直可查看、可复制）
+        showCredentialDialog: false,
+        credentialToken: {},
+
+        timeUnitOptions: [
+            { labelKey: 'sysSecurity.timeUnitSeconds', value: 's' },
+            { labelKey: 'sysSecurity.timeUnitMinutes', value: 'm' },
+            { labelKey: 'sysSecurity.timeUnitHours', value: 'h' },
+            { labelKey: 'sysSecurity.timeUnitDays', value: 'd' },
+            { labelKey: 'sysSecurity.timeUnitMonths', value: 'M' },
+            { labelKey: 'sysSecurity.timeUnitYears', value: 'Y' }
+        ],
+        newToken: {
+            // web = 外部自定义 Web 通道接入；s3 = 外部 S3 客户端直传
+            type: 'web',
+            name: '',
+            owner: '',
+            region: 'us-east-1',
+            defaultCategory: '',
+            defaultBucket: '',
+            defaultBackup: '',
+            permissions: [],
+            neverExpire: true,
+            expirationValue: 1,
+            expirationUnit: 'd',
+            autoDelete: false,
+            // 类型和大小限制（默认开启）
+            enforceLimits: true
+        },
+        editingToken: {
+            id: '',
+            name: '',
+            type: 'web',
+            region: 'us-east-1',
+            defaultCategory: '',
+            defaultBucket: '',
+            defaultBackup: '',
+            owner: '',
+            permissions: [],
+            neverExpire: true,
+            expirationValue: 1,
+            expirationUnit: 'd',
+            autoDelete: false,
+            // 类型和大小限制（默认开启）
+            enforceLimits: true
+        },
+        createdToken: {
+            name: '',
+            type: 'web',
+            token: '',
+            endpoint: '',
+            accessKey: '',
+            secretKey: '',
+            region: '',
+            defaultBucket: '',
+            defaultBackup: '',
+            defaultCategory: ''
+        }
+    };
+},
+computed: {
+    editableSettings() {
+        return {
+            auth: {
+                user: { authCode: this.authSettings.user.authCode },
+                admin: { adminUsername: this.authSettings.admin.adminUsername, adminPassword: this.authSettings.admin.adminPassword }
+            },
+            upload: this.uploadSettings,
+            access: this.accessSettings,
+            // 对外 WebDAV 也参与脏值判断
+            webdav: this.webdavSettings,
+            clearUserPassword: this.clearUserPassword,
+            clearAdminPassword: this.clearAdminPassword
+        };
+    },
+    dialogWidth() {
+        return window.innerWidth > 768 ? '50%' : '90%';
+    },
+    /** WebDAV 挂载地址（按当前浏览器地址推导；反代时以其对外域名为准） */
+    webdavAddress() {
+        const origin = typeof window !== 'undefined' ? window.location.origin : '';
+        const root = String(this.webdavSettings?.rootPath || '').replace(/^\/+|\/+$/g, '');
+        return `${origin}/dav/${root ? `${root}/` : ''}`;
+    },
+    /**
+     * 访问域名 —— 与「API 接入信息」取同一个来源（utils/accessDomain）：
+     * 上传设置的「自定义访问域名」> 页面设置「默认URL前缀」> 本站 /file/。
+     */
+    webdavAccessDomain() {
+        return resolveAccessDomain({
+            userConfig: this.$store?.getters?.userConfig,
+            origin: typeof window !== 'undefined' ? window.location.origin : ''
+        });
+    },
+    userPassRules() {
+        return {
+            authCode: [
+                { validator: (rule, value, callback) => {
+                    const urlReservedChars = ['%', '&', '?', '#', '/'];
+                    const hasReservedChar = urlReservedChars.some(char => value && value.includes(char));
+                    if (hasReservedChar) {
+                        callback(new Error(this.$t('sysSecurity.passwordUrlReserved')));
+                    } else {
+                        callback();
+                    }
+                }, trigger: 'blur' }
+            ],
+            confirmNewUserPassword: [
+                { validator: (rule, value, callback) => {
+                    if (!value) {
+                        callback(new Error(this.$t('sysSecurity.confirmUploadPassword')));
+                    } else if (value !== this.authSettings.user.authCode) {
+                        callback(new Error(this.$t('sysSecurity.passwordMismatch')));
+                    } else {
+                        callback();
+                    }
+                }, trigger: 'blur' }
+            ]
+        };
+    },
+    adminPassRules() {
+        return {
+            confirmNewAdminPassword: [
+                { validator: (rule, value, callback) => {
+                    if (!value) {
+                        callback(new Error(this.$t('sysSecurity.confirmAdminPassword')));
+                    } else if (value !== this.authSettings.admin.adminPassword) {
+                        callback(new Error(this.$t('sysSecurity.passwordMismatch')));
+                    } else {
+                        callback();
+                    }
+                }, trigger: 'blur' }
+            ]
+        };
+    },
+    accessRules() {
+        const validateSessionMaxAge = (rule, value, callback) => {
+            if (!Number.isInteger(value) || value < 1 || value > 3650) {
+                callback(new Error(this.$t('sysSecurity.sessionMaxAgeInvalid')));
+            } else {
+                callback();
+            }
+        };
+        const validateImageTransformAllowedSizes = (rule, value, callback) => {
+            if (!this.accessSettings.imageTransformEnabled || !value || !value.trim()) {
+                callback();
+                return;
+            }
+
+            const sizes = value.split(',').map(size => size.trim().toLowerCase()).filter(Boolean);
+            const valid = sizes.every(size => {
+                const match = size.match(/^(auto|[1-9]\d*)x(auto|[1-9]\d*)$/);
+                if (!match || (match[1] === 'auto' && match[2] === 'auto')) return false;
+                return match.slice(1).every(dimension => dimension === 'auto' || Number(dimension) <= 4096);
+            });
+
+            if (!valid) {
+                callback(new Error(this.$t('sysSecurity.imageTransformAllowedSizesInvalid')));
+            } else {
+                callback();
+            }
+        };
+
+        return {
+            userSessionMaxAge: [
+                { validator: validateSessionMaxAge, trigger: 'change' }
+            ],
+            adminSessionMaxAge: [
+                { validator: validateSessionMaxAge, trigger: 'change' }
+            ],
+            imageTransformAllowedSizes: [
+                { validator: validateImageTransformAllowedSizes, trigger: ['blur', 'change'] }
+            ]
+        };
+    },
+    tokenRules() {
+        return {
+            name: [
+                { required: true, message: this.$t('sysSecurity.tokenNameRequired'), trigger: 'blur' }
+            ],
+            permissions: [
+                { required: true, message: this.$t('sysSecurity.permissionsRequired'), trigger: 'change' }
+            ],
+            expirationValue: [
+                { validator: (rule, value, callback) => {
+                    if (!this.newToken.neverExpire && (!value || value <= 0)) {
+                        callback(new Error(this.$t('sysSecurity.validPeriodRequired')));
+                    } else {
+                        callback();
+                    }
+                }, trigger: 'blur' }
+            ]
+        };
+    },
+    editTokenRules() {
+        return {
+            permissions: [
+                { required: true, message: this.$t('sysSecurity.permissionsRequired'), trigger: 'change' }
+            ],
+            expirationValue: [
+                { validator: (rule, value, callback) => {
+                    if (!this.editingToken.neverExpire && (!value || value <= 0)) {
+                        callback(new Error(this.$t('sysSecurity.validPeriodRequired')));
+                    } else {
+                        callback();
+                    }
+                }, trigger: 'blur' }
+            ]
+        };
+    },
+},
+methods: {
+    normalizeIpQuerySettings(settings = {}) {
+        const ipQuery = settings.ipQuery || {};
+        const customApi = ipQuery.customApi || {};
+        const params = Array.isArray(customApi.params) && customApi.params.length > 0
+            ? customApi.params.map(param => ({
+                key: param?.key || '',
+                value: param?.value || ''
+            }))
+            : [{ key: 'ip', value: '{ip}' }];
+        const responseFields = Array.isArray(customApi.responseFields)
+            ? customApi.responseFields.map(field => {
+                if (typeof field === 'string') return field;
+                return field?.path || '';
+            })
+            : [];
+
+        return {
+            ...settings,
+            moderate: settings.moderate || {},
+            ipQuery: {
+                enabled: ipQuery.enabled ?? false,
+                channel: ipQuery.channel || 'customApi',
+                customApi: {
+                    url: customApi.url || '',
+                    params,
+                    responseFields
+                }
+            }
+        };
+    },
+    addIpQueryParam() {
+        this.uploadSettings.ipQuery.customApi.params.push({ key: '', value: '' });
+    },
+    removeIpQueryParam(index) {
+        if (this.uploadSettings.ipQuery.customApi.params.length <= 1) return;
+        this.uploadSettings.ipQuery.customApi.params.splice(index, 1);
+    },
+    addIpQueryResponseField() {
+        this.uploadSettings.ipQuery.customApi.responseFields.push('');
+    },
+    removeIpQueryResponseField(index) {
+        this.uploadSettings.ipQuery.customApi.responseFields.splice(index, 1);
+    },
+    moveIpQueryResponseField(index, direction) {
+        const fields = this.uploadSettings.ipQuery.customApi.responseFields;
+        const targetIndex = index + direction;
+        if (targetIndex < 0 || targetIndex >= fields.length) return;
+        const [field] = fields.splice(index, 1);
+        fields.splice(targetIndex, 0, field);
+    },
+    handleUserPassInput() {
+        if (this.authSettings.user.authCode !== this.oriUserPassword) {
+            this.showUserPassConfirm = true;
+        } else {
+            this.showUserPassConfirm = false;
+        }
+    },
+    handleAdminPassInput() {
+        if (this.authSettings.admin.adminPassword !== this.oriAdminPassword) {
+            this.showAdminPassConfirm = true;
+        } else {
+            this.showAdminPassConfirm = false;
+        }
+    },
+    handleClearUserPassword(checked) {
+        if (checked) {
+            this.authSettings.user.authCode = '';
+            this.showUserPassConfirm = false;
+        }
+    },
+    handleClearAdminPassword(checked) {
+        if (checked) {
+            this.authSettings.admin.adminPassword = '';
+            this.authSettings.admin.adminUsername = '';
+            this.showAdminPassConfirm = false;
+        }
+    },
+    
+    // Token相关方法
+    getPermissionText(permission) {
+        const permissionMap = {
+            'upload': this.$t('sysSecurity.permUpload'),
+            'delete': this.$t('sysSecurity.permDelete'), 
+            'list': this.$t('sysSecurity.permList'),
+            'manage': this.$t('sysSecurity.permManage')
+        };
+        return permissionMap[permission] || permission;
+    },
+    
+    formatDate(dateString) {
+        return new Date(dateString).toLocaleString('zh-CN');
+    },
+    
+    /** 表格里展示的「凭据」：web 用 Token，s3 用 AccessKey（其余字段在「接入信息」里看） */
+    tokenDisplay(row) {
+        if (!row) return '';
+        if (row.type === 's3') return row.accessKey || ''
+        return row.token || ''
+    },
+    /** 通用复制（带统一提示） */
+    async copyValue(text) {
+        if (!text) return
+        const ok = await copyText(String(text))
+        this.$message({
+            type: ok ? 'success' : 'error',
+            message: this.$t(ok ? 'sysSecurity.copySuccess' : 'sysSecurity.copyFailed')
+        })
+    },
+    copyToken() {
+        this.copyValue(this.createdToken.token)
+    },
+    /** 打开已有 Token 的接入信息（凭据长期可查看、可复制） */
+    showCredential(row) {
+        this.credentialToken = { ...row }
+        this.showCredentialDialog = true
+    },
+
+    async loadApiTokens() {
+        this.tokenLoading = true;
+        try {
+            const response = await fetchWithAuth('/api/manage/apiTokens');
+            const data = await response.json();
+            this.apiTokens = data.tokens || [];
+        } catch (error) {
+            this.$message.error(this.$t('sysSecurity.tokenListFailed'));
+        } finally {
+            this.tokenLoading = false;
+        }
+    },
+
+    createToken() {
+        this.$refs.tokenForm.validate(async (valid) => {
+            if (!valid) return;
+            
+            try {
+                let expiresAt = null;
+                let autoDelete = false;
+                if (!this.newToken.neverExpire) {
+                    expiresAt = computeExpiresAt(new Date(), this.newToken.expirationValue, this.newToken.expirationUnit);
+                    autoDelete = this.newToken.autoDelete;
+                }
+
+                // 归属账户交给后端决定：统一落到「安全设置」里的真实管理员账号，
+                // 前端不再写死 'admin'（否则文件会归集到一个不存在的账户下）
+                const response = await fetchWithAuth('/api/manage/apiTokens', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        name: this.newToken.name,
+                        type: this.newToken.type,
+                        region: this.newToken.region,
+                        defaultCategory: this.newToken.defaultCategory,
+                        defaultBucket: this.newToken.defaultBucket,
+                        defaultBackup: this.newToken.defaultBackup,
+                        permissions: this.newToken.permissions,
+                        expiresAt,
+                        autoDelete,
+                        // 类型和大小限制（web / s3 两种 Token 通用）
+                        enforceLimits: this.newToken.enforceLimits !== false
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    const d = data.data || {};
+                    this.createdToken = {
+                        name: d.name || this.newToken.name,
+                        type: d.type || this.newToken.type,
+                        token: d.token || '',
+                        endpoint: d.endpoint || '',
+                        accessKey: d.accessKey || '',
+                        secretKey: d.secretKey || '',
+                        region: d.region || '',
+                        defaultCategory: this.newToken.defaultCategory,
+                        defaultBucket: this.newToken.defaultBucket,
+                        defaultBackup: this.newToken.defaultBackup
+                    };
+                    this.showCreateTokenDialog = false;
+                    this.showTokenResultDialog = true;
+                    this.newToken = {
+                        type: 'web', name: '', owner: '', region: 'us-east-1',
+                        defaultCategory: '', defaultBucket: '', defaultBackup: '',
+                        permissions: [], neverExpire: true, expirationValue: 1, expirationUnit: 'd', autoDelete: false,
+                        enforceLimits: true
+                    };
+                    await this.loadApiTokens();
+                    this.$message.success(this.$t('sysSecurity.tokenCreateSuccess'));
+                } else {
+                    this.$message.error(data.error || this.$t('sysSecurity.tokenCreateFailed'));
+                }
+            } catch (error) {
+                this.$message.error(this.$t('sysSecurity.tokenCreateFailed'));
+            }
+        });
+    },
+    
+    editToken(token) {
+        const hasExpiration = token.expiresAt !== null && token.expiresAt !== undefined;
+        this.editingToken = {
+            id: token.id,
+            name: token.name,
+            type: token.type || 'web',
+            region: token.region || 'us-east-1',
+            defaultCategory: token.defaultCategory || '',
+            defaultBucket: token.defaultBucket || '',
+            defaultBackup: token.defaultBackup || '',
+            owner: token.owner,
+            permissions: [...token.permissions],
+            neverExpire: !hasExpiration,
+            expirationValue: 1,
+            expirationUnit: 'd',
+            autoDelete: token.autoDelete || false,
+            // 类型和大小限制：历史数据缺该字段时按「开启」处理
+            enforceLimits: token.enforceLimits !== false
+        };
+        this.showEditTokenDialog = true;
+    },
+    
+    updateToken() {
+        this.$refs.editTokenForm.validate(async (valid) => {
+            if (!valid) return;
+            
+            try {
+                let expiresAt = null;
+                let autoDelete = false;
+                if (!this.editingToken.neverExpire) {
+                    expiresAt = computeExpiresAt(new Date(), this.editingToken.expirationValue, this.editingToken.expirationUnit);
+                    autoDelete = this.editingToken.autoDelete;
+                }
+                
+                const response = await fetchWithAuth('/api/manage/apiTokens', {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        tokenId: this.editingToken.id,
+                        name: this.editingToken.name,
+                        region: this.editingToken.region,
+                        defaultCategory: this.editingToken.defaultCategory,
+                        defaultBucket: this.editingToken.defaultBucket,
+                        defaultBackup: this.editingToken.defaultBackup,
+                        permissions: this.editingToken.permissions,
+                        expiresAt,
+                        autoDelete,
+                        // 类型和大小限制（web / s3 两种 Token 通用）
+                        enforceLimits: this.editingToken.enforceLimits !== false
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    this.showEditTokenDialog = false;
+                    await this.loadApiTokens();
+                    this.$message.success(this.$t('sysSecurity.tokenUpdateSuccess'));
+                } else {
+                    this.$message.error(data.error || this.$t('sysSecurity.tokenUpdateFailed'));
+                }
+            } catch (error) {
+                this.$message.error(this.$t('sysSecurity.tokenUpdateFailed'));
+            }
+        });
+    },
+    
+    async deleteToken(tokenId) {
+        try {
+            await this.$confirm(this.$t('sysSecurity.tokenDeleteConfirm'), this.$t('sysSecurity.tokenDeleteConfirmTitle'), {
+                confirmButtonText: this.$t('sysSecurity.tokenDeleteConfirmOk'),
+                cancelButtonText: this.$t('sysSecurity.tokenDeleteConfirmCancel'),
+                type: 'warning'
+            });
+            
+            const response = await fetchWithAuth(`/api/manage/apiTokens?id=${tokenId}`, {
+                method: 'DELETE'
+            });
+            
+            const data = await response.json();
+            
+            if (response.ok) {
+                await this.loadApiTokens();
+                this.$message.success(this.$t('sysSecurity.tokenDeleteSuccess'));
+            } else {
+                this.$message.error(data.error || this.$t('sysSecurity.tokenDeleteFailed'));
+            }
+        } catch (error) {
+            if (error !== 'cancel') {
+                this.$message.error(this.$t('sysSecurity.tokenDeleteFailed'));
+            }
+        }
+    },
+    
+    async copyToken() {
+        // 统一剪贴板兼容层：navigator.clipboard 不可用（http / 老浏览器）时自动降级
+        const ok = await copyText(this.createdToken.token);
+        if (ok) this.$message.success(this.$t('sysSecurity.tokenCopied'));
+        else this.$message.error(this.$t('sysSecurity.copyFailed'));
+    },
+    
+    onCreateNeverExpireChange(val) {
+        if (val) {
+            this.newToken.autoDelete = false;
+        }
+    },
+    
+    onEditNeverExpireChange(val) {
+        if (val) {
+            this.editingToken.autoDelete = false;
+        }
+    },
+    
+    handleWindowResize() {
+        this.windowWidth = window.innerWidth;
+    },
+    getTokenStatus(expiresAt) {
+        return getTokenStatus(expiresAt);
+    },
+    
+    /** 复制 WebDAV 挂载地址（统一走剪贴板兼容层） */
+    async copyWebdavAddress() {
+        const text = this.webdavAddress;
+        const ok = await copyText(text);
+        if (ok) this.$message.success(this.$t('sysOthers.copySuccess'));
+        else this.$message.warning(text);
+    },
+    /** 复制对外访问域名 */
+    async copyWebdavAccessDomain() {
+        const text = this.webdavAccessDomain;
+        const ok = await copyText(text);
+        if (ok) this.$message.success(this.$t('sysOthers.copySuccess'));
+        else this.$message.warning(text);
+    },
+    /**
+     * 保存「对外 WebDAV」—— 配置存放在 sysConfig 的 others 分区。
+     * 带着进入页面时读到的 others 快照一起提交（后端还会深合并），
+     * 因此只改 webdav 这一段也不会影响遥测 / 随机图 / 公开画廊等其它字段。
+     */
+    async saveWebdavSettings() {
+        const base = (this.othersSnapshot && typeof this.othersSnapshot === 'object')
+            ? this.othersSnapshot
+            : {};
+        const payload = { ...base, webdav: { ...this.webdavSettings } };
+        const res = await fetchWithAuth('/api/manage/sysConfig/others', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        if (!res.ok) throw new Error(this.$t('floatingSave.failed'));
+        this.othersSnapshot = payload;
+    },
+    saveSettings() {
+        if (this.saving) return;
+        this.saving = true;
+        // 所有表单的Promise数组
+        let validationPromises = [];
+
+        // 验证用户密码表单
+        validationPromises.push(new Promise((resolve) => {
+            this.$refs.userPassForm.validate((valid) => {
+                resolve(valid);
+            });
+        }));
+
+        // 验证管理密码表单
+        validationPromises.push(new Promise((resolve) => {
+            this.$refs.adminPassForm.validate((valid) => {
+                resolve(valid);
+            });
+        }));
+
+        // 验证会话安全策略表单
+        validationPromises.push(new Promise((resolve) => {
+            this.$refs.accessForm.validate((valid) => {
+                resolve(valid);
+            });
+        }));
+
+        // 等待所有验证完成
+        return Promise.all(validationPromises).then((results) => {
+            const isValid = results.every(valid => valid);
+
+            if (!isValid) {
+                return;
+            }
+
+            // 验证会话有效期为 1-3650 的正整数
+            if (this.accessSettings.userSessionMaxAge < 1 ||
+                !Number.isInteger(this.accessSettings.userSessionMaxAge) ||
+                this.accessSettings.userSessionMaxAge > 3650 ||
+                this.accessSettings.adminSessionMaxAge < 1 ||
+                !Number.isInteger(this.accessSettings.adminSessionMaxAge) ||
+                this.accessSettings.adminSessionMaxAge > 3650) {
+                this.$message.error(this.$t('sysSecurity.sessionMaxAgeInvalid'));
+                return;
+            }
+
+            const settings = JSON.parse(JSON.stringify({
+                auth: this.authSettings,
+                upload: this.uploadSettings,
+                access: this.accessSettings
+            }));
+            // 不保存确认密码相关字段
+            delete settings.auth.user.confirmNewUserPassword;
+            delete settings.auth.admin.confirmNewAdminPassword;
+
+            // 标记清除密码
+            if (this.clearUserPassword) {
+                settings.auth.user._clear = true;
+                settings.auth.user.authCode = '';
+            }
+            if (this.clearAdminPassword) {
+                settings.auth.admin._clear = true;
+                settings.auth.admin.adminPassword = '';
+            }
+
+            return fetchWithAuth('/api/manage/sysConfig/security', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(settings)
+            }).then(res => {
+                if (!res.ok) throw new Error(this.$t('floatingSave.failed'));
+                return res.json();
+            }).then((data) => {
+                // 管理端密码变更后，当前会话已被清除，需要重新登录
+                if (data.adminPasswordChanged) {
+                    this.markSettingsSaved();
+                    const msg = this.$t('sysSecurity.adminPasswordChangedRelogin');
+                    this.$message.warning(msg);
+                    setTimeout(() => {
+                        this.$store.commit('setAdminLoggedIn', false);
+                        this.$router.push('/adminLogin');
+                    }, 1500);
+                    return;
+                }
+
+                // 「对外 WebDAV」的配置在 others 分区，跟随本次保存一起写回
+                return this.saveWebdavSettings().then(() => {
+                    this.$message.success(this.$t('sysSecurity.settingsSaved'));
+                    // 保存成功后重置密码字段为空（后端已处理）
+                    this.authSettings.user.authCode = '';
+                    this.authSettings.admin.adminPassword = '';
+                    this.authSettings.user.confirmNewUserPassword = '';
+                    this.authSettings.admin.confirmNewAdminPassword = '';
+                    this.oriUserPassword = '';
+                    this.oriAdminPassword = '';
+                    // 标记已有密码（如果用户刚设置了密码，且不是清除操作）
+                    if (settings.auth.user.authCode && !settings.auth.user._clear) {
+                        this.authSettings.user._hasPassword = true;
+                    } else if (settings.auth.user._clear) {
+                        this.authSettings.user._hasPassword = false;
+                    }
+                    if (settings.auth.admin.adminPassword && !settings.auth.admin._clear) {
+                        this.authSettings.admin._hasPassword = true;
+                    } else if (settings.auth.admin._clear) {
+                        this.authSettings.admin._hasPassword = false;
+                    }
+                    this.showUserPassConfirm = false;
+                    this.showAdminPassConfirm = false;
+                    this.clearUserPassword = false;
+                    this.clearAdminPassword = false;
+                    this.markSettingsSaved();
+                });
+            });
+        }).catch(() => {
+            this.$message.error(this.$t('floatingSave.failed'));
+        }).finally(() => {
+            this.saving = false;
+        });
+    }
+},
+mounted() {
+    // 注意：这里曾出现「两个 mounted()」（对象字面量重复键 → 后者覆盖前者），
+    // 导致加载配置的 mounted 从未执行，页面永远停在 v-loading 转圈。
+    // 现在合并为一个：先挂 resize 监听，再加载配置。
+    window.addEventListener('resize', this.handleWindowResize);
+    this.loading = true;
+    // 获取上传设置
+    Promise.all([
+        fetchWithAuth('/api/manage/sysConfig/security').then((response) => response.json()),
+        // 对外 WebDAV 的配置存在 others 分区，一并取回（保存时整段回写）
+        fetchWithAuth('/api/manage/sysConfig/others').then((response) => response.json()).catch(() => null)
+    ]).then(async ([data, others]) => {
+        this.authSettings = data.auth;
+        this.uploadSettings = this.normalizeIpQuerySettings(data.upload);
+        this.accessSettings = {
+            imageTransformEnabled: false,
+            imageTransformAllowedSizes: '',
+            ...data.access
+        };
+
+        // 对外 WebDAV（原「其他设置」页区块）：老存档可能没有该段，补默认值
+        this.othersSnapshot = others && typeof others === 'object' ? others : null;
+        const webdav = this.othersSnapshot?.webdav || {};
+        this.webdavSettings = {
+            enabled: webdav.enabled === true,
+            rootPath: String(webdav.rootPath || ''),
+            readonly: webdav.readonly === true
+        };
+
+        // 密码从后端返回为空（安全考虑），记录原始空值
+        this.oriUserPassword = '';
+        this.oriAdminPassword = '';
+        this.authSettings.user.confirmNewUserPassword = '';
+        this.authSettings.admin.confirmNewAdminPassword = '';
+        await this.$nextTick();
+        this.markSettingsSaved();
+        
+        // 加载API Token列表
+        this.loadApiTokens();
+        // 注：Token 的「默认存储渠道 / 默认备份渠道」下拉已改为通用 <ChannelSelect>，
+        // 渠道列表由该组件内部按会话缓存拉取，这里不再需要单独预取。
+    })
+    .catch(() => {
+        // 配置加载失败也要结束 loading，否则页面一直转圈无法操作
+        this.$message.error(this.$t('floatingSave.failed'));
+    })
+    .finally(() => {
+        this.loading = false;
+    });
+},
+beforeUnmount() {
+    window.removeEventListener('resize', this.handleWindowResize);
+}
+};
+</script>
+
+<style scoped>
+.security-settings {
+    min-height: 500px;
+}
+
+.first-settings {
+    margin-bottom: 40px;
+}
+
+.first-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 20px;
+    padding-bottom: 12px;
+    border-bottom: 2px solid var(--el-color-primary-light-7);
+}
+
+.second-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    text-align: start;
+    margin-left: 0;
+    margin-bottom: 16px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--el-border-color-lighter);
+}
+
+/* 对外 WebDAV 统一说明（账号来源 / 渠道来源 / 不受类型与大小限制） */
+/* WebDAV 统一说明：已并入上方表单框内，不再自带背景 / 边框（否则视觉上多一层框） */
+.webdav-note {
+    width: 100%;
+    font-size: 13px;
+    line-height: 1.75;
+    color: var(--el-text-color-secondary);
+}
+
+/* 表单样式 - 上下排列左对齐(对齐系统状态卡片风格,无 hover 动效) */
+.first-settings :deep(.el-form) {
+    padding: 20px 24px;
+    background-color: var(--glass-bg) !important;
+    backdrop-filter: blur(20px) saturate(1.4);
+    -webkit-backdrop-filter: blur(20px) saturate(1.4);
+    border-radius: 16px;
+    border: 1px solid var(--glass-border);
+    margin-bottom: 20px;
+    box-shadow: var(--glass-shadow);
+}
+
+.first-settings :deep(.el-form-item) {
+    margin-bottom: 20px;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+}
+
+.first-settings :deep(.el-form-item:last-child) {
+    margin-bottom: 0;
+}
+
+.first-settings :deep(.el-form-item__label) {
+    text-align: left;
+    padding-bottom: 8px;
+    font-weight: 500;
+    color: var(--el-text-color-primary);
+    width: auto !important;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.first-settings :deep(.el-form-item__content) {
+    width: 100%;
+    max-width: 400px;
+    margin-left: 0 !important;
+}
+
+.first-settings :deep(.el-input) {
+    width: 100%;
+}
+
+.first-settings :deep(.el-select) {
+    width: 100%;
+}
+
+.first-settings :deep(.el-switch) {
+    --el-switch-on-color: var(--el-color-primary);
+}
+
+.form-item-hint {
+    display: inline-block;
+    margin-left: 8px;
+    font-size: 14px;
+    color: var(--el-text-color-regular);
+    line-height: 32px;
+    vertical-align: middle;
+}
+
+.query-param-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 100%;
+}
+
+.query-param-row {
+    display: grid;
+    grid-template-columns: minmax(120px, 1fr) minmax(160px, 1.4fr) auto;
+    gap: 8px;
+    align-items: center;
+    width: 100%;
+}
+
+.response-field-row {
+    display: grid;
+    grid-template-columns: minmax(180px, 1fr) auto auto auto;
+    gap: 4px;
+    align-items: center;
+    width: 100%;
+}
+
+.response-field-row :deep(.el-button + .el-button) {
+    margin-left: 0;
+}
+
+.token-title {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.token-actions {
+    margin-left: 5px;
+}
+
+.token-table-container {
+    display: flex;
+    justify-content: center;
+    margin-top: 20px;
+    width: 100%;
+    overflow: hidden;
+}
+
+.token-table {
+    width: 100%;
+    border-radius: 12px !important;
+    overflow: hidden;
+    box-shadow: var(--glass-shadow);
+    background-color: var(--glass-bg) !important;
+    backdrop-filter: blur(20px) saturate(1.4);
+    -webkit-backdrop-filter: blur(20px) saturate(1.4);
+    border: 1px solid var(--glass-border);
+}
+
+.token-table :deep(.el-table__header-wrapper) {
+    border-radius: 12px 12px 0 0;
+}
+
+.token-table :deep(.el-table__body-wrapper) {
+    border-radius: 0 0 12px 12px;
+    background: transparent;
+}
+
+.token-table :deep(.el-table) {
+    border-radius: 12px;
+    background: transparent;
+}
+
+.token-table :deep(.el-table__header) {
+    background-color: color-mix(in srgb, var(--el-text-color-primary) 4%, transparent);
+}
+
+.token-table :deep(.el-table th) {
+    background-color: color-mix(in srgb, var(--el-text-color-primary) 4%, transparent) !important;
+    border-bottom: 1px solid var(--glass-border);
+    text-align: center;
+}
+
+.token-table :deep(.el-table td) {
+    background-color: transparent !important;
+    border-bottom: 1px solid var(--glass-border);
+}
+html.dark .token-table :deep(.el-table th) {
+    background-color: color-mix(in srgb, var(--el-text-color-primary) 5%, transparent) !important;
+}
+html.dark .token-table :deep(.el-table td) {
+    border-bottom: 1px solid var(--glass-border);
+}
+
+.token-table :deep(.el-table__row:hover td) {
+    background-color: color-mix(in srgb, var(--el-text-color-primary) 3%, transparent) !important;
+}
+html.dark .token-table :deep(.el-table__row:hover td) {
+    background-color: color-mix(in srgb, var(--el-text-color-primary) 5%, transparent) !important;
+}
+
+.token-table :deep(.el-table__row:last-child td) {
+    border-bottom: none;
+}
+
+.table-cell-content {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding: 8px 4px;
+    min-height: 40px;
+    text-align: center;
+}
+
+.action-buttons {
+    gap: 8px;
+}
+
+.action-button {
+    margin-left: 0;
+}
+
+.permission-tag {
+    margin: 2px !important;
+}
+
+.token-display {
+    font-family: 'Courier New', monospace;
+    background-color: var(--text-bg-color);
+    padding: 4px 8px;
+    border-radius: 6px;
+    font-size: 12px;
+    word-break: break-all;
+    text-align: center;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* 响应式布局 */
+@media (max-width: 768px) {
+    .first-settings :deep(.el-form) {
+        padding: 12px 15px;
+    }
+    
+    .first-settings :deep(.el-form-item__content) {
+        max-width: 100%;
+    }
+
+    .query-param-row {
+        grid-template-columns: 1fr;
+    }
+
+    .response-field-row {
+        grid-template-columns: 1fr auto auto auto;
+    }
+    
+    .token-table-container {
+        padding: 0 10px;
+    }
+    
+    .table-cell-content {
+        padding: 6px 2px;
+        min-height: 36px;
+    }
+    
+    .token-display {
+        font-size: 11px;
+        padding: 3px 6px;
+    }
+}
+
+@media (max-width: 480px) {
+    .token-table-container {
+        padding: 0 5px;
+    }
+    
+    .table-cell-content {
+        padding: 4px 2px;
+        min-height: 32px;
+        font-size: 12px;
+    }
+    
+    .action-buttons .el-button {
+        padding: 4px 8px;
+        font-size: 12px;
+    }
+    
+    .permission-tag {
+        font-size: 11px;
+        padding: 0 4px;
+        height: 20px;
+        line-height: 20px;
+    }
+}
+
+.token-result {
+    padding: 10px 0;
+}
+
+.token-result .el-form-item {
+    margin-bottom: 14px;
+}
+
+/* 创建成功 / 接入信息弹窗里的提示行 */
+.token-result-tip {
+    margin: 0 0 14px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--primary-color-accent, var(--el-color-primary));
+    background: color-mix(in srgb, var(--primary-color, #2563EB) 8%, transparent);
+    border: 1px solid color-mix(in srgb, var(--primary-color, #2563EB) 24%, transparent);
+}
+.token-result-tip--muted {
+    margin-top: 12px;
+    color: var(--el-text-color-secondary);
+    background: color-mix(in srgb, var(--el-text-color-primary) 4%, transparent);
+    border-color: var(--glass-border, rgba(128, 128, 128, 0.22));
+}
+
+/* ---- Token 类型选择 ---- */
+.token-type-group {
+    display: flex;
+    gap: 8px;
+}
+.token-type-icon {
+    margin-right: 6px;
+}
+.token-type-desc {
+    margin-top: 6px;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--el-text-color-secondary);
+}
+
+/* ---- 默认上传参数（多行输入，铺满表单） ---- */
+.token-defaults {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    width: 100%;
+}
+/* 渠道下拉：左侧固定标签 + 右侧选择器，与「其他设置 → 对外 WebDAV」的渠道选择保持一致的观感 */
+.token-default-field {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+}
+.token-default-label {
+    flex: 0 0 84px;
+    font-size: 12px;
+    color: var(--el-text-color-secondary);
+}
+.token-defaults-tip {
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--el-text-color-secondary);
+}
+/* 「类型和大小限制」：开关 + 说明文字同一行，说明作为 tooltip 触发器 */
+.token-limit-field {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+.token-limit-tip {
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--el-text-color-secondary);
+    cursor: help;
+    border-bottom: 1px dashed var(--el-border-color);
+}
+.token-defaults :deep(.el-input-group__prepend) {
+    padding: 0 8px;
+    font-size: 12px;
+    white-space: nowrap;
+}
+
+/* ---- 列表里的凭据单元格 + 行内复制 ---- */
+.token-cell {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+.token-cell .token-display {
+    flex: 1 1 auto;
+    min-width: 0;
+    text-align: left;
+}
+.inline-copy-btn {
+    flex: 0 0 auto;
+    padding: 2px 6px;
+    height: auto;
+}
+
+.dialog-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+}
+
+/* 确认密码框的动画效果 */
+.fade-slide-enter-active, .fade-slide-leave-active {
+    transition: all 0.3s ease-in-out;
+}
+
+.fade-slide-enter-from {
+    opacity: 0;
+    transform: translateY(-10px);
+}
+
+.fade-slide-leave-to {
+    opacity: 0;
+    transform: translateY(-10px);
+}
+
+.fade-slide-enter-to, .fade-slide-leave-from {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+:deep(.el-dialog) {
+    border-radius: 12px;
+    background-color: var(--dialog-bg-color);
+    border: 1px solid var(--glass-border);
+    box-shadow: var(--dialog-box-shadow);
+}
+</style>

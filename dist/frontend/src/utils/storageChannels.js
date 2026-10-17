@@ -1,0 +1,116 @@
+import fetchWithAuth from '@/utils/fetchWithAuth';
+
+/**
+ * 存储渠道下拉选项的【统一数据源】。
+ *
+ * 背景：Token 编辑、用户管理编辑用户、上传页「上传设置」三处都需要
+ * 「选一个存储渠道 / 备份渠道」，此前各自拉取渠道列表、各自拼 <el-option>，
+ * 结果三处的哨兵值（空值 / none）语义与排序都不一致，用户很容易选错。
+ *
+ * 现在统一：
+ *   1) fetchStorageChannels()  —— 拉取渠道列表（会话内缓存，避免每个组件各请求一次）
+ *   2) buildChannelOptions()   —— 按类型生成下拉选项（默认项 / none / 具体渠道）
+ *   3) <ChannelSelect>         —— 直接用上面两项的通用下拉组件
+ *
+ * 约定（与后端 StorageChannelService 完全一致）：
+ *   - 选项**值一律是渠道 ID**（6 位 code），渠道名只是给人看的标识；
+ *   - `''`     = 「默认」—— 值为空，跟随全局设置（由 getStorageChannel 解析）
+ *   - `'none'` = 明确「不备份」，仅备份渠道下拉有此项
+ */
+
+/** 渠道列表缓存（同一会话内只拉一次；force=true 强制刷新） */
+let channelCache = null;
+let inflight = null;
+
+/**
+ * 拉取渠道列表并归一化为 `[{ id, code, name, type }]`。
+ * 后端 `/api/manage/channels` 返回的是「按类型分组」的对象，这里展平。
+ * 拉取失败时返回空数组（不抛错，避免阻塞设置页渲染）。
+ */
+export async function fetchStorageChannels(force = false) {
+    if (channelCache && !force) return channelCache;
+    if (inflight && !force) return inflight;
+    inflight = fetchWithAuth('/api/manage/channels')
+        .then((resp) => (resp && resp.ok ? resp.json() : null))
+        .then((grouped) => {
+            const list = [];
+            for (const [type, arr] of Object.entries(grouped || {})) {
+                for (const c of (arr || [])) {
+                    // 值统一用 code（渠道 ID）；个别历史数据没有 code 时回退主键
+                    const value = c.code || c.id || '';
+                    if (!value) continue;
+                    list.push({ id: value, code: c.code || value, name: c.name || '', type: c.type || type });
+                }
+            }
+            channelCache = list;
+            return list;
+        })
+        .catch(() => [])
+        .finally(() => {
+            inflight = null;
+        });
+    return inflight;
+}
+
+/** 清空渠道缓存（渠道列表发生增删改后调用） */
+export function invalidateStorageChannels() {
+    channelCache = null;
+}
+
+/** 渠道展示名：`渠道ID · 渠道名（类型）` */
+export function channelLabel(ch) {
+    const id = ch.code || ch.id || '';
+    const name = ch.name || '';
+    const type = ch.type || '';
+    const head = id ? `${id} · ${name}` : name;
+    return type ? `${head}（${type}）` : head;
+}
+
+/**
+ * 生成渠道下拉选项。
+ *
+ * @param {Array} channels  渠道列表（fetchStorageChannels 的返回值）
+ * @param {Object} opts
+ *   - kind: 'main' | 'backup'
+ *       main   → 顶部「默认」，随后是各存储渠道
+ *       backup → 顶部「默认」，随后是「none（不备份）」，再是各存储渠道
+ *   - defaultLabel / noneLabel: 自定义文案（默认取 i18n）
+ *   - t: i18n 函数（$t），组件里传入
+ * @returns {Array<{value:string,label:string,type:string,icon:string}>}
+ */
+export function buildChannelOptions(channels, opts = {}) {
+    const { kind = 'main', t = null } = opts;
+    const tr = (key, fallback) => (typeof t === 'function' ? t(key) : fallback);
+    const list = Array.isArray(channels) ? channels : [];
+
+    const out = [];
+    // 1) 「默认」——值为空串，表示跟随全局设置（后端 getStorageChannel 解析）
+    out.push({
+        value: '',
+        label: opts.defaultLabel || tr('channelSelect.defaultOption', '默认（跟随全局设置）'),
+        type: '',
+        icon: 'cog',
+    });
+    // 2) 备份渠道额外提供「none」——明确拒绝备份
+    if (kind === 'backup') {
+        out.push({
+            value: 'none',
+            label: opts.noneLabel || tr('sysSecurity.defaultBackupNone', 'none（不备份）'),
+            type: '',
+            icon: 'ban',
+        });
+    }
+    // 3) 具体渠道（按 code 排序，保证三处顺序一致）
+    const sorted = [...list].sort((a, b) => String(a.code).localeCompare(String(b.code)));
+    for (const ch of sorted) {
+        out.push({ value: ch.code || ch.id, label: channelLabel(ch), type: ch.type || '', icon: '' });
+    }
+    return out;
+}
+
+/** 把渠道 ID 解析成展示串（用于「当前默认渠道」徽标） */
+export function resolveChannelLabel(ch) {
+    if (!ch) return '';
+    const name = ch.name || '';
+    return ch.code ? `${ch.code} · ${name}` : name;
+}
