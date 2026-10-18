@@ -170,8 +170,8 @@ export class UsersController {
       where: { status: 'active', ...(admin ? {} : { uploader: me || '' }) },
       select: {
         uploader: true, ip: true, size: true, createdAt: true, metas: true,
-        // 主渠道副本 → 归出「上传渠道」集合（v1.8.0：统计列表新增「上传渠道」一列）
-        copies: { where: { isPrimary: true }, select: { channelId: true } },
+        // 上传渠道集合 = 该文件全部有效副本的渠道（主 + 备都算，v1.8.0 统计列表新增「上传渠道」一列）
+        copies: { where: { status: 'active' }, select: { channelId: true } },
       },
     });
 

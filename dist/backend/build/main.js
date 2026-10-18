@@ -153,15 +153,30 @@ async function bootstrap() {
     app.enableCors({ origin: true, credentials: true });
     await app.init();
     if (process.env.DB_SKIP_PRAGMAS !== '1') {
+        const applied = [];
         try {
-            await prisma_1.prisma.$executeRawUnsafe('PRAGMA journal_mode=WAL;');
-            await prisma_1.prisma.$executeRawUnsafe('PRAGMA busy_timeout=5000;');
-            await prisma_1.prisma.$executeRawUnsafe('PRAGMA synchronous=NORMAL;');
-            app_log_1.appLog.info('app', 'SQLite PRAGMA：WAL / busy_timeout=5000 / synchronous=NORMAL');
+            const rows = await prisma_1.prisma.$queryRawUnsafe('PRAGMA journal_mode=WAL;');
+            applied.push(`journal_mode=${rows?.[0]?.journal_mode ?? '?'}`);
         }
         catch (err) {
-            console.warn(`[pragmas] 设置失败（不影响启动）：${err.message}`);
+            console.warn(`[pragmas] journal_mode 设置失败：${err.message}`);
         }
+        try {
+            const rows = await prisma_1.prisma.$queryRawUnsafe('PRAGMA busy_timeout=5000;');
+            applied.push(`busy_timeout=${rows?.[0]?.timeout ?? 5000}`);
+        }
+        catch (err) {
+            console.warn(`[pragmas] busy_timeout 设置失败：${err.message}`);
+        }
+        try {
+            await prisma_1.prisma.$executeRawUnsafe('PRAGMA synchronous=NORMAL;');
+            applied.push('synchronous=NORMAL');
+        }
+        catch (err) {
+            console.warn(`[pragmas] synchronous 设置失败：${err.message}`);
+        }
+        if (applied.length)
+            app_log_1.appLog.info('app', `SQLite PRAGMA：${applied.join(' / ')}`);
     }
     try {
         await app.get(channels_controller_1.ChannelsService).ensureBuiltinLocalChannel();

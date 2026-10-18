@@ -34,3 +34,4 @@
 # 6. 进一步排除指定目录（双重保险，其实前面 * 已经排除了）
 dist/docker/
 dist/docs/
+.vscode

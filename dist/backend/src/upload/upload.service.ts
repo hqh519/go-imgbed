@@ -954,12 +954,14 @@ export class UploadService {
         ip: uploadIp,
         metas: JSON.stringify({ UploadAddress: uploadAddress }),
         // 主渠道副本与文件记录一次写入（嵌套 create = 同一事务），少一次往返
+        // isPrimary 补记（v1.8.0：此前只靠「第一条副本即主副本」的隐式约定，字段一直是 false）
         copies: {
           create: {
             channelId: usedChannel.id,
             remoteKey: result.remoteKey,
             remoteUrl: result.remoteUrl || '',
             status: 'active',
+            isPrimary: true,
           },
         },
       },
