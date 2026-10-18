@@ -519,7 +519,8 @@ export class LinkController {
       pushName(rest);
     }
     const record = await prisma.fileRecord.findFirst({
-      where: { OR: nameCandidates.map((n) => ({ name: n })) },
+      // 回收站文件（status='deleted'）对外一律 404 —— 恢复后自动恢复访问
+      where: { status: 'active', OR: nameCandidates.map((n) => ({ name: n })) },
       include: { copies: true },
     });
     if (!record) return res.status(404).send('Not Found');
@@ -1082,9 +1083,10 @@ export class ManageController {
   }
 
   /**
-   * 删除（文件 / 目录）。
+   * 删除（文件 / 目录）→ **软删除：移入回收站**。
    * 前端约定用 GET + `?folder=true|false`（历史契约），这里 GET 与 DELETE 双注册。
-   * 目录删除会连同其下所有文件的远端副本一起清理，避免孤儿资源。
+   * 目录删除 = 目录下所有文件一起进回收站（不动远端副本，可整体恢复）。
+   * 彻底删除（连远端副本一起清理）只在回收站里做：见 trash/purge 路由。
    * 路由用通配符，兼容 File_ID 中含目录层级（如 `风景/2026/abc`）的情况。
    */
   @Get('delete/*')
@@ -1105,33 +1107,141 @@ export class ManageController {
     const owner = this.admin(req) ? '' : currentSession(req)?.user || '';
     const own = owner ? { uploader: owner } : {};
 
-    // 目录删除：按 folder 前缀批量删
+    // 目录删除：按 folder 前缀批量删（软删除，可整体恢复；已在回收站的不重复处理）
     if (q.folder === 'true') {
       const prefix = key.replace(/\/+$/, '');
       const rows = await prisma.fileRecord.findMany({
-        where: { ...own, OR: [{ folder: prefix }, { folder: { startsWith: `${prefix}/` } }] },
+        where: { status: 'active', ...own, OR: [{ folder: prefix }, { folder: { startsWith: `${prefix}/` } }] },
       });
-      for (const r of rows) await this.purgeRecord(r.id, r.name);
+      for (const r of rows) await this.trashRecord(r.id, r.name);
       return { success: true, deleted: rows.length };
     }
 
     const record = await prisma.fileRecord.findFirst({
-      where: { ...own, OR: [{ name: key }, { name: key.replace(/\.[^.]*$/, '') }] },
+      where: { status: 'active', ...own, OR: [{ name: key }, { name: key.replace(/\.[^.]*$/, '') }] },
     });
     if (!record) return { success: false, message: '文件不存在' };
-    await this.purgeRecord(record.id, record.name);
+    await this.trashRecord(record.id, record.name);
     return { success: true, deleted: 1 };
   }
 
+  /** 移入回收站（软删除，不动远端副本） */
+  private async trashRecord(id: string, name: string) {
+    await this.uploadSvc.softDeleteFile(id, name);
+  }
+
+  // ==================== 回收站 ====================
+
   /**
-   * 先删远端副本，再删库记录（远端失败不阻断，但记录日志）。
-   *
-   * 实现已收敛到 `UploadService.removeFile` —— 与「S3 协议 DELETE /s3/<bucket>/<key>」
-   * 通道共用同一套逻辑，避免两处实现各自漂移（早前 S3 通道就是因为拿不到这段逻辑，
-   * 删除请求一律 404，第三方插件只能"传得上、删不掉"）。
+   * 回收站列表：status='deleted' 的文件，按删除时间倒序。
+   * 普通用户只能看到自己移入的文件；附带渠道概要（恢复/彻底删除时前端可直接展示影响面）。
    */
-  private async purgeRecord(id: string, name: string) {
-    await this.uploadSvc.removeFile(id, name);
+  @Get('trash')
+  async trashList(@Req() req: Request) {
+    const owner = this.admin(req) ? '' : currentSession(req)?.user || '';
+    const rows = await prisma.fileRecord.findMany({
+      where: { status: 'deleted', ...(owner ? { uploader: owner } : {}) },
+      include: { copies: { select: { channelId: true, isPrimary: true, status: true } } },
+      orderBy: { deletedAt: 'desc' },
+      take: 500,
+    });
+    const channelIds = Array.from(new Set(rows.flatMap((r) => r.copies.map((c) => c.channelId))));
+    const channels = await prisma.channel.findMany({
+      where: { id: { in: channelIds } },
+      select: { id: true, name: true, type: true },
+    });
+    const chMap = new Map(channels.map((c) => [c.id, c]));
+    const items = rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      originalName: r.originalName,
+      size: r.size,
+      mime: r.mime,
+      folder: r.folder,
+      uploader: r.uploader,
+      uploadSource: r.uploadSource,
+      deletedAt: r.deletedAt,
+      channels: r.copies.map((c) => ({
+        name: chMap.get(c.channelId)?.name || '(已删除渠道)',
+        type: chMap.get(c.channelId)?.type || '',
+        isPrimary: c.isPrimary,
+        status: c.status,
+      })),
+    }));
+    return { success: true, items, total: items.length };
+  }
+
+  /** 从回收站恢复单个文件（撤销软删除标记） */
+  @Get('trash/restore/*')
+  async trashRestore(@Req() req: Request) {
+    if (!(await this.userPerm(req, 'delete'))) return { success: false, message: '没有恢复权限' };
+    const key = wildcardParam(req);
+    const record = await prisma.fileRecord.findFirst({ where: { id: key, status: 'deleted' } });
+    if (!record) return { success: false, message: '回收站中不存在该文件' };
+    await this.uploadSvc.restoreFile(record.id, record.name);
+    return { success: true };
+  }
+
+  /** 彻底删除单个文件（远端副本一并清理，不可恢复） */
+  @Get('trash/purge/*')
+  async trashPurge(@Req() req: Request) {
+    return this.trashPurgeOne(req);
+  }
+
+  @Delete('trash/purge/*')
+  async trashPurgeDelete(@Req() req: Request) {
+    return this.trashPurgeOne(req);
+  }
+
+  private async trashPurgeOne(req: Request) {
+    if (!(await this.userPerm(req, 'delete'))) return { success: false, message: '没有删除权限' };
+    const key = wildcardParam(req);
+    const owner = this.admin(req) ? '' : currentSession(req)?.user || '';
+    const record = await prisma.fileRecord.findFirst({
+      where: { id: key, status: 'deleted', ...(owner ? { uploader: owner } : {}) },
+    });
+    if (!record) return { success: false, message: '回收站中不存在该文件' };
+    await this.uploadSvc.removeFile(record.id, record.name);
+    return { success: true };
+  }
+
+  /**
+   * 回收站批量操作：{ ids: string[], action: 'restore' | 'purge' }。
+   * 逐条处理并返回逐项结果 —— 单条失败（如权限不符）不影响其余条目。
+   */
+  @Post('trash/batch')
+  async trashBatch(@Req() req: Request, @Body() body: { ids?: string[]; action?: string }) {
+    if (!(await this.userPerm(req, 'delete'))) return { success: false, message: '没有权限' };
+    const ids = Array.isArray(body.ids) ? body.ids.map(String).filter(Boolean) : [];
+    const action = body.action === 'purge' ? 'purge' : 'restore';
+    if (!ids.length) return { success: false, message: '缺少 ids' };
+    const owner = this.admin(req) ? '' : currentSession(req)?.user || '';
+    const rows = await prisma.fileRecord.findMany({
+      where: { id: { in: ids }, status: 'deleted', ...(owner ? { uploader: owner } : {}) },
+    });
+    const found = new Set(rows.map((r) => r.id));
+    const results: { id: string; ok: boolean; message?: string }[] = [];
+    for (const id of ids) {
+      if (!found.has(id)) {
+        results.push({ id, ok: false, message: '不存在或无权限' });
+        continue;
+      }
+      try {
+        const rec = rows.find((r) => r.id === id)!;
+        if (action === 'purge') await this.uploadSvc.removeFile(rec.id, rec.name);
+        else await this.uploadSvc.restoreFile(rec.id, rec.name);
+        results.push({ id, ok: true });
+      } catch (err) {
+        results.push({ id, ok: false, message: (err as Error).message });
+      }
+    }
+    return {
+      success: true,
+      action,
+      results,
+      okCount: results.filter((r) => r.ok).length,
+      failCount: results.filter((r) => !r.ok).length,
+    };
   }
 
   /**

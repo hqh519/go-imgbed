@@ -112,6 +112,7 @@ let TokenApiController = class TokenApiController {
         let channelId = '';
         let backupChannelId = '';
         let owner = '';
+        let ignoreUploaderChannel = false;
         if (useUserStore) {
             const mainCh = await this.storageChannel.getStorageChannel(usernameParam, '');
             const backupCh = await this.storageChannel.getStorageChannel(usernameParam, 'backup');
@@ -122,12 +123,21 @@ let TokenApiController = class TokenApiController {
         else {
             const rawOwner = String(tokenMetas.owner || '').trim();
             owner = rawOwner && rawOwner !== 'admin' ? rawOwner : await this.adminUsername();
+            const tokenMainRaw = String(tokenMetas.defaultBucket || '').trim();
+            const tokenBackupRaw = String(tokenMetas.defaultBackup || '').trim();
+            if (tokenMainRaw) {
+                channelId = (await this.storageChannel.findById(tokenMainRaw))?.id || '';
+            }
+            if (tokenBackupRaw && !storage_channel_service_1.NO_BACKUP_VALUES.includes(tokenBackupRaw.toLowerCase())) {
+                backupChannelId = (await this.storageChannel.findById(tokenBackupRaw))?.id || '';
+            }
+            ignoreUploaderChannel = true;
         }
         const tokenBackupFlag = String(tokenMetas.defaultBackup || '').trim().toLowerCase();
         const backupOff = !useUserStore && storage_channel_service_1.NO_BACKUP_VALUES.includes(tokenBackupFlag);
         const opts = {
             channelId: channelId || undefined,
-            tokenId: useUserStore ? undefined : auth.token.id,
+            tokenId: undefined,
             uploadFolder: '',
             uploadNameType: String(body.nameType || 'default'),
             uploader: owner,
@@ -136,6 +146,7 @@ let TokenApiController = class TokenApiController {
             compressPercent: Number(body.compressPercent || 0) || 0,
             backup: backupOff ? false : true,
             backupChannelId: backupChannelId || undefined,
+            ignoreUploaderChannel,
             autoRetry: body.autoRetry === 'true',
             skipFileLimits: auth.token.enforceLimits === false,
             uploadSource: 'API-Web',
@@ -362,19 +373,19 @@ let TokenApiController = class TokenApiController {
         }
         const key = this.objectKeyOf(req, bucket);
         const record = await prisma_1.prisma.fileRecord.findFirst({
-            where: { OR: [{ name: key }, { name: key.replace(/\.[^.]*$/, '') }] },
+            where: { status: 'active', OR: [{ name: key }, { name: key.replace(/\.[^.]*$/, '') }] },
         });
         if (!record)
             return res.status(404).send('NoSuchKey');
         try {
-            await this.uploadSvc.removeFile(record.id, record.name);
+            await this.uploadSvc.softDeleteFile(record.id, record.name);
         }
         catch (err) {
             app_log_1.appLog.error('token', 'S3 删除失败', `${record.name}：${err.message}`);
             return res.status(500).send(err.message);
         }
         void prisma_1.prisma.apiToken.update({ where: { id: found.tokenId }, data: { lastUsedAt: new Date() } }).catch(() => undefined);
-        app_log_1.appLog.info('token', 'S3 删除对象', `${record.name} ｜ bucket=${bucket}`);
+        app_log_1.appLog.info('token', 'S3 删除对象（进回收站）', `${record.name} ｜ bucket=${bucket}`);
         return res.status(204).send('');
     }
 };

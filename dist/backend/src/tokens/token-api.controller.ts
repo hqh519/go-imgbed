@@ -24,7 +24,7 @@ import { appLog } from '../common/app-log';
  *                ⚠ 越权防护：Token 的 owner 绑定了具体账户时，username 只允许传该账户名，
  *                  否则 403；只有管理员 Token 可以驱动任意账户。账户不存在/已禁用返回 400。
  *      userstore 可选：'false' 表示忽略 username，改按 Token / 全局渠道
- *    渠道规则（v1.7.0 起，已移除 category / bucket / backup 三个参数）：
+ *    渠道规则（v1.8.0 定稿，已移除 category / bucket / backup 三个参数）：
  *      传了 username 且 userstore !== false
  *        → 主渠道 = getStorageChannel(username, '')，备份渠道 = getStorageChannel(username, 'backup')
  *      否则
@@ -197,7 +197,7 @@ export class TokenApiController {
     };
 
     /*
-     * =====「Web 通用」渠道规则（v1.7.0 重构）=====
+     * =====「Web 通用」渠道规则（v1.8.0 重构定稿）=====
      *
      * 请求参数：{ token, username, userstore }
      *   已移除 category / bucket / backup —— 分类改由系统默认规则决定
@@ -219,7 +219,7 @@ export class TokenApiController {
     const useUserStore = !!usernameParam && userstoreRaw !== 'false' && userstoreRaw !== '0';
 
     /*
-     * ===== 越权防护（v1.7.0 新增 username 参数时同步加固）=====
+     * ===== 越权防护（v1.7.0 新增 username，v1.8.0 同步加固）=====
      *
      * username 让调用方「以某个账户的身份」把文件写进该账户绑定的渠道，
      * 因此必须确认调用方有权代表这个账户：
@@ -249,6 +249,7 @@ export class TokenApiController {
     let channelId = '';
     let backupChannelId = '';
     let owner = '';
+    let ignoreUploaderChannel = false;
     if (useUserStore) {
       const mainCh = await this.storageChannel.getStorageChannel(usernameParam, '');
       const backupCh = await this.storageChannel.getStorageChannel(usernameParam, 'backup');
@@ -259,6 +260,23 @@ export class TokenApiController {
       // 归属账户：Token 上配置的 owner；缺省或历史占位值 'admin' 一律落到真实管理员账户
       const rawOwner = String(tokenMetas.owner || '').trim();
       owner = rawOwner && rawOwner !== 'admin' ? rawOwner : await this.adminUsername();
+      /*
+       * v1.8.0 接入规则（else 分支的渠道优先级，严格两级）：
+       *   存储渠道  = Token 上配置的「存储渠道」→ 全局默认存储渠道
+       *   备份渠道  = Token 上配置的「备份渠道」→ 全局备份渠道
+       * 在这里显式解析 Token 渠道（而不是依赖 tokenId 的隐式候选链），
+       * 并让 upload() 跳过「owner 账户在用户管理里绑定的渠道」—— 否则
+       * Token 没配渠道时会被 owner 的账户级绑定插队，与上述规则不符。
+       */
+      const tokenMainRaw = String(tokenMetas.defaultBucket || '').trim();
+      const tokenBackupRaw = String(tokenMetas.defaultBackup || '').trim();
+      if (tokenMainRaw) {
+        channelId = (await this.storageChannel.findById(tokenMainRaw))?.id || '';
+      }
+      if (tokenBackupRaw && !NO_BACKUP_VALUES.includes(tokenBackupRaw.toLowerCase())) {
+        backupChannelId = (await this.storageChannel.findById(tokenBackupRaw))?.id || '';
+      }
+      ignoreUploaderChannel = true;
     }
 
     // 备份开关：走账户分支时只要账户/全局有备份渠道就备份；
@@ -268,8 +286,8 @@ export class TokenApiController {
 
     const opts = {
       channelId: channelId || undefined,
-      // 账户分支下不再让 Token 的默认渠道参与优先级（规则要求以账户为准）
-      tokenId: useUserStore ? undefined : auth.token.id,
+      // 渠道已在上面按 v1.8.0 规则显式解析，不再让 tokenId 参与隐式候选链
+      tokenId: undefined,
       // 分类：已取消 category 参数，统一走系统默认（默认上传目录 → 年份/月份）
       uploadFolder: '',
       uploadNameType: String(body.nameType || 'default'),
@@ -279,6 +297,7 @@ export class TokenApiController {
       compressPercent: Number(body.compressPercent || 0) || 0,
       backup: backupOff ? false : true,
       backupChannelId: backupChannelId || undefined,
+      ignoreUploaderChannel,
       autoRetry: body.autoRetry === 'true',
       /*
        * 「类型和大小限制」（Token 编辑里的同名开关，默认开启）：
@@ -555,9 +574,11 @@ export class TokenApiController {
    * 契约与 AWS S3 对齐：删除成功 **204 No Content**；对象不存在 **404**；
    * 签名/凭据问题 403（幂等 —— 重复删除同一个 key 第二次得到 404，符合 S3 语义）。
    *
-   * 删除范围 = 本系统文件记录 + 该文件在各存储渠道上的远端副本，
-   * 复用 UploadService.removeFile（与后台「文件管理 → 删除」完全同一套逻辑），
-   * 因此不会出现「S3 客户端删了记录、远端对象还留着」的孤儿资源。
+   * 删除语义 = **软删除进回收站**：只改 `files.status='deleted'`（不动远端副本，
+   * 客户端拼的外链即刻 404）。远端副本与库记录在回收站里「彻底删除」时才真正清理
+   * （复用 `UploadService.removeFile`）；S3 客户端重新 PUT 同名 key 时也会自动让位。
+   * 对客户端表现与真删除一致：被删 key 立刻 404、重复 DELETE 第二次得到 404（幂等），
+   * 但管理员在回收站里仍可反悔 —— 这是比"真删"更安全的默认值。
    *
    * 兼容性说明：早期本通道只实现了 GET /s3、PUT /s3/*、HEAD /s3/*，
    * 任何 DELETE 都会落到 Nest 404，导致第三方插件「上传成功但删除永远失败」。
@@ -589,20 +610,21 @@ export class TokenApiController {
     }
 
     const key = this.objectKeyOf(req, bucket);
-    // 与 HEAD 相同的定位口径：既接受完整 File_ID，也接受补了扩展名的写法
+    // 与 HEAD 相同的定位口径：既接受完整 File_ID，也接受补了扩展名的写法；
+    // 只匹配 active —— 已在回收站的 key 对客户端等同"不存在"（幂等：重复 DELETE → 404）
     const record = await prisma.fileRecord.findFirst({
-      where: { OR: [{ name: key }, { name: key.replace(/\.[^.]*$/, '') }] },
+      where: { status: 'active', OR: [{ name: key }, { name: key.replace(/\.[^.]*$/, '') }] },
     });
     if (!record) return res.status(404).send('NoSuchKey');
 
     try {
-      await this.uploadSvc.removeFile(record.id, record.name);
+      await this.uploadSvc.softDeleteFile(record.id, record.name);
     } catch (err) {
       appLog.error('token', 'S3 删除失败', `${record.name}：${(err as Error).message}`);
       return res.status(500).send((err as Error).message);
     }
     void prisma.apiToken.update({ where: { id: found.tokenId }, data: { lastUsedAt: new Date() } }).catch(() => undefined);
-    appLog.info('token', 'S3 删除对象', `${record.name} ｜ bucket=${bucket}`);
+    appLog.info('token', 'S3 删除对象（进回收站）', `${record.name} ｜ bucket=${bucket}`);
     return res.status(204).send('');
   }
 }

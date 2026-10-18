@@ -537,9 +537,16 @@ let UploadService = class UploadService {
         const stem = ext ? fallback.slice(0, -ext.length) : fallback;
         for (let i = 0; i < 50; i += 1) {
             const candidate = i === 0 ? fallback : `${stem}-${i}${ext}`;
-            const exists = await prisma_1.prisma.fileRecord.findFirst({ where: { name: candidate }, select: { id: true } });
+            const exists = await prisma_1.prisma.fileRecord.findFirst({
+                where: { name: candidate },
+                select: { id: true, name: true, status: true },
+            });
             if (!exists)
                 return candidate;
+            if (exists.status === 'deleted') {
+                await this.removeFile(exists.id, exists.name);
+                continue;
+            }
         }
         return this.makeFileId();
     }
@@ -613,7 +620,7 @@ let UploadService = class UploadService {
             main = await this.resolveMainChannel({
                 channelId: opts.channelId,
                 channelType: opts.uploadChannel,
-                uploader: opts.uploader,
+                uploader: opts.ignoreUploaderChannel ? undefined : opts.uploader,
                 tokenId: opts.tokenId,
             });
         }
@@ -712,6 +719,7 @@ let UploadService = class UploadService {
                         remoteKey: result.remoteKey,
                         remoteUrl: result.remoteUrl || '',
                         status: 'active',
+                        isPrimary: true,
                     },
                 },
             },
@@ -752,7 +760,7 @@ let UploadService = class UploadService {
                     return;
                 const backup = await this.resolveBackupChannel({
                     explicitId: opts.backupChannelId,
-                    uploader: opts.uploader,
+                    uploader: opts.ignoreUploaderChannel ? undefined : opts.uploader,
                     tokenId: opts.tokenId,
                 });
                 if (!backup || backup.id === usedChannel.id)
@@ -833,6 +841,20 @@ let UploadService = class UploadService {
                 fail += 1;
         }
         return { ok, fail, skipped, total: records.length };
+    }
+    async softDeleteFile(id, name = '') {
+        await prisma_1.prisma.fileRecord.update({
+            where: { id },
+            data: { status: 'deleted', deletedAt: new Date() },
+        });
+        app_log_1.appLog.info('upload', `移入回收站：${name || id}`);
+    }
+    async restoreFile(id, name = '') {
+        await prisma_1.prisma.fileRecord.update({
+            where: { id },
+            data: { status: 'active', deletedAt: null },
+        });
+        app_log_1.appLog.info('upload', `从回收站恢复：${name || id}`);
     }
     async removeFile(id, name = '') {
         const copies = await prisma_1.prisma.fileCopy.findMany({ where: { fileId: id } });

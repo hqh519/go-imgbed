@@ -213,7 +213,7 @@ let WebDavController = class WebDavController {
                     });
                     if (!rec)
                         return res.status(404).send('Not Found');
-                    await prisma_1.prisma.fileRecord.update({ where: { id: rec.id }, data: { status: 'deleted' } });
+                    await prisma_1.prisma.fileRecord.update({ where: { id: rec.id }, data: { status: 'deleted', deletedAt: new Date() } });
                     return res.status(204).send('');
                 }
                 default:

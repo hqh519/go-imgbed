@@ -168,16 +168,21 @@ export class UsersController {
     const byIp = admin && mode === 'ip';
     const files = await prisma.fileRecord.findMany({
       where: { status: 'active', ...(admin ? {} : { uploader: me || '' }) },
-      select: { uploader: true, ip: true, size: true, createdAt: true, metas: true },
+      select: {
+        uploader: true, ip: true, size: true, createdAt: true, metas: true,
+        // 主渠道副本 → 归出「上传渠道」集合（v1.8.0：统计列表新增「上传渠道」一列）
+        copies: { where: { isPrimary: true }, select: { channelId: true } },
+      },
     });
 
-    const buckets = new Map<string, { key: string; count: number; size: number; lastAt: number; address?: string }>();
+    const buckets = new Map<string, { key: string; count: number; size: number; lastAt: number; address?: string; channelIds: Set<string> }>();
     for (const f of files) {
       const key = (byIp ? f.ip : f.uploader) || (byIp ? '(未知IP)' : '(匿名)');
-      const b = buckets.get(key) || { key, count: 0, size: 0, lastAt: 0 };
+      const b = buckets.get(key) || { key, count: 0, size: 0, lastAt: 0, channelIds: new Set<string>() };
       b.count += 1;
       b.size += f.size || 0;
       b.lastAt = Math.max(b.lastAt, f.createdAt.getTime());
+      for (const c of f.copies || []) if (c.channelId) b.channelIds.add(c.channelId);
       if (byIp && !b.address) {
         try {
           b.address = (JSON.parse(f.metas || '{}').UploadAddress as string) || '';
@@ -198,7 +203,19 @@ export class UsersController {
       }
     }
 
-    const items = Array.from(buckets.values()).sort((a, b) => b.count - a.count);
+    // 渠道 ID → 名称（一个 bucket 可能用了多个渠道，全部列出）
+    const allChannelIds = Array.from(new Set(Array.from(buckets.values()).flatMap((b) => Array.from(b.channelIds))));
+    const channelRows = allChannelIds.length
+      ? await prisma.channel.findMany({ where: { id: { in: allChannelIds } }, select: { id: true, name: true } })
+      : [];
+    const chName = new Map(channelRows.map((c) => [c.id, c.name]));
+
+    const items = Array.from(buckets.values())
+      .map(({ channelIds, ...b }) => ({
+        ...b,
+        channels: Array.from(channelIds).map((id) => chName.get(id)).filter(Boolean),
+      }))
+      .sort((a, b) => b.count - a.count);
     return { mode: byIp ? 'ip' : 'user', items };
   }
 

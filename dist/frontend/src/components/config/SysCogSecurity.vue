@@ -80,9 +80,14 @@
                     </el-table-column>
                     <el-table-column prop="token" :label="$t('sysSecurity.tokenValue')" header-align="center" min-width="240">
                         <template #default="scope">
-                            <!-- 凭据一直可查看、可复制（S3 类型表内显示 AccessKey） -->
+                            <!-- 凭据默认打码，点小眼睛才显示；复制按钮始终可复制完整值 -->
                             <div class="table-cell-content token-cell">
-                                <span class="token-display" :title="tokenDisplay(scope.row)">{{ tokenDisplay(scope.row) }}</span>
+                                <span class="token-display" :title="isRevealed(scope.row) ? tokenDisplay(scope.row) : ''">
+                                    {{ isRevealed(scope.row) ? tokenDisplay(scope.row) : maskToken(tokenDisplay(scope.row)) }}
+                                </span>
+                                <el-button class="inline-copy-btn" size="small" text @click="toggleReveal(scope.row)">
+                                    <font-awesome-icon :icon="isRevealed(scope.row) ? 'eye-slash' : 'eye'"/>
+                                </el-button>
                                 <el-button class="inline-copy-btn" size="small" text @click="copyValue(tokenDisplay(scope.row))">
                                     <font-awesome-icon icon="copy"/>
                                 </el-button>
@@ -638,6 +643,7 @@ data() {
         webdavSettings: { enabled: false, rootPath: '', readonly: false },
         othersSnapshot: null,
         apiTokens: [], // API Token列表
+        revealedTokens: {}, // Token 明文显示开关（按 Token id；默认全部隐藏，点小眼睛显示）
         // 加载状态
         loading: true,
         saving: false,
@@ -966,6 +972,20 @@ methods: {
         if (!row) return '';
         if (row.type === 's3') return row.accessKey || ''
         return row.token || ''
+    },
+    /** 凭据遮罩：默认隐藏，点小眼睛才显示（避免旁观者/截屏泄露） */
+    maskToken(value) {
+        const v = String(value || '');
+        if (v.length <= 10) return '••••••••';
+        return `${v.slice(0, 6)}••••••${v.slice(-4)}`;
+    },
+    isRevealed(row) {
+        return !!this.revealedTokens[row?.id];
+    },
+    toggleReveal(row) {
+        const id = row?.id;
+        if (!id) return;
+        this.revealedTokens = { ...this.revealedTokens, [id]: !this.revealedTokens[id] };
     },
     /** 通用复制（带统一提示） */
     async copyValue(text) {

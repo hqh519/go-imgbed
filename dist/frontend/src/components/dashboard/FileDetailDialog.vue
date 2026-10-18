@@ -3,7 +3,7 @@
         <!-- 详情内容统一包一层：任一加载值超过 80 字符时整体字号降一号 -->
         <div class="detail-body" :class="{ 'detail-compact': hasLongValue }">
         <div class="detail-actions">
-            <el-button type="primary" @click="$emit('download')" round size="small" class="detail-action" v-if="!isEditing">
+            <el-button type="primary" @click="$emit('download')" round size="small" class="detail-action" v-if="!isEditing && !trashMode">
                 <font-awesome-icon icon="download" style="margin-right: 3px;"></font-awesome-icon> {{ $t('fileDetail.download') }}
             </el-button>
             <!--
@@ -11,27 +11,36 @@
                 其它页面（如历史记录）复用本详情弹窗时可通过 showAdvanced=false 隐藏它们。
                 普通用户还须拥有「可编辑」权限，否则不加载这些按钮（后端同样校验）。
             -->
-            <el-button v-if="showAdvanced && !isEditing && canEditAction" type="primary" @click="$emit('tagManagement')" round size="small" class="detail-action">
+            <el-button v-if="showAdvanced && !isEditing && canEditAction && !trashMode" type="primary" @click="$emit('tagManagement')" round size="small" class="detail-action">
                 <font-awesome-icon icon="tags" style="margin-right: 3px;"></font-awesome-icon> {{ $t('fileDetail.tags') }}
             </el-button>
-            <el-button v-if="showAdvanced && !isEditing && canEditAction" type="primary" @click="$emit('block')" round size="small" class="detail-action">
+            <el-button v-if="showAdvanced && !isEditing && canEditAction && !trashMode" type="primary" @click="$emit('block')" round size="small" class="detail-action">
                 <font-awesome-icon icon="ban" style="margin-right: 3px;"></font-awesome-icon> {{ $t('fileDetail.blacklist') }}
             </el-button>
-            <el-button v-if="showAdvanced && !isEditing && canEditAction" type="primary" @click="$emit('white')" round size="small" class="detail-action">
+            <el-button v-if="showAdvanced && !isEditing && canEditAction && !trashMode" type="primary" @click="$emit('white')" round size="small" class="detail-action">
                 <font-awesome-icon icon="shield-alt" style="margin-right: 3px;"></font-awesome-icon> {{ $t('fileDetail.whitelist') }}
             </el-button>
+            <!-- 回收站模式：删除按钮替换为「恢复」+「彻底删除」 -->
+            <template v-if="trashMode">
+                <el-button type="success" @click="$emit('restore')" round size="small" class="detail-action" v-if="canDeleteAction">
+                    <font-awesome-icon icon="undo" style="margin-right: 3px;"></font-awesome-icon> {{ $t('fileDetail.restoreBtn') }}
+                </el-button>
+                <el-button type="danger" @click="$emit('purge')" round size="small" class="detail-action" v-if="canDeleteAction">
+                    <font-awesome-icon icon="trash-alt" style="margin-right: 3px;"></font-awesome-icon> {{ $t('fileDetail.purgeBtn') }}
+                </el-button>
+            </template>
             <!-- 删除：须拥有「可删除」权限，否则不加载删除按钮 -->
-            <el-button type="danger" @click="$emit('delete')" round size="small" class="detail-action" v-if="!isEditing && canDeleteAction">
+            <el-button type="danger" @click="$emit('delete')" round size="small" class="detail-action" v-else-if="!isEditing && canDeleteAction">
                 <font-awesome-icon icon="trash-alt" style="margin-right: 3px;"></font-awesome-icon> {{ $t('fileDetail.deleteBtn') }}
             </el-button>
-            <el-button type="warning" @click="startEdit()" round size="small" class="detail-action" v-if="!isEditing && canEditAction">
+            <el-button type="warning" @click="startEdit()" round size="small" class="detail-action" v-if="!isEditing && canEditAction && !trashMode">
                 <font-awesome-icon icon="edit" style="margin-right: 3px;"></font-awesome-icon> {{ $t('fileDetail.edit') }}
             </el-button>
-            <el-button type="info" @click="openRenameDialog()" round size="small" class="detail-action" v-if="!isEditing && canEditAction">
+            <el-button type="info" @click="openRenameDialog()" round size="small" class="detail-action" v-if="!isEditing && canEditAction && !trashMode">
                 <font-awesome-icon icon="i-cursor" style="margin-right: 3px;"></font-awesome-icon> {{ $t('fileDetail.rename') }}
             </el-button>
             <!-- 重定向：用自定义链接替换真实文件源（清空即恢复渠道直链） -->
-            <el-button type="primary" plain @click="openRedirectDialog()" round size="small" class="detail-action" v-if="!isEditing && canEditAction">
+            <el-button type="primary" plain @click="openRedirectDialog()" round size="small" class="detail-action" v-if="!isEditing && canEditAction && !trashMode">
                 <font-awesome-icon icon="exchange-alt" style="margin-right: 3px;"></font-awesome-icon> {{ $t('dashboard.redirect') }}
             </el-button>
             <el-button type="success" @click="saveMetadata()" round size="small" class="detail-action" v-if="isEditing" :loading="editSaving">
@@ -280,8 +289,10 @@ export default {
          * 历史记录等页面复用本弹窗时传 false（这些动作依赖文件管理页的批量能力）。
          */
         showAdvanced: { type: Boolean, default: true },
+        /** 回收站模式：隐藏普通编辑动作，只显示「恢复 / 彻底删除」 */
+        trashMode: { type: Boolean, default: false },
     },
-    emits: ['update:modelValue', 'download', 'tagManagement', 'block', 'white', 'delete', 'metadataUpdated', 'fileRenamed'],
+    emits: ['update:modelValue', 'download', 'tagManagement', 'block', 'white', 'delete', 'restore', 'purge', 'metadataUpdated', 'fileRenamed'],
     watch: {
         visible(val) {
             if (!val) {
@@ -534,31 +545,21 @@ export default {
             return `${i === 0 ? v : v.toFixed(2)} ${units[i]}`;
         },
         /**
-         * 跳到「文件管理」的对应分类目录。
-         * 复用 AdminDashBoard 已支持的 sessionStorage 约定（dashboardInitialFolder），
-         * 跳转后由该页面在 mounted 时读取并设置当前路径。
+         * 跳到「文件管理」的对应分类目录 —— 新标签页打开。
+         * 用 URL query（?folder=…）传参，替代 sessionStorage（sessionStorage 不跨标签页）。
          */
         jumpToFolder() {
             const dir = String(this.file?.metadata?.Directory || '').replace(/^\/+|\/+$/g, '');
-            sessionStorage.setItem('dashboardInitialFolder', dir ? `${dir}/` : '');
+            const url = `/dashboard${dir ? `?folder=${encodeURIComponent(`${dir}/`)}` : ''}`;
             this.visible = false;
-            this.goDashboard();
+            window.open(url, '_blank');
         },
-        /** 跳到「文件管理」并按该标签筛选（含该标签的文件） */
+        /** 跳到「文件管理」并按该标签筛选 —— 新标签页打开（?tag=…） */
         jumpToTag(tag) {
             const name = String(tag || '').trim();
             if (!name) return;
-            sessionStorage.setItem('dashboardInitialTag', name);
             this.visible = false;
-            this.goDashboard();
-        },
-        /** 统一跳转：已在文件管理页时用刷新生效（同路径 push 不会重新挂载） */
-        goDashboard() {
-            if (this.$route && this.$route.path === '/dashboard') {
-                window.location.reload();
-                return;
-            }
-            this.$router.push('/dashboard');
+            window.open(`/dashboard?tag=${encodeURIComponent(name)}`, '_blank');
         },
         startEdit() {
             this.editForm.FileName = this.file?.metadata?.FileName || '';

@@ -271,7 +271,7 @@ export class WebDavController {
             },
           });
           if (!rec) return res.status(404).send('Not Found');
-          await prisma.fileRecord.update({ where: { id: rec.id }, data: { status: 'deleted' } });
+          await prisma.fileRecord.update({ where: { id: rec.id }, data: { status: 'deleted', deletedAt: new Date() } });
           return res.status(204).send('');
         }
 

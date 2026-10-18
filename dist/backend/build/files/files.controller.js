@@ -395,7 +395,7 @@ let LinkController = class LinkController {
             pushName(rest);
         }
         const record = await prisma_1.prisma.fileRecord.findFirst({
-            where: { OR: nameCandidates.map((n) => ({ name: n })) },
+            where: { status: 'active', OR: nameCandidates.map((n) => ({ name: n })) },
             include: { copies: true },
         });
         if (!record)
@@ -918,22 +918,122 @@ let ManageController = class ManageController {
         if (q.folder === 'true') {
             const prefix = key.replace(/\/+$/, '');
             const rows = await prisma_1.prisma.fileRecord.findMany({
-                where: { ...own, OR: [{ folder: prefix }, { folder: { startsWith: `${prefix}/` } }] },
+                where: { status: 'active', ...own, OR: [{ folder: prefix }, { folder: { startsWith: `${prefix}/` } }] },
             });
             for (const r of rows)
-                await this.purgeRecord(r.id, r.name);
+                await this.trashRecord(r.id, r.name);
             return { success: true, deleted: rows.length };
         }
         const record = await prisma_1.prisma.fileRecord.findFirst({
-            where: { ...own, OR: [{ name: key }, { name: key.replace(/\.[^.]*$/, '') }] },
+            where: { status: 'active', ...own, OR: [{ name: key }, { name: key.replace(/\.[^.]*$/, '') }] },
         });
         if (!record)
             return { success: false, message: '文件不存在' };
-        await this.purgeRecord(record.id, record.name);
+        await this.trashRecord(record.id, record.name);
         return { success: true, deleted: 1 };
     }
-    async purgeRecord(id, name) {
-        await this.uploadSvc.removeFile(id, name);
+    async trashRecord(id, name) {
+        await this.uploadSvc.softDeleteFile(id, name);
+    }
+    async trashList(req) {
+        const owner = this.admin(req) ? '' : (0, auth_guard_1.currentSession)(req)?.user || '';
+        const rows = await prisma_1.prisma.fileRecord.findMany({
+            where: { status: 'deleted', ...(owner ? { uploader: owner } : {}) },
+            include: { copies: { select: { channelId: true, isPrimary: true, status: true } } },
+            orderBy: { deletedAt: 'desc' },
+            take: 500,
+        });
+        const channelIds = Array.from(new Set(rows.flatMap((r) => r.copies.map((c) => c.channelId))));
+        const channels = await prisma_1.prisma.channel.findMany({
+            where: { id: { in: channelIds } },
+            select: { id: true, name: true, type: true },
+        });
+        const chMap = new Map(channels.map((c) => [c.id, c]));
+        const items = rows.map((r) => ({
+            id: r.id,
+            name: r.name,
+            originalName: r.originalName,
+            size: r.size,
+            mime: r.mime,
+            folder: r.folder,
+            uploader: r.uploader,
+            uploadSource: r.uploadSource,
+            deletedAt: r.deletedAt,
+            channels: r.copies.map((c) => ({
+                name: chMap.get(c.channelId)?.name || '(已删除渠道)',
+                type: chMap.get(c.channelId)?.type || '',
+                isPrimary: c.isPrimary,
+                status: c.status,
+            })),
+        }));
+        return { success: true, items, total: items.length };
+    }
+    async trashRestore(req) {
+        if (!(await this.userPerm(req, 'delete')))
+            return { success: false, message: '没有恢复权限' };
+        const key = wildcardParam(req);
+        const record = await prisma_1.prisma.fileRecord.findFirst({ where: { id: key, status: 'deleted' } });
+        if (!record)
+            return { success: false, message: '回收站中不存在该文件' };
+        await this.uploadSvc.restoreFile(record.id, record.name);
+        return { success: true };
+    }
+    async trashPurge(req) {
+        return this.trashPurgeOne(req);
+    }
+    async trashPurgeDelete(req) {
+        return this.trashPurgeOne(req);
+    }
+    async trashPurgeOne(req) {
+        if (!(await this.userPerm(req, 'delete')))
+            return { success: false, message: '没有删除权限' };
+        const key = wildcardParam(req);
+        const owner = this.admin(req) ? '' : (0, auth_guard_1.currentSession)(req)?.user || '';
+        const record = await prisma_1.prisma.fileRecord.findFirst({
+            where: { id: key, status: 'deleted', ...(owner ? { uploader: owner } : {}) },
+        });
+        if (!record)
+            return { success: false, message: '回收站中不存在该文件' };
+        await this.uploadSvc.removeFile(record.id, record.name);
+        return { success: true };
+    }
+    async trashBatch(req, body) {
+        if (!(await this.userPerm(req, 'delete')))
+            return { success: false, message: '没有权限' };
+        const ids = Array.isArray(body.ids) ? body.ids.map(String).filter(Boolean) : [];
+        const action = body.action === 'purge' ? 'purge' : 'restore';
+        if (!ids.length)
+            return { success: false, message: '缺少 ids' };
+        const owner = this.admin(req) ? '' : (0, auth_guard_1.currentSession)(req)?.user || '';
+        const rows = await prisma_1.prisma.fileRecord.findMany({
+            where: { id: { in: ids }, status: 'deleted', ...(owner ? { uploader: owner } : {}) },
+        });
+        const found = new Set(rows.map((r) => r.id));
+        const results = [];
+        for (const id of ids) {
+            if (!found.has(id)) {
+                results.push({ id, ok: false, message: '不存在或无权限' });
+                continue;
+            }
+            try {
+                const rec = rows.find((r) => r.id === id);
+                if (action === 'purge')
+                    await this.uploadSvc.removeFile(rec.id, rec.name);
+                else
+                    await this.uploadSvc.restoreFile(rec.id, rec.name);
+                results.push({ id, ok: true });
+            }
+            catch (err) {
+                results.push({ id, ok: false, message: err.message });
+            }
+        }
+        return {
+            success: true,
+            action,
+            results,
+            okCount: results.filter((r) => r.ok).length,
+            failCount: results.filter((r) => !r.ok).length,
+        };
     }
     directUrlResolver() {
         const infoCache = new Map();
@@ -1361,6 +1461,42 @@ __decorate([
     __metadata("design:paramtypes", [Object, Object]),
     __metadata("design:returntype", void 0)
 ], ManageController.prototype, "deleteByDelete", null);
+__decorate([
+    (0, common_1.Get)('trash'),
+    __param(0, (0, common_1.Req)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object]),
+    __metadata("design:returntype", Promise)
+], ManageController.prototype, "trashList", null);
+__decorate([
+    (0, common_1.Get)('trash/restore/*'),
+    __param(0, (0, common_1.Req)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object]),
+    __metadata("design:returntype", Promise)
+], ManageController.prototype, "trashRestore", null);
+__decorate([
+    (0, common_1.Get)('trash/purge/*'),
+    __param(0, (0, common_1.Req)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object]),
+    __metadata("design:returntype", Promise)
+], ManageController.prototype, "trashPurge", null);
+__decorate([
+    (0, common_1.Delete)('trash/purge/*'),
+    __param(0, (0, common_1.Req)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object]),
+    __metadata("design:returntype", Promise)
+], ManageController.prototype, "trashPurgeDelete", null);
+__decorate([
+    (0, common_1.Post)('trash/batch'),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Object]),
+    __metadata("design:returntype", Promise)
+], ManageController.prototype, "trashBatch", null);
 __decorate([
     (0, common_1.Post)('rename/*'),
     __param(0, (0, common_1.Req)()),

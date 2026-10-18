@@ -152,6 +152,17 @@ async function bootstrap() {
     const app = await core_1.NestFactory.create(app_module_1.AppModule, new platform_express_1.ExpressAdapter(server), { logger: ['error', 'warn', 'log'] });
     app.enableCors({ origin: true, credentials: true });
     await app.init();
+    if (process.env.DB_SKIP_PRAGMAS !== '1') {
+        try {
+            await prisma_1.prisma.$executeRawUnsafe('PRAGMA journal_mode=WAL;');
+            await prisma_1.prisma.$executeRawUnsafe('PRAGMA busy_timeout=5000;');
+            await prisma_1.prisma.$executeRawUnsafe('PRAGMA synchronous=NORMAL;');
+            app_log_1.appLog.info('app', 'SQLite PRAGMA：WAL / busy_timeout=5000 / synchronous=NORMAL');
+        }
+        catch (err) {
+            console.warn(`[pragmas] 设置失败（不影响启动）：${err.message}`);
+        }
+    }
     try {
         await app.get(channels_controller_1.ChannelsService).ensureBuiltinLocalChannel();
     }

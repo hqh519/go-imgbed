@@ -172,9 +172,9 @@
                                     <el-table-column prop="metadata.FileName" :label="$t('customerConfig.fileNameCol')"></el-table-column>
                                     <el-table-column :label="$t('customerConfig.filePreview')">
                                         <template #default="{ row }">
-                                            <el-image v-if="row.metadata?.FileType?.includes('image')" :src="fileUrl(row)" fit="cover" lazy style="width: 100px; height: 100px;"></el-image>
-                                            <video v-else-if="row.metadata?.FileType?.includes('video')" :src="fileUrl(row)" controls style="width: 100px; height: 100px;"></video>
-                                            <div v-else style="width: 100px; height: 100px; display: flex; justify-content: center; align-items: center;">
+                                            <el-image v-if="row.metadata?.FileType?.includes('image')" :src="fileUrl(row)" fit="cover" lazy style="width: 100px; height: 100px; cursor: pointer;" @click="openCollectDetail(row)"></el-image>
+                                            <video v-else-if="row.metadata?.FileType?.includes('video')" :src="fileUrl(row)" controls style="width: 100px; height: 100px; cursor: pointer;" @click="openCollectDetail(row)"></video>
+                                            <div v-else style="width: 100px; height: 100px; display: flex; justify-content: center; align-items: center; cursor: pointer;" @click="openCollectDetail(row)">
                                                 <font-awesome-icon icon="file" style="font-size: 2em;"></font-awesome-icon>
                                             </div>
                                         </template>
@@ -205,6 +205,18 @@
                     <el-table-column :label="$t('userManage.usedSize')" width="130" align="center" sortable :sort-method="(a, b) => (a.usedSize || 0) - (b.usedSize || 0)">
                         <template #default="{ row }">{{ formatSize(row.usedSize || 0) }}</template>
                     </el-table-column>
+                    <el-table-column :label="$t('userManage.uploadChannels')" min-width="150">
+                        <template #default="{ row }">
+                            <el-tag
+                                v-for="ch in (row.channels || [])"
+                                :key="ch"
+                                size="small"
+                                effect="plain"
+                                style="margin: 2px 4px 2px 0;"
+                            >{{ ch }}</el-tag>
+                            <span v-if="!(row.channels || []).length">—</span>
+                        </template>
+                    </el-table-column>
                     <el-table-column :label="$t('userManage.lastUpload')" min-width="170">
                         <template #default="{ row }">{{ row.lastAt ? formatTimeStamp(row.lastAt) : '—' }}</template>
                     </el-table-column>
@@ -229,9 +241,9 @@
                                     <el-table-column prop="metadata.FileName" :label="$t('customerConfig.fileNameCol')"></el-table-column>
                                     <el-table-column :label="$t('customerConfig.filePreview')">
                                         <template v-slot="{ row }">
-                                            <el-image v-if="row.metadata?.FileType?.includes('image')" :src="fileUrl(row)" fit="cover" lazy style="width: 100px; height: 100px;"></el-image>
-                                            <video v-else-if="row.metadata?.FileType?.includes('video')" :src="fileUrl(row)" controls style="width: 100px; height: 100px;"></video>
-                                            <div v-else style="width: 100px; height: 100px; display: flex; justify-content: center; align-items: center;">
+                                            <el-image v-if="row.metadata?.FileType?.includes('image')" :src="fileUrl(row)" fit="cover" lazy style="width: 100px; height: 100px; cursor: pointer;" @click="openCollectDetail(row)"></el-image>
+                                            <video v-else-if="row.metadata?.FileType?.includes('video')" :src="fileUrl(row)" controls style="width: 100px; height: 100px; cursor: pointer;" @click="openCollectDetail(row)"></video>
+                                            <div v-else style="width: 100px; height: 100px; display: flex; justify-content: center; align-items: center; cursor: pointer;" @click="openCollectDetail(row)">
                                                 <font-awesome-icon icon="file" style="font-size: 2em;"></font-awesome-icon>
                                             </div>
                                         </template>
@@ -252,6 +264,18 @@
                     <el-table-column prop="ip" :label="$t('customerConfig.ipAddress')" min-width="180"></el-table-column>
                     <el-table-column prop="address" :label="$t('customerConfig.address')" min-width="220"></el-table-column>
                     <el-table-column prop="count" :label="$t('customerConfig.uploadCount')" sortable min-width="110"></el-table-column>
+                    <el-table-column :label="$t('userManage.uploadChannels')" min-width="150">
+                        <template #default="{ row }">
+                            <el-tag
+                                v-for="ch in (row.channels || [])"
+                                :key="ch"
+                                size="small"
+                                effect="plain"
+                                style="margin: 2px 4px 2px 0;"
+                            >{{ ch }}</el-tag>
+                            <span v-if="!(row.channels || []).length">—</span>
+                        </template>
+                    </el-table-column>
                     <el-table-column :label="$t('customerConfig.allowUpload')" :fixed="allowUploadColumnFixed" :width="allowUploadColumnWidth" align="center">
                         <template v-slot="{ row }">
                             <el-switch
@@ -352,6 +376,15 @@
                 <el-button type="primary" :loading="savingUser" @click="submitPassword">{{ $t('common.save') }}</el-button>
             </template>
         </el-dialog>
+
+        <!-- 归集统计：点击文件封面调出文件详情（与文件管理页同一弹窗，隐藏批量动作） -->
+        <FileDetailDialog
+            v-model="showCollectDetail"
+            :file="collectDetailFile"
+            :fileLink="fileUrl(collectDetailFile)"
+            :urls="{}"
+            :showAdvanced="false"
+        />
     </div>
 </template>
 
@@ -360,6 +393,7 @@ import fetchWithAuth from '@/utils/fetchWithAuth';
 import axios from '@/utils/axios';
 import AdminHeader from '@/components/dashboard/AdminHeader.vue';
 import ChannelSelect from '@/components/config/ChannelSelect.vue';
+import FileDetailDialog from '@/components/dashboard/FileDetailDialog.vue';
 import backgroundManager from '@/mixins/backgroundManager';
 import { fileLink } from '@/utils/fileLink';
 
@@ -389,6 +423,9 @@ export default {
             // —— 用户账户视图 ——
             userRows: [],
             collectUsers: {},
+            // 归集统计：点击文件封面调出文件详情弹窗
+            showCollectDetail: false,
+            collectDetailFile: null,
             showUserDialog: false,
             editingUser: null,
             userForm: {
@@ -417,7 +454,7 @@ export default {
             pageSize: 10,
         };
     },
-    components: { AdminHeader, ChannelSelect },
+    components: { AdminHeader, ChannelSelect, FileDetailDialog },
     computed: {
         /** 是否管理员（admin / super）—— 普通用户只开放「看自己 + 改密码」 */
         isAdminRole() {
@@ -476,6 +513,12 @@ export default {
             const ext = row?.metadata?.FileExt ? `.${row.metadata.FileExt}` : '';
             return fileLink(name, ext);
         },
+        /** 归集统计：点击文件封面 → 文件详情弹窗（复用文件管理页的同一弹窗组件） */
+        openCollectDetail(row) {
+            if (!row?.name) return;
+            this.collectDetailFile = row;
+            this.showCollectDetail = true;
+        },
 
         // ========== 数据加载 ==========
         /* 渠道下拉数据已改为通用 <ChannelSelect> 组件内部按会话缓存拉取，
@@ -500,6 +543,7 @@ export default {
                     fileCount: collect[u.username]?.count || 0,
                     usedSize: collect[u.username]?.size || 0,
                     lastAt: collect[u.username]?.lastAt || 0,
+                    channels: collect[u.username]?.channels || [],
                 }));
                 // 兜底：把「有文件但没有对应账户」的归属值也列出来（仅管理员可见）
                 // （例如管理员账户上传的、或早期用认证码上传归到 'user' 的文件），
@@ -525,6 +569,7 @@ export default {
                         fileCount: it.count || 0,
                         usedSize: it.size || 0,
                         lastAt: it.lastAt || 0,
+                        channels: it.channels || [],
                     });
                 }
             } catch (e) {
@@ -768,13 +813,18 @@ export default {
         loadMoreData() {
             this.loading = true;
             const start = this.dealedData.length;
-            fetchWithAuth(`/api/manage/cusConfig/list?start=${start}&count=20`, { method: 'GET' })
-                .then(response => response.json())
-                .then(result => {
+            Promise.all([
+                fetchWithAuth(`/api/manage/cusConfig/list?start=${start}&count=20`, { method: 'GET' }).then(r => r.json()),
+                fetchWithAuth('/api/manage/users/collect?mode=ip', { method: 'GET' }).then(r => r.json()).catch(() => ({})),
+            ])
+                .then(([result, collectJson]) => {
+                    const channelByIp = {};
+                    for (const it of (collectJson?.items || [])) channelByIp[it.key] = it.channels || [];
                     this.dealedData = this.dealedData.concat(result.map(item => ({
                         ip: item.ip,
                         address: item.address,
                         count: item.count,
+                        channels: channelByIp[item.ip] || [],
                         data: [],
                         filesLoaded: false,
                         filesLoading: false,
@@ -791,10 +841,18 @@ export default {
                 .then(async result => {
                     const blockipListRes = await fetchWithAuth('/api/manage/cusConfig/blockipList', { method: 'GET' });
                     this.blockipList = (await blockipListRes.text()).split(',');
+                    // 「上传渠道」列：按 IP 聚合的渠道集合来自 collect?mode=ip（按 ip 对齐补充）
+                    let channelByIp = {};
+                    try {
+                        const collectRes = await fetchWithAuth('/api/manage/users/collect?mode=ip', { method: 'GET' });
+                        const collectJson = await collectRes.json();
+                        for (const it of (collectJson?.items || [])) channelByIp[it.key] = it.channels || [];
+                    } catch { /* 渠道列加载失败不阻断列表 */ }
                     this.dealedData = result.map(item => ({
                         ip: item.ip,
                         address: item.address,
                         count: item.count,
+                        channels: channelByIp[item.ip] || [],
                         data: [],
                         filesLoaded: false,
                         filesLoading: false,

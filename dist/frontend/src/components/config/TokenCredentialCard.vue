@@ -41,7 +41,12 @@
                 </div>
                 <div class="cred-row">
                     <span class="cred-label">Token</span>
-                    <span class="cred-value cred-value--strong" :title="token.token">{{ token.token }}</span>
+                    <span class="cred-value cred-value--strong" :title="revealed ? token.token : ''">
+                        {{ revealed ? token.token : maskToken(token.token) }}
+                    </span>
+                    <el-button class="cred-copy" size="small" text @click="revealed = !revealed">
+                        <font-awesome-icon :icon="revealed ? 'eye-slash' : 'eye'"/>
+                    </el-button>
                     <el-button class="cred-copy" size="small" text @click="$emit('copy', token.token)">
                         <font-awesome-icon icon="copy"/>
                     </el-button>
@@ -90,6 +95,16 @@ export default {
         token: { type: Object, required: true }
     },
     emits: ['copy'],
+    data() {
+        return { revealed: false }
+    },
+    methods: {
+        maskToken(value) {
+            const v = String(value || '');
+            if (v.length <= 10) return '••••••••';
+            return `${v.slice(0, 6)}••••••${v.slice(-4)}`;
+        }
+    },
     computed: {
         isS3() {
             return this.token.type === 's3'
@@ -143,16 +158,19 @@ export default {
         webSnippet() {
             const body = {
                 token: this.token.token || '<Token>',
-                category: this.token.defaultCategory || '/2026/测试',
-                bucket: this.token.defaultBucket || '默认存储渠道ID',
-                backup: this.token.defaultBackup || '备份存储渠道ID'
+                username: '<用户名（可选）>',
+                userstore: 'true'
             }
             return [
                 `POST ${this.uploadApi}`,
                 'Authorization: Bearer ' + (this.token.token || '<Token>'),
                 '',
-                '# multipart 表单字段（file 与 url 二选一）',
-                JSON.stringify(body, null, 2)
+                '# multipart 表单字段（file 与 url 二选一）；username / userstore 为可选表单字段：',
+                JSON.stringify(body, null, 2),
+                '',
+                '# 存储渠道优先级（v1.8.0）：',
+                '#   传了 username 且 userstore 不为 false → 用该账户在「用户管理」里绑定的存储/备份渠道，文件归属该账户',
+                '#   否则 → 本 Token 上配置的存储/备份渠道 → 后台「上传设置」里的全局默认渠道',
             ].join('\n')
         }
     }

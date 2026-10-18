@@ -46,12 +46,17 @@ export default {
     selectedCount: {
       type: Number,
       required: true
+    },
+    /** normal: 普通文件操作；trash: 回收站模式（只有恢复/彻底删除） */
+    mode: {
+      type: String,
+      default: 'normal'
     }
   },
   emits: ['action', 'clear'],
   data() {
     return {
-      actions: [
+      normalActions: [
         { command: 'copy', label: 'dashboard.copy', icon: 'copy', className: 'copy' },
         { command: 'download', label: 'dashboard.download', icon: 'download', className: 'download' },
         { command: 'backupSelected', label: 'dashboard.backupSelected', icon: 'cloud-upload-alt', className: 'backup' },
@@ -60,10 +65,17 @@ export default {
         { command: 'ban', label: 'dashboard.addToBlacklist', icon: 'ban', className: 'ban' },
         { command: 'white', label: 'dashboard.addToWhitelist', icon: 'shield-alt', className: 'white' },
         { command: 'delete', label: 'dashboard.delete', icon: 'trash-alt', className: 'danger' }
+      ],
+      trashActions: [
+        { command: 'restore', label: 'dashboard.trashRestore', icon: 'undo', className: 'restore' },
+        { command: 'purge', label: 'dashboard.trashPurge', icon: 'trash-alt', className: 'danger' }
       ]
     }
   },
   computed: {
+    actions() {
+      return this.mode === 'trash' ? this.trashActions : this.normalActions
+    },
     disableTooltip() {
       return window.innerWidth < 768
     }

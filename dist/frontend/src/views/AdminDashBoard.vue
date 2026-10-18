@@ -117,6 +117,17 @@
                         >
                             <font-awesome-icon icon="sync" :class="{ 'fa-spin': refreshLoading }" class="refresh-files-icon"/>
                         </el-button>
+                        <!-- 回收站：切换查看已删除（软删除）的文件，可恢复或彻底删除 -->
+                        <el-button
+                            class="refresh-files-btn trash-btn"
+                            :class="{ 'is-active': trashMode }"
+                            size="small"
+                            :title="trashMode ? $t('dashboard.trashExit') : $t('dashboard.trashEnter')"
+                            :aria-label="trashMode ? $t('dashboard.trashExit') : $t('dashboard.trashEnter')"
+                            @click="toggleTrashMode"
+                        >
+                            <font-awesome-icon icon="trash-alt" :class="{ 'fa-spin': trashLoading }" class="refresh-files-icon"/>
+                        </el-button>
                     </div>
                 </template>
             </AdminHeader>
@@ -467,6 +478,7 @@
         </el-container>
         <BatchActionBar
             :selected-count="selectedFiles.length"
+            :mode="trashMode ? 'trash' : 'normal'"
             @action="handleBatchAction"
             @clear="clearSelection"
         />
@@ -476,11 +488,14 @@
             :file="detailFile"
             :fileLink="getFileLink(detailFile?.name)"
             :urls="allUrl"
+            :trashMode="trashMode"
             @download="handleDownload(detailFile?.name)"
             @tagManagement="handleTagManagement(detailFile?.name)"
             @block="handleBlock(detailFile?.name)"
             @white="handleWhite(detailFile?.name)"
             @delete="handleDetailDelete(detailFile?.name)"
+            @restore="handleDetailTrash('restore', detailFile)"
+            @purge="handleDetailTrash('purge', detailFile)"
             @metadataUpdated="handleMetadataUpdated"
             @fileRenamed="handleFileRenamed"
         />
@@ -706,6 +721,10 @@ data() {
         loading: false, // 加载状态
         currentPath: '', // 当前文件夹路径
         refreshLoading: false,
+        // 回收站模式：查看软删除文件，可恢复 / 彻底删除
+        trashMode: false,
+        trashLoading: false,
+        normalTableData: [], // 退出回收站时还原普通文件列表
         showTagDialog: false, // 标签管理对话框
         showBatchTagDialog: false, // 批量标签管理对话框
         currentTagFile: '', // 当前标签管理的文件
@@ -1414,11 +1433,13 @@ methods: {
         });
     },
     handleDetailDelete(key) {
-        this.$confirm(this.$t('dashboard.deleteConfirm'), this.$t('dashboard.deleteConfirmTitle'), {
-        confirmButtonText: this.$t('dashboard.deleteConfirmOk'),
-        cancelButtonText: this.$t('dashboard.deleteConfirmCancel'),
-        type: 'warning'
-        }).then(() => {
+        // 回收站模式：详情页「删除」按钮已切换为「恢复」，这里兜底走恢复
+        if (this.trashMode) {
+            const item = this.tableData.find(file => file.name === key);
+            if (item) this.trashRestoreItems([item]);
+            return;
+        }
+        this.confirmDeleteByWord('dashboard.deleteConfirm').then(() => {
         fetchWithAuth(`/api/manage/delete/${key}`, { method: 'GET' })
             .then(response => {
             if (response.ok) {
@@ -1437,6 +1458,15 @@ methods: {
             })
             .catch(() => this.$message.error(this.$t('dashboard.deleteFailed')));
         }).catch(() => console.log('Delete cancelled'));
+    },
+    /** 详情弹窗里的回收站操作（恢复 / 彻底删除） */
+    handleDetailTrash(action, file) {
+        if (!file) return;
+        if (action === 'restore') {
+            this.trashRestoreItems([file]);
+        } else {
+            this.trashPurgeItems([file]);
+        }
     },
     handleBlock(key) {
         this.$confirm(this.$t('dashboard.blockConfirm'), this.$t('dashboard.deleteConfirmTitle'), {
@@ -1496,15 +1526,146 @@ methods: {
             () => console.log('White cancelled')
         );
     },
+    // ==================== 回收站 ====================
+    /** 进入 / 退出回收站模式 */
+    async toggleTrashMode() {
+        if (this.trashLoading) return;
+        if (this.trashMode) {
+            // 退出：还原普通文件列表
+            this.clearSelection();
+            this.tableData = this.normalTableData;
+            this.showdetailDialog = false;
+            this.trashMode = false;
+            return;
+        }
+        await this.enterTrashMode();
+    },
+    async enterTrashMode() {
+        this.trashLoading = true;
+        try {
+            const resp = await fetchWithAuth('/api/manage/trash');
+            if (!resp.ok) throw new Error('Request failed');
+            const data = await resp.json();
+            // 备份普通列表，切换渲染数据
+            this.normalTableData = this.tableData;
+            this.clearSelection();
+            const items = Array.isArray(data.items) ? data.items : [];
+            this.tableData = items.map(it => this.convertTrashItem(it));
+            this.updateStats(items.length, true);
+            this.currentPage = 1;
+            this.trashMode = true;
+            if (items.length === 0) {
+                this.$message.info(this.$t('dashboard.trashEmpty'));
+            }
+        } catch (e) {
+            this.$message.error(this.$t('dashboard.trashLoadFailed'));
+        } finally {
+            this.trashLoading = false;
+        }
+    },
+    /** 把回收站接口的条目转成卡片/列表渲染需要的结构 */
+    convertTrashItem(it) {
+        const primary = (it.channels || []).find(c => c.isPrimary) || (it.channels || [])[0] || {};
+        const deletedAtText = it.deletedAt ? new Date(it.deletedAt).toLocaleString() : '';
+        return {
+            name: it.name,
+            isFolder: false,
+            selected: false,
+            trashId: it.id,
+            metadata: {
+                FileName: it.originalName || it.name,
+                RawName: it.name,
+                FileSizeBytes: Number(it.size) || 0,
+                TimeStamp: it.deletedAt || '',
+                UploadUser: it.uploader || '',
+                Channel: primary.name || '',
+                ChannelShort: primary.name || '',
+                MimeType: it.mime || '',
+                TrashDeletedAt: deletedAtText,
+                TrashChannels: (it.channels || []).map(c => c.name).filter(Boolean)
+            }
+        };
+    },
+    /** 批量恢复 / 批量彻底删除（回收站模式） */
+    async trashBatchRequest(items, action) {
+        const ids = items.map(it => it.trashId).filter(Boolean);
+        if (ids.length === 0) return [];
+        const resp = await fetchWithAuth('/api/manage/trash/batch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ids, action })
+        });
+        if (!resp.ok) throw new Error('Request failed');
+        const data = await resp.json();
+        return Array.isArray(data.results) ? data.results : [];
+    },
+    /** 恢复（撤销软删除标记，文件回到普通列表） */
+    trashRestoreItems(items) {
+        if (!items.length) return;
+        this.$confirm(
+            this.$t('dashboard.trashRestoreConfirm', { count: items.length }),
+            this.$t('dashboard.trashTitle'),
+            { confirmButtonText: this.$t('dashboard.trashRestore'), cancelButtonText: this.$t('dashboard.deleteConfirmCancel'), type: 'info' }
+        ).then(async () => {
+            try {
+                await this.trashBatchRequest(items, 'restore');
+                this.removeTrashItems(items);
+                this.$message.success(this.$t('dashboard.trashRestoreSuccess'));
+            } catch (e) {
+                this.$message.error(this.$t('dashboard.trashRestoreFailed'));
+            }
+        }).catch(() => {});
+    },
+    /** 彻底删除（连远端副本一起清理，不可恢复；需输入「确认删除」） */
+    trashPurgeItems(items) {
+        if (!items.length) return;
+        this.confirmDeleteByWord('dashboard.trashPurgeConfirm').then(async () => {
+            try {
+                await this.trashBatchRequest(items, 'purge');
+                this.removeTrashItems(items);
+                this.$message.success(this.$t('dashboard.trashPurgeSuccess'));
+            } catch (e) {
+                this.$message.error(this.$t('dashboard.trashPurgeFailed'));
+            }
+        }).catch(() => {});
+    },
+    /** 从回收站视图移除已处理的条目 */
+    removeTrashItems(items) {
+        const names = new Set(items.map(it => it.name));
+        this.tableData = this.tableData.filter(f => !names.has(f.name));
+        this.selectedFiles = [];
+        this.updateStats(-items.length, false);
+        if (this.detailFile && names.has(this.detailFile.name)) {
+            this.showdetailDialog = false;
+            this.detailFile = null;
+        }
+    },
+    /**
+     * 危险操作确认框：必须手动输入「确认删除」才能继续（防误删）。
+     * 返回 Promise，输入匹配时 resolve。
+     */
+    confirmDeleteByWord(messageKey = 'dashboard.deleteConfirmPrompt') {
+        const word = this.$t('dashboard.deleteConfirmWord');
+        const escaped = String(word).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        return this.$prompt(this.$t(messageKey), this.$t('dashboard.deleteConfirmTitle'), {
+            confirmButtonText: this.$t('dashboard.deleteConfirmOk'),
+            cancelButtonText: this.$t('dashboard.deleteConfirmCancel'),
+            inputPattern: new RegExp(`^\\s*${escaped}\\s*$`),
+            inputErrorMessage: this.$t('dashboard.deleteConfirmInputError'),
+            type: 'warning'
+        });
+    },
     handleDelete(index, key) {
+        // 回收站模式下卡片上的「删除」= 恢复该文件
+        if (this.trashMode) {
+            const item = this.tableData.find(file => file.name === key);
+            if (item) this.trashRestoreItems([item]);
+            return;
+        }
         // 判断是否为文件夹
         const isFolder = this.tableData.find(file => file.name === key).isFolder;
 
-        this.$confirm(isFolder ? this.$t('dashboard.deleteFolderConfirm') : this.$t('dashboard.deleteFileConfirm'), this.$t('dashboard.deleteConfirmTitle'), {
-        confirmButtonText: this.$t('dashboard.deleteConfirmOk'),
-        cancelButtonText: this.$t('dashboard.deleteConfirmCancel'),
-        type: 'warning'
-        }).then(() => {
+        this.confirmDeleteByWord(isFolder ? 'dashboard.deleteFolderConfirm' : 'dashboard.deleteFileConfirm').then(() => {
         fetchWithAuth(`/api/manage/delete/${key}?folder=${isFolder}`, { method: 'GET' })
             .then(response => {
                 if (response.ok) {
@@ -1525,11 +1686,12 @@ methods: {
         }).catch(() => console.log('Delete cancelled'));
     },
     handleBatchDelete() {
-        this.$confirm(this.$t('dashboard.batchDeleteConfirm'), this.$t('dashboard.deleteConfirmTitle'), {
-        confirmButtonText: this.$t('dashboard.deleteConfirmOk'),
-        cancelButtonText: this.$t('dashboard.deleteConfirmCancel'),
-        type: 'warning'
-        }).then(() => {
+        // 回收站模式：批量操作走「彻底删除」（需输入确认删除）
+        if (this.trashMode) {
+            this.trashPurgeItems(this.selectedFiles);
+            return;
+        }
+        this.confirmDeleteByWord('dashboard.batchDeleteConfirm').then(() => {
         const promises = this.selectedFiles.map(file => {
             const isFolder = file.isFolder;
             return fetchWithAuth(`/api/manage/delete/${file.name}?folder=${isFolder}`, { method: 'GET' });
@@ -1811,6 +1973,15 @@ methods: {
         this.selectedFiles = [];
     },
     handleBatchAction(command) {
+        // 回收站模式：批量工具栏只有「恢复 / 彻底删除」
+        if (this.trashMode) {
+            if (command === 'restore') {
+                this.trashRestoreItems([...this.selectedFiles]);
+            } else if (command === 'purge') {
+                this.trashPurgeItems([...this.selectedFiles]);
+            }
+            return;
+        }
         if (command === 'copy') {
             this.handleBatchCopy();
         } else if (command === 'delete') {
@@ -2638,20 +2809,32 @@ mounted() {
     window.addEventListener('resize', this.updateResponsivePageSize);
 
     /*
-     * 其他页面通过 sessionStorage 指定进入本页时的初始视图：
-     *   dashboardInitialFolder —— 系统状态「最近上传」的分类列、文件详情里的「文件分类」
-     *   dashboardInitialTag    —— 文件详情里的「文件标签」，进入后按该标签筛出文件
+     * 其他页面通过 URL query / sessionStorage 指定进入本页时的初始视图：
+     *   ?tag=… / dashboardInitialTag    —— 文件详情里的「文件标签」（新标签页打开走 query）
+     *   ?folder=… / dashboardInitialFolder —— 系统状态「最近上传」的分类列、文件详情里的「文件分类」
      * 标签优先：带标签进来时回到根目录，避免当前分类里恰好没有该标签的文件导致空列表。
      */
-    const initialTag = sessionStorage.getItem('dashboardInitialTag');
+    const queryTag = this.$route?.query?.tag;
+    const queryFolder = this.$route?.query?.folder;
+    const initialTag = queryTag ? String(queryTag) : sessionStorage.getItem('dashboardInitialTag');
     if (initialTag) {
-        sessionStorage.removeItem('dashboardInitialTag');
-        sessionStorage.removeItem('dashboardInitialFolder');
+        if (queryTag) {
+            // 用过即清（replace，避免刷新时重复带上 query）
+            this.$router.replace({ path: '/dashboard' }).catch(() => {});
+        } else {
+            sessionStorage.removeItem('dashboardInitialTag');
+            sessionStorage.removeItem('dashboardInitialFolder');
+        }
         this.currentPath = '';
         this.filters.tagNames = [initialTag];
         this.filters.tagMode = 'or';
         this.tagDraft = [initialTag];
         this.tagModeDraft = 'or';
+    } else if (queryFolder !== undefined && queryFolder !== null) {
+        // 文件详情「文件分类」新标签页跳转（?folder=…）
+        const folder = String(queryFolder);
+        if (queryFolder !== '') this.$router.replace({ path: '/dashboard' }).catch(() => {});
+        this.currentPath = folder.replace(/\/+$/, '') ? folder.replace(/\/+$/, '') + '/' : '';
     } else {
         const initialFolder = sessionStorage.getItem('dashboardInitialFolder');
         if (initialFolder) {
@@ -2719,6 +2902,12 @@ beforeUnmount() {
 }
 .refresh-files-icon {
     font-size: 13px;
+}
+/* 回收站按钮：激活态高亮（与标签筛选按钮同风格） */
+.trash-btn.is-active {
+    color: #fff;
+    background: var(--el-color-danger);
+    border-color: var(--el-color-danger);
 }
 
 /* 标签筛选按钮：选中态高亮为蓝色 */

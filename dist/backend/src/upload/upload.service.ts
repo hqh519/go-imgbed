@@ -56,6 +56,12 @@ interface UploadOptions {
    */
   tokenId?: string;
   /**
+   * 渠道解析时跳过「uploader 账户在用户管理里绑定的渠道」。
+   * 「Web 通用」Token 未传 username 时使用：规则要求渠道优先级严格为
+   * 「Token 上配置的渠道 → 全局默认」，不允许 owner 账户的绑定渠道插队。
+   */
+  ignoreUploaderChannel?: boolean;
+  /**
    * 指定对外文件标识（fileRecord.name）。
    * S3 协议场景传入客户端上传时的 Object Key，使得客户端用「自定义域名 + key」
    * 自行拼出的地址恰好命中本站签发链接（否则客户端只能拼出一个不存在的地址）。
@@ -698,8 +704,21 @@ export class UploadService {
     const stem = ext ? fallback.slice(0, -ext.length) : fallback;
     for (let i = 0; i < 50; i += 1) {
       const candidate = i === 0 ? fallback : `${stem}-${i}${ext}`;
-      const exists = await prisma.fileRecord.findFirst({ where: { name: candidate }, select: { id: true } });
+      const exists = await prisma.fileRecord.findFirst({
+        where: { name: candidate },
+        select: { id: true, name: true, status: true },
+      });
       if (!exists) return candidate;
+      /*
+       * 名字被「回收站文件」占用 → 彻底删除它，把名字让给这次上传。
+       * 典型场景：S3 客户端 DELETE（软删除进回收站）后重新 PUT 同名 key ——
+       * 客户端拼的外链永远指向这个名字，不能因为回收站占用而变成 xxx-1。
+       * 回收站那条的远端副本一并清理，不会留孤儿资源。
+       */
+      if (exists.status === 'deleted') {
+        await this.removeFile(exists.id, exists.name);
+        continue;
+      }
     }
     return this.makeFileId();
   }
@@ -806,12 +825,13 @@ export class UploadService {
 
     // 主渠道 / 备份渠道统一由 StorageChannelService 按优先级解析：
     //   本次请求显式指定 → API Token 配置 → 「用户管理」账户指定 → 后台「上传设置」全局渠道
+    // （ignoreUploaderChannel：Web 通用 Token 分支跳过「账户指定」一级，见 UploadOptions）
     let main: StorageChannelInfo | null = null;
     try {
       main = await this.resolveMainChannel({
         channelId: opts.channelId,
         channelType: opts.uploadChannel,
-        uploader: opts.uploader,
+        uploader: opts.ignoreUploaderChannel ? undefined : opts.uploader,
         tokenId: opts.tokenId,
       });
     } catch (err) {
@@ -995,7 +1015,7 @@ export class UploadService {
         if (!(await this.backupEnabled())) return;
         const backup = await this.resolveBackupChannel({
           explicitId: opts.backupChannelId,
-          uploader: opts.uploader,
+          uploader: opts.ignoreUploaderChannel ? undefined : opts.uploader,
           tokenId: opts.tokenId,
         });
         if (!backup || backup.id === usedChannel.id) return;
@@ -1099,6 +1119,35 @@ export class UploadService {
    *
    * 远端删除失败**不阻断**流程（只记日志后继续删库）：否则残留记录会长期挂在
    * 文件列表里、点开却是死链，比"远端多留一个孤儿对象"更糟。
+   */
+  /**
+   * 软删除：标记进回收站（status='deleted' + deletedAt），**不动任何远端副本**。
+   * 恢复（restoreFile）即原样回到正常列表；只有回收站里的「彻底删除」才走 removeFile。
+   */
+  async softDeleteFile(id: string, name = ''): Promise<void> {
+    await prisma.fileRecord.update({
+      where: { id },
+      data: { status: 'deleted', deletedAt: new Date() },
+    });
+    appLog.info('upload', `移入回收站：${name || id}`);
+  }
+
+  /** 从回收站恢复：清掉标记，远端副本从未被删，无需任何补偿动作 */
+  async restoreFile(id: string, name = ''): Promise<void> {
+    await prisma.fileRecord.update({
+      where: { id },
+      data: { status: 'active', deletedAt: null },
+    });
+    appLog.info('upload', `从回收站恢复：${name || id}`);
+  }
+
+  /**
+   * 彻底删除：先删各渠道远端副本（远端失败不阻断，但记录日志），再删库记录。
+   * 入口：回收站里的「彻底删除」。
+   *
+   * 实现已收敛到这一处 —— 与「S3 协议 DELETE /s3/<bucket>/<key>」
+   * 通道共用同一套逻辑，避免两处实现各自漂移（早前 S3 通道就是因为拿不到这段逻辑，
+   * 删除请求一律 404，第三方插件只能"传得上、删不掉"）。
    */
   async removeFile(id: string, name = ''): Promise<void> {
     const copies = await prisma.fileCopy.findMany({ where: { fileId: id } });
