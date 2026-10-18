@@ -1560,6 +1560,9 @@ beforeUnmount() {
     justify-content: center;
     margin-top: 20px;
     width: 100%;
+    /* 关键：移动端媒体查询里加了左右 padding，content-box 会让整块宽出 2×padding，
+       表现为「右侧留白比左侧小、表格整体偏右」。锁成 border-box 后左右严格对称。 */
+    box-sizing: border-box;
     overflow: hidden;
 }
 

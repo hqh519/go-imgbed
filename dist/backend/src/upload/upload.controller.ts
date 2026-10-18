@@ -7,8 +7,15 @@ import { UploadService } from './upload.service';
 import { SettingsService } from '../settings/settings.service';
 import { NO_BACKUP_VALUES } from '../storage/storage-channel.service';
 
-/** 分块上传的内存暂存（单实例 SQLite 部署形态下够用；大并发场景可换落盘） */
-const chunkStore = new Map<string, { chunks: Map<number, Buffer>; totalChunks: number; originalName: string; mime: string }>();
+/**
+ * 分块上传的内存暂存（单实例 SQLite 部署形态下够用；大并发场景可换落盘）。
+ * startedAt = 第一片 init 到达的时刻，合并后作为「上传开始时间」写库，
+ * 这样详情页的「上传时长」覆盖整个分块传输过程，而不是只剩合并那一下。
+ */
+const chunkStore = new Map<
+  string,
+  { chunks: Map<number, Buffer>; totalChunks: number; originalName: string; mime: string; startedAt: number }
+>();
 
 /**
  * 链接转存（/api/fetchRes）的目标地址安全策略。
@@ -126,6 +133,10 @@ export class UploadController {
       originalFileName?: string;
       originalFileType?: string;
       cleanup?: string;
+      /** 前端上传设置临时指定的允许格式（逗号分隔）—— 传了覆盖后台全局配置 */
+      allowedExtensions?: string;
+      /** 前端上传设置临时指定的单文件大小上限（MB）—— 传了覆盖后台全局配置 */
+      maxFileSizeMB?: string;
     },
     @Body() body: Record<string, string>,
     @Req() req: Request & { session?: { user: string } },
@@ -159,6 +170,19 @@ export class UploadController {
      */
     const enforceLimits = await this.svc.userEnforceLimits(uploader);
 
+    /*
+     * 前端上传页「上传设置」里的临时限制（右侧设置弹窗填了才传）：
+     *   允许的上传格式（逗号分隔）与单文件大小上限（MB）——
+     * 传了就覆盖后台「上传相关配置」的全局值，不传则后端读全局设置。
+     * 刷新页面即清空，不做持久化。
+     */
+    const overrideExts = String(q.allowedExtensions || '')
+      .split(',')
+      .map((s: string) => s.trim().replace(/^\./, '').toLowerCase())
+      .filter(Boolean);
+    const overrideMaxMB = Number(q.maxFileSizeMB || 0) || 0;
+
+    const arrivedAt = Number((req as unknown as { _arrivedAt?: number })._arrivedAt) || Date.now();
     const opts = {
       uploadChannel: q.uploadChannel,
       // 渠道一律按 ID 匹配；兼容老前端传来的 channelName 参数名（其值同样是渠道 ID）
@@ -186,6 +210,13 @@ export class UploadController {
       skipFileLimits: !enforceLimits,
       // 上传渠道：走「默认」通道（前端上传页）
       uploadSource: 'Default',
+      // 上传开始时间（请求到达时刻）→ 详情页「上传时长 / 上传速度」
+      uploadStartedAt: new Date(arrivedAt),
+      // 前端临时指定的格式/大小限制（空值表示沿用后台全局设置）
+      limitsOverride: {
+        exts: overrideExts.length ? overrideExts : undefined,
+        maxMB: overrideMaxMB > 0 ? overrideMaxMB : undefined,
+      },
     };
 
     // 分块初始化
@@ -196,6 +227,8 @@ export class UploadController {
         totalChunks: Number(body.totalChunks || q.totalChunks || 0),
         originalName: fixFilename(body.originalFileName || 'chunked.bin'),
         mime: body.originalFileType || 'application/octet-stream',
+        // 第一片 init 的时刻 = 这次分块上传的开始时间
+        startedAt: arrivedAt,
       });
       return res.json({ success: true, uploadId });
     }
@@ -221,7 +254,8 @@ export class UploadController {
         const originalName = fixFilename(body.originalFileName || store.originalName);
         const r = await this.svc.upload(
           { buffer: merged, mime: store.mime, originalName },
-          opts,
+          // 合并请求的时刻不是上传起点：用第一片 init 的时刻算时长
+          { ...opts, uploadStartedAt: new Date(store.startedAt || arrivedAt) },
         );
         if (r.error) return res.status(500).json({ success: false, message: r.error });
         return res.json([{ src: await this.signedSrc(r.id, req), name: originalName }]);

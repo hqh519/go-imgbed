@@ -188,6 +188,9 @@
             <el-descriptions-item :label="$t('dashboard.uploadUser')">{{ file?.metadata?.UploadUser || $t('fileDetail.unknown') }}</el-descriptions-item>
             <!-- 上传渠道：Default（前端上传页）/ WebDAV / API-Web / API-S3 -->
             <el-descriptions-item :label="$t('fileDetail.uploadChannel')">{{ file?.metadata?.UploadSource || 'Default' }}</el-descriptions-item>
+            <!-- 上传时长 / 上传速度：由后端记录的「开始 → 落库」时间差与文件体积算出 -->
+            <el-descriptions-item :label="$t('fileDetail.uploadDuration')">{{ uploadDurationText }}</el-descriptions-item>
+            <el-descriptions-item :label="$t('fileDetail.uploadSpeed')">{{ uploadSpeedText }}</el-descriptions-item>
             <!-- 文件分类：编辑态下可重新选择（等价于文件管理的「移动」），非编辑态只读展示 -->
             <el-descriptions-item :label="$t('fileDetail.fileCategory')">
                 <el-select
@@ -447,6 +450,10 @@ export default {
             return this.$t('fileDetail.unknown');
         },
         accessType() {
+            // 回收站里的文件（软删除）优先显示「已删除」
+            if (this.file?.status === 'deleted' || this.file?.metadata?.Status === 'deleted') {
+                return this.$t('fileDetail.accessDeleted');
+            }
             const listType = this.file?.metadata?.ListType;
             const label = this.file?.metadata?.Label;
             if (listType === 'White') return this.$t('fileDetail.accessNormalWhitelist');
@@ -454,7 +461,30 @@ export default {
             if (label === 'adult') return this.$t('fileDetail.accessBlockedReview');
             return this.$t('fileDetail.accessNormal');
         },
+        /** 上传时长：毫秒 → 「x.x 秒 / m 分 s 秒」；无记录时显示「未知」 */
+        uploadDurationText() {
+            const ms = Number(this.file?.metadata?.UploadDurationMs) || 0;
+            if (!ms) return this.$t('fileDetail.unknown');
+            if (ms < 1000) return `${ms} ms`;
+            const sec = ms / 1000;
+            if (sec < 60) return `${sec.toFixed(1)} s`;
+            const m = Math.floor(sec / 60);
+            const s = Math.round(sec % 60);
+            return `${m} min ${s} s`;
+        },
+        /** 上传速度：MB/s（后端按「文件体积 ÷ 时长」算好下发） */
+        uploadSpeedText() {
+            const speed = Number(this.file?.metadata?.UploadSpeedMBps) || 0;
+            const ms = Number(this.file?.metadata?.UploadDurationMs) || 0;
+            // 有明确时长但速度被四舍五入成 0（小文件）→ 显示「< 0.01」，别误报为未知
+            if (!speed) {
+                if (ms > 0) return '< 0.01 MB/s';
+                return this.$t('fileDetail.unknown');
+            }
+            return `${speed.toFixed(2)} MB/s`;
+        },
         accessTagType() {
+            if (this.file?.status === 'deleted' || this.file?.metadata?.Status === 'deleted') return 'info';
             const listType = this.file?.metadata?.ListType;
             const label = this.file?.metadata?.Label;
             if (listType === 'White') return 'success';

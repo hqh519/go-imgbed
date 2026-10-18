@@ -1,6 +1,7 @@
 import { Body, Controller, Delete, Get, Param, Post, Put, Query, Req, UseGuards } from '@nestjs/common';
 import { Request } from 'express';
 import { prisma } from '../common/prisma';
+import { normalizeUploadSource } from '../common/file-view';
 import { CryptoService } from '../common/crypto.service';
 import { AdminGuard, ManageAuthGuard, currentSession, isAdminRole } from '../auth/auth.guard';
 import { SysConfigService } from '../settings/sysconfig.service';
@@ -170,19 +171,23 @@ export class UsersController {
       where: { status: 'active', ...(admin ? {} : { uploader: me || '' }) },
       select: {
         uploader: true, ip: true, size: true, createdAt: true, metas: true,
-        // 上传渠道集合 = 该文件全部有效副本的渠道（主 + 备都算，v1.8.0 统计列表新增「上传渠道」一列）
-        copies: { where: { status: 'active' }, select: { channelId: true } },
+        /*
+         * 「上传渠道」列 = FileRecord.uploadSource（与文件详情页「上传渠道」同一口径）：
+         *   Default / WebDAV / API-Web / API-S3
+         * 不是存储渠道名称 —— 存储渠道另有专门的列（按文件详情展示的是「从哪个入口传上来的」）。
+         */
+        uploadSource: true,
       },
     });
 
-    const buckets = new Map<string, { key: string; count: number; size: number; lastAt: number; address?: string; channelIds: Set<string> }>();
+    const buckets = new Map<string, { key: string; count: number; size: number; lastAt: number; address?: string; sources: Set<string> }>();
     for (const f of files) {
       const key = (byIp ? f.ip : f.uploader) || (byIp ? '(未知IP)' : '(匿名)');
-      const b = buckets.get(key) || { key, count: 0, size: 0, lastAt: 0, channelIds: new Set<string>() };
+      const b = buckets.get(key) || { key, count: 0, size: 0, lastAt: 0, sources: new Set<string>() };
       b.count += 1;
       b.size += f.size || 0;
       b.lastAt = Math.max(b.lastAt, f.createdAt.getTime());
-      for (const c of f.copies || []) if (c.channelId) b.channelIds.add(c.channelId);
+      b.sources.add(normalizeUploadSource(f.uploadSource));
       if (byIp && !b.address) {
         try {
           b.address = (JSON.parse(f.metas || '{}').UploadAddress as string) || '';
@@ -203,17 +208,11 @@ export class UsersController {
       }
     }
 
-    // 渠道 ID → 名称（一个 bucket 可能用了多个渠道，全部列出）
-    const allChannelIds = Array.from(new Set(Array.from(buckets.values()).flatMap((b) => Array.from(b.channelIds))));
-    const channelRows = allChannelIds.length
-      ? await prisma.channel.findMany({ where: { id: { in: allChannelIds } }, select: { id: true, name: true } })
-      : [];
-    const chName = new Map(channelRows.map((c) => [c.id, c.name]));
-
     const items = Array.from(buckets.values())
-      .map(({ channelIds, ...b }) => ({
+      .map(({ sources, ...b }) => ({
         ...b,
-        channels: Array.from(channelIds).map((id) => chName.get(id)).filter(Boolean),
+        // 上传渠道（入口）：Default / WebDAV / API-Web / API-S3
+        uploadSources: Array.from(sources).sort(),
       }))
       .sort((a, b) => b.count - a.count);
     return { mode: byIp ? 'ip' : 'user', items };

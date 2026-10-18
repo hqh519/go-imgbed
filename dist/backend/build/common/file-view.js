@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.CHANNEL_SHORT = exports.CHANNEL_LABEL = exports.UPLOAD_SOURCES = void 0;
 exports.normalizeUploadSource = normalizeUploadSource;
+exports.buildUploadTiming = buildUploadTiming;
 exports.channelShort = channelShort;
 exports.fileTypeOf = fileTypeOf;
 exports.fileExtOf = fileExtOf;
@@ -17,6 +18,19 @@ exports.UPLOAD_SOURCES = ['Default', 'WebDAV', 'API-Web', 'API-S3'];
 function normalizeUploadSource(raw) {
     const v = String(raw || '').trim();
     return exports.UPLOAD_SOURCES.includes(v) ? v : 'Default';
+}
+function buildUploadTiming(rec) {
+    const start = rec.uploadStartedAt ? new Date(rec.uploadStartedAt).getTime() : 0;
+    const end = rec.uploadFinishedAt ? new Date(rec.uploadFinishedAt).getTime() : 0;
+    const dur = start && end && end >= start ? end - start : 0;
+    const bytes = Number(rec.size) || 0;
+    const speed = dur > 0 && bytes > 0 ? bytes / (dur / 1000) / 1024 / 1024 : 0;
+    return {
+        UploadStartedAt: start ? new Date(start).toISOString() : '',
+        UploadFinishedAt: end ? new Date(end).toISOString() : '',
+        UploadDurationMs: dur,
+        UploadSpeedMBps: speed ? Number(speed.toFixed(2)) : 0,
+    };
 }
 exports.CHANNEL_LABEL = {
     cos: 'Tencent',
@@ -172,6 +186,7 @@ function buildMetadata(rec, copies, opts = {}) {
         UploadAddress: metas.UploadAddress || '',
         UploadUser: rec.uploader || '',
         UploadSource: normalizeUploadSource(rec.uploadSource),
+        ...buildUploadTiming(rec),
         RedirectUrl: rec.redirectUrl || '',
         ListType: metas.ListType || 'None',
         TimeStamp: rec.createdAt.getTime(),

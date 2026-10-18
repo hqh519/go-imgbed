@@ -51,6 +51,16 @@ interface UploadOptions {
    */
   uploadSource?: string;
   /**
+   * 上传开始时间（请求到达服务端的时刻）—— 用于详情页「上传时长 / 上传速度」。
+   * 分块上传传第一片的 init 时刻；缺省时用 upload() 内部计时起点。
+   */
+  uploadStartedAt?: Date;
+  /**
+   * 本次上传的「允许的上传格式 / 单文件大小上限」覆盖值。
+   * 前端上传页右下角设置里填了就用它，否则退回后台「上传相关配置」的全局值。
+   */
+  limitsOverride?: { exts?: string[]; maxMB?: number };
+  /**
    * API Token 主键 id —— 交给 StorageChannelService 读取该 Token 上配置的
    * 默认主/备渠道（优先级高于账户级与全局设置）。
    */
@@ -283,8 +293,10 @@ export class UploadService {
   }
 
   /** 扩展名白名单 + 魔数 + 大小：三重服务端校验（客户端校验可被绕过） */
-  private async validate(input: UploadInput): Promise<string | null> {
-    const { exts, maxMB } = await this.limits();
+  private async validate(input: UploadInput, override?: { exts?: string[]; maxMB?: number }): Promise<string | null> {
+    const base = await this.limits();
+    const exts = override?.exts && override.exts.length ? override.exts : base.exts;
+    const maxMB = override?.maxMB && override.maxMB > 0 ? override.maxMB : base.maxMB;
     const ext = (input.originalName.split('.').pop() || '').toLowerCase();
     if (!ext || ext === input.originalName.toLowerCase()) {
       return '无法识别文件类型（缺少扩展名）';
@@ -790,7 +802,7 @@ export class UploadService {
      * 「同步 / 备份型传输通道」，可能上传任意类型、任意体积的文件。
      */
     if (!opts.skipFileLimits) {
-      const invalid = await this.validate(input);
+      const invalid = await this.validate(input, opts.limitsOverride);
       if (invalid) return { id: '', error: invalid };
     }
 
@@ -952,6 +964,9 @@ export class UploadService {
         // 上传渠道（Default / WebDAV / API-S3 / API-Web）—— 后台文件详情里展示
         uploadSource: normalizeUploadSource(opts.uploadSource),
         ip: uploadIp,
+        // 上传计时：开始（请求到达 / 第一片 init）→ 完成（记录落库），详情页据此算时长与速度
+        uploadStartedAt: opts.uploadStartedAt || new Date(startedAt),
+        uploadFinishedAt: new Date(),
         metas: JSON.stringify({ UploadAddress: uploadAddress }),
         // 主渠道副本与文件记录一次写入（嵌套 create = 同一事务），少一次往返
         // isPrimary 补记（v1.8.0：此前只靠「第一条副本即主副本」的隐式约定，字段一直是 false）

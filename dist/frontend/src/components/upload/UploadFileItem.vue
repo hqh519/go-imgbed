@@ -265,7 +265,8 @@ export default {
     display: block;
     flex: 0 0 auto;
     line-height: 0;
-    border-radius: 12px;
+    /* 缩略图圆角：8px（原来 12px 偏圆） */
+    border-radius: 8px;
     overflow: hidden;
 }
 .upload-list-item-preview img,

@@ -15,6 +15,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.UsersController = void 0;
 const common_1 = require("@nestjs/common");
 const prisma_1 = require("../common/prisma");
+const file_view_1 = require("../common/file-view");
 const crypto_service_1 = require("../common/crypto.service");
 const auth_guard_1 = require("../auth/auth.guard");
 const sysconfig_service_1 = require("../settings/sysconfig.service");
@@ -126,19 +127,17 @@ let UsersController = class UsersController {
             where: { status: 'active', ...(admin ? {} : { uploader: me || '' }) },
             select: {
                 uploader: true, ip: true, size: true, createdAt: true, metas: true,
-                copies: { where: { status: 'active' }, select: { channelId: true } },
+                uploadSource: true,
             },
         });
         const buckets = new Map();
         for (const f of files) {
             const key = (byIp ? f.ip : f.uploader) || (byIp ? '(未知IP)' : '(匿名)');
-            const b = buckets.get(key) || { key, count: 0, size: 0, lastAt: 0, channelIds: new Set() };
+            const b = buckets.get(key) || { key, count: 0, size: 0, lastAt: 0, sources: new Set() };
             b.count += 1;
             b.size += f.size || 0;
             b.lastAt = Math.max(b.lastAt, f.createdAt.getTime());
-            for (const c of f.copies || [])
-                if (c.channelId)
-                    b.channelIds.add(c.channelId);
+            b.sources.add((0, file_view_1.normalizeUploadSource)(f.uploadSource));
             if (byIp && !b.address) {
                 try {
                     b.address = JSON.parse(f.metas || '{}').UploadAddress || '';
@@ -157,15 +156,10 @@ let UsersController = class UsersController {
                     b.address = [r.country, r.region, r.city].filter(Boolean).join(' ') || b.address;
             }
         }
-        const allChannelIds = Array.from(new Set(Array.from(buckets.values()).flatMap((b) => Array.from(b.channelIds))));
-        const channelRows = allChannelIds.length
-            ? await prisma_1.prisma.channel.findMany({ where: { id: { in: allChannelIds } }, select: { id: true, name: true } })
-            : [];
-        const chName = new Map(channelRows.map((c) => [c.id, c.name]));
         const items = Array.from(buckets.values())
-            .map(({ channelIds, ...b }) => ({
+            .map(({ sources, ...b }) => ({
             ...b,
-            channels: Array.from(channelIds).map((id) => chName.get(id)).filter(Boolean),
+            uploadSources: Array.from(sources).sort(),
         }))
             .sort((a, b) => b.count - a.count);
         return { mode: byIp ? 'ip' : 'user', items };

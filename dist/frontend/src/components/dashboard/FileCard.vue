@@ -40,11 +40,9 @@
                 loop 
                 preload="metadata" 
                 class="video-preview" 
-                @click="handleVideoClick"
+                @click.stop="$emit('detail')"
                 @mouseenter="handleVideoHover($event, true)" 
                 @mouseleave="handleVideoHover($event, false)"
-                @fullscreenchange="handleFullscreenChange"
-                @webkitfullscreenchange="handleFullscreenChange"
                 @loadeddata="videoLoading = false"
                 @error="handleVideoError"
             ></video>
@@ -87,7 +85,7 @@
         <!-- 底部覆盖层 -->
         <div class="card-bottom-overlay">
             <div class="file-name-row">
-                <span class="file-name">{{ displayName }}</span>
+                <span class="file-name" :title="fullName">{{ displayName }}</span>
             </div>
             <div class="action-bar">
                 <!-- 左下角：打开文件链接（原「详情」按钮；详情改由点击封面进入） -->
@@ -188,10 +186,25 @@ export default {
                    name.endsWith('.gif') || name.endsWith('.webp') || name.endsWith('.svg') || 
                    name.endsWith('.bmp') || name.endsWith('.avif') || name.endsWith('.heic') || name.endsWith('.heif');
         },
-        displayName() {
+        /** 完整文件名（仅取最后一段），用于 title 悬浮提示 */
+        fullName() {
             const fileName = this.item.metadata?.FileName || this.item.name || '';
             const parts = fileName.split('/');
             return parts[parts.length - 1];
+        },
+        /**
+         * 卡片上显示的文件名：太长时**保留头尾、中间省略**
+         * （`cover-2026-10-18.png` → `cover-2…10-18.png`），
+         * 这样扩展名和文件名开头的辨识部分都还在。
+         */
+        displayName() {
+            const full = this.fullName;
+            const max = 20;
+            if (full.length <= max) return full;
+            const keepEnd = 9;               // 尾部（含扩展名）
+            const keepStart = max - keepEnd - 1; // 中间省略号占 1 个字符
+            if (keepStart <= 3) return `${full.slice(0, max - 1)}…`;
+            return `${full.slice(0, keepStart)}…${full.slice(-keepEnd)}`;
         }
     },
     watch: {
@@ -208,37 +221,6 @@ export default {
         handleVideoError() {
             this.videoLoading = false;
             this.videoError = true;
-        },
-        handleVideoClick(e) {
-            const video = e.target;
-            if (video.requestFullscreen) {
-                video.requestFullscreen();
-            } else if (video.webkitRequestFullscreen) {
-                video.webkitRequestFullscreen();
-            } else if (video.mozRequestFullScreen) {
-                video.mozRequestFullScreen();
-            } else if (video.msRequestFullscreen) {
-                video.msRequestFullscreen();
-            }
-        },
-        handleFullscreenChange(e) {
-            const video = e.target;
-            const isFullscreen = document.fullscreenElement || 
-                                 document.webkitFullscreenElement ||
-                                 document.mozFullScreenElement ||
-                                 document.msFullscreenElement;
-            
-            if (isFullscreen) {
-                // 进入全屏：取消静音和循环
-                video.muted = false;
-                video.loop = false;
-            } else {
-                // 退出全屏：恢复静音和循环，暂停并重置
-                video.muted = true;
-                video.loop = true;
-                video.pause();
-                video.currentTime = 0;
-            }
         },
         handleVideoHover(e, isEnter) {
             const video = e.target;
@@ -397,6 +379,26 @@ export default {
     text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
 }
 
+/* 主渠道 / 备份渠道角标：**统一盒模型**（高度、内边距、行高、边框都一致）。
+   之前只写了 padding + font-size，实际高度受各自 line-height/内容影响，
+   备份角标看起来会比主渠道大一圈。这里显式锁死高度，两者视觉完全对齐。 */
+.success-tag,
+.fail-tag,
+.backup-tag {
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 20px;
+    padding: 0 8px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 500;
+    line-height: 1;
+    white-space: nowrap;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+
 /* 访问次数：鼠标悬浮卡片时显示在卡片上方 */
 .card-views-badge {
     position: absolute;
@@ -549,7 +551,8 @@ export default {
     .primary-tag,
     .backup-tag {
         max-width: 72px;
-        padding: 2px 5px;
+        height: 16px;
+        padding: 0 5px;
         border-radius: 5px;
         font-size: 9px;
         overflow: hidden;

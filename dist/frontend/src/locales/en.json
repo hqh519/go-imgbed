@@ -148,7 +148,13 @@
         "customDomainPlaceholder": "e.g. https://img.example.com (leave empty to use default)",
         "accessDomainTooltip": "When set, all file links use this domain.<br/>Changes apply site-wide immediately.",
         "defaultChannelOption": "Default (main channel)",
-        "backupChannel": "Backup channel"
+        "backupChannel": "Backup channel",
+        "uploadLimits": "Upload limits (this session only)",
+        "uploadLimitsTooltip": "Leave empty to inherit the global allowed formats and max file size. Values are cleared on page refresh.",
+        "allowedExtensions": "Allowed formats",
+        "allowedExtensionsPlaceholder": "Empty = follow global, e.g. jpg,png,gif,mp4",
+        "maxFileSize": "Max file size",
+        "maxFileSizePlaceholder": "Empty = follow global (MB)"
     },
     "uploadHistory": {
         "title": "History",
@@ -354,7 +360,9 @@
         "trashRestoreSuccess": "Restored to the normal list",
         "trashRestoreFailed": "Restore failed",
         "trashPurgeSuccess": "Permanently deleted",
-        "trashPurgeFailed": "Permanent delete failed"
+        "trashPurgeFailed": "Permanent delete failed",
+        "deleteConfirmPlaceholder": "Type \"confirm delete\" to continue",
+        "trashBanner": "You are in the trash: these files are not served publicly (404) and can be restored or purged."
     },
     "dashboardTabs": {
         "fileManagement": "File Management",
@@ -383,7 +391,7 @@
         "imageDimensions": "Dimensions",
         "noDimensions": "N/A",
         "uploadTimeLabel": "Upload Time",
-        "accessStatusAndReview": "Access Status/Review",
+        "accessStatusAndReview": "File status",
         "uploadIP": "Upload IP",
         "uploadAddressLabel": "Upload Address",
         "fileTags": "File Tags",
@@ -404,9 +412,9 @@
         "linkCopied": "Link copied",
         "metadataSaved": "Metadata saved successfully",
         "metadataSaveFailed": "Failed to save metadata",
-        "renameTitle": "Rename File ID",
-        "renameLabel": "New File ID",
-        "renamePlaceholder": "Enter new File ID",
+        "renameTitle": "Rename File Name",
+        "renameLabel": "New File Name",
+        "renamePlaceholder": "Enter new File Name",
         "renameCancel": "Cancel",
         "renameConfirm": "Confirm Rename",
         "renameSuccess": "File renamed successfully",
@@ -423,7 +431,10 @@
         "fileCategoryPlaceholder": "Pick or type a new folder",
         "rootCategory": "Root (no folder)",
         "restoreBtn": "Restore",
-        "purgeBtn": "Delete permanently"
+        "purgeBtn": "Delete permanently",
+        "accessDeleted": "Deleted",
+        "uploadDuration": "Upload duration",
+        "uploadSpeed": "Upload speed"
     },
     "filter": {
         "accessStatus": "Access Status",
@@ -995,7 +1006,7 @@
         "uploadRelatedConfigTooltip": "Items previously under Page Settings → Client settings: directory suggestions, default upload folder, default naming mode, default WebP conversion, default compression options, default link format, allowed upload formats and max file size."
     },
     "userManage": {
-        "byUser": "By user account",
+        "byUser": "By user",
         "byIp": "By IP",
         "createUser": "Create user",
         "editUser": "Edit user",

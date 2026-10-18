@@ -41,8 +41,16 @@ export function getLinkPrefix() {
  * @param {string} name File_ID（可带目录层级）
  * @param {string} [ext] 末尾扩展名，可为 '' / '.jpg'（也可不带点）
  * @returns {string} 形如 https://cdn.example.com/file/abc123.jpg
+ *
+ * ⚠️ `name` 本身**已经带扩展名**时（S3 / WebDAV 上传的 key 例如 `photo.png`），
+ *    不再追加 ext —— 否则会拼出 `photo.png.png`。
  */
 export function fileLink(name, ext = '') {
-  const e = ext && !String(ext).startsWith('.') ? `.${ext}` : String(ext || '');
-  return `${getLinkPrefix()}${encodeURI(String(name ?? ''))}${e}`;
+  const raw = String(name ?? '');
+  const suffix = ext && !String(ext).startsWith('.') ? `.${ext}` : String(ext || '');
+  // name 已含扩展名（自带后缀或与目标后缀相同）→ 原样返回
+  if (!suffix || /\.[A-Za-z0-9]{1,12}$/.test(raw)) {
+    return `${getLinkPrefix()}${encodeURI(raw)}`;
+  }
+  return `${getLinkPrefix()}${encodeURI(raw)}${suffix}`;
 }

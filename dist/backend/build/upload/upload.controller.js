@@ -91,6 +91,12 @@ let UploadController = class UploadController {
         const backupChannelId = !backupOff && backupRaw ? backupRaw : undefined;
         const uploader = (0, auth_guard_1.currentSession)(req)?.user || req.session?.user || '';
         const enforceLimits = await this.svc.userEnforceLimits(uploader);
+        const overrideExts = String(q.allowedExtensions || '')
+            .split(',')
+            .map((s) => s.trim().replace(/^\./, '').toLowerCase())
+            .filter(Boolean);
+        const overrideMaxMB = Number(q.maxFileSizeMB || 0) || 0;
+        const arrivedAt = Number(req._arrivedAt) || Date.now();
         const opts = {
             uploadChannel: q.uploadChannel,
             channelId: q.channelId ?? q.channelName,
@@ -106,6 +112,11 @@ let UploadController = class UploadController {
             autoRetry: q.autoRetry === 'true' || q.autoRetry === '1',
             skipFileLimits: !enforceLimits,
             uploadSource: 'Default',
+            uploadStartedAt: new Date(arrivedAt),
+            limitsOverride: {
+                exts: overrideExts.length ? overrideExts : undefined,
+                maxMB: overrideMaxMB > 0 ? overrideMaxMB : undefined,
+            },
         };
         if (q.initChunked === 'true') {
             const uploadId = Math.random().toString(36).slice(2) + Date.now().toString(36);
@@ -114,6 +125,7 @@ let UploadController = class UploadController {
                 totalChunks: Number(body.totalChunks || q.totalChunks || 0),
                 originalName: fixFilename(body.originalFileName || 'chunked.bin'),
                 mime: body.originalFileType || 'application/octet-stream',
+                startedAt: arrivedAt,
             });
             return res.json({ success: true, uploadId });
         }
@@ -127,7 +139,7 @@ let UploadController = class UploadController {
                 const merged = Buffer.concat(Array.from({ length: total }, (_, i) => store.chunks.get(i) || Buffer.alloc(0)));
                 chunkStore.delete(uploadId);
                 const originalName = fixFilename(body.originalFileName || store.originalName);
-                const r = await this.svc.upload({ buffer: merged, mime: store.mime, originalName }, opts);
+                const r = await this.svc.upload({ buffer: merged, mime: store.mime, originalName }, { ...opts, uploadStartedAt: new Date(store.startedAt || arrivedAt) });
                 if (r.error)
                     return res.status(500).json({ success: false, message: r.error });
                 return res.json([{ src: await this.signedSrc(r.id, req), name: originalName }]);

@@ -148,7 +148,13 @@
         "customDomain": "自定义访问域名",
         "customDomainPlaceholder": "如 https://img.example.com（留空则使用默认域名）",
         "accessDomainTooltip": "设置后，所有文件链接统一使用该域名；<br/>变更后全站链接将同步跟随。",
-        "backupChannel": "备份渠道"
+        "backupChannel": "备份渠道",
+        "uploadLimits": "上传限制（仅本次生效）",
+        "uploadLimitsTooltip": "留空则沿用后台「上传相关配置」的允许格式与单文件大小上限；填了就用这里的值。刷新页面后自动清空。",
+        "allowedExtensions": "允许的上传格式",
+        "allowedExtensionsPlaceholder": "留空=跟随后台，例如 jpg,png,gif,mp4",
+        "maxFileSize": "单文件大小上限",
+        "maxFileSizePlaceholder": "留空=跟随后台（MB）"
     },
     "uploadHistory": {
         "title": "历史记录",
@@ -354,7 +360,9 @@
         "trashRestoreSuccess": "已恢复到正常文件列表",
         "trashRestoreFailed": "恢复失败",
         "trashPurgeSuccess": "已彻底删除",
-        "trashPurgeFailed": "彻底删除失败"
+        "trashPurgeFailed": "彻底删除失败",
+        "deleteConfirmPlaceholder": "请输入“确认删除”",
+        "trashBanner": "当前为回收站：这里的文件不走外链（对外 404），可恢复或彻底删除。"
     },
     "dashboardTabs": {
         "fileManagement": "文件管理",
@@ -383,7 +391,7 @@
         "imageDimensions": "图片尺寸",
         "noDimensions": "无",
         "uploadTimeLabel": "上传时间",
-        "accessStatusAndReview": "访问状态/审查",
+        "accessStatusAndReview": "文件状态",
         "uploadIP": "上传IP",
         "uploadAddressLabel": "上传地址",
         "fileTags": "文件标签",
@@ -404,9 +412,9 @@
         "linkCopied": "链接已复制",
         "metadataSaved": "元数据保存成功",
         "metadataSaveFailed": "保存元数据失败",
-        "renameTitle": "重命名 File ID",
-        "renameLabel": "新 File ID",
-        "renamePlaceholder": "请输入新的 File ID",
+        "renameTitle": "重命名 File Name",
+        "renameLabel": "新 File Name",
+        "renamePlaceholder": "请输入新的 File Name",
         "renameCancel": "取消",
         "renameConfirm": "确认重命名",
         "renameSuccess": "文件重命名成功",
@@ -423,7 +431,10 @@
         "fileCategoryPlaceholder": "选择或输入新的分类目录",
         "rootCategory": "根目录（不分类）",
         "restoreBtn": "恢复",
-        "purgeBtn": "彻底删除"
+        "purgeBtn": "彻底删除",
+        "accessDeleted": "已删除",
+        "uploadDuration": "上传时长",
+        "uploadSpeed": "上传速度"
     },
     "filter": {
         "accessStatus": "访问状态",
@@ -995,8 +1006,8 @@
         "uploadRelatedConfigTooltip": "原本在「网页设置 → 客户端设置」里的上传相关项：目录候选项、默认上传目录、默认命名方式、默认转换 WebP、默认压缩参数、默认外链格式、允许的上传格式与单文件大小上限。"
     },
     "userManage": {
-        "byUser": "按用户账户归集",
-        "byIp": "按 IP 归集",
+        "byUser": "按用户收集",
+        "byIp": "按 IP 收集",
         "createUser": "创建用户",
         "editUser": "编辑用户",
         "username": "用户名",
@@ -1040,7 +1051,7 @@
         "enforceLimitsTooltip": "开启（默认）：该用户上传时受后台「上传相关配置」中的允许上传格式与单文件大小上限约束；关闭：跳过这两项限制（对外 WebDAV 也按本账户此开关生效）",
         "linkPermission": "外链权限",
         "linkPermissionTooltip": "关闭后该账户上传的文件外链（/file/*）对外不可访问；后台预览、文件管理不受影响",
-        "collectHintSelf": "只统计你自己账户下的文件，按用户账户归集"
+        "collectHintSelf": "只统计你自己账户下的文件，按用户收集"
     },
     "customerConfig": {
         "uploadFileList": "上传文件列表",

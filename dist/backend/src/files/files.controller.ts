@@ -518,9 +518,15 @@ export class LinkController {
       rest = rest.slice(rest.indexOf('/') + 1);
       pushName(rest);
     }
+    /**
+     * 回收站里的文件对外一律 404（恢复后自动恢复访问）；
+     * 但 `?from=admin` 是管理端预览（下面 checkAccess 会校验管理员会话或上传者本人），
+     * 回收站列表要能显示缩略图，所以这条通道放行 deleted 记录 —— 否则进回收站后
+     * 卡片/列表全是「加载失败」。
+     */
+    const adminPreview = req.query.from === 'admin';
     const record = await prisma.fileRecord.findFirst({
-      // 回收站文件（status='deleted'）对外一律 404 —— 恢复后自动恢复访问
-      where: { status: 'active', OR: nameCandidates.map((n) => ({ name: n })) },
+      where: { ...(adminPreview ? {} : { status: 'active' }), OR: nameCandidates.map((n) => ({ name: n })) },
       include: { copies: true },
     });
     if (!record) return res.status(404).send('Not Found');
@@ -1160,6 +1166,7 @@ export class ManageController {
       folder: r.folder,
       uploader: r.uploader,
       uploadSource: r.uploadSource,
+      status: r.status,
       deletedAt: r.deletedAt,
       channels: r.copies.map((c) => ({
         name: chMap.get(c.channelId)?.name || '(已删除渠道)',

@@ -99,6 +99,9 @@ model FileRecord {
   views        Int      @default(0) // 被访问次数（GET /file/:name 命中累计，管理端预览不计）
   status       String   @default("active") // active | deleted（deleted = 在回收站，可恢复）
   deletedAt    DateTime? // 进入回收站的时间；恢复时清空。排序/定期清理依据
+  // 上传计时（后台文件详情 →「上传时长 / 上传速度」）：历史数据为 null
+  uploadStartedAt  DateTime?
+  uploadFinishedAt DateTime?
   metas        String   @default("{}") // 标签、备注等扩展
   createdAt    DateTime @default(now())
 

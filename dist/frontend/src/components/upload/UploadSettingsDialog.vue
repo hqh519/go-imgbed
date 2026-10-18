@@ -151,6 +151,44 @@
             </div>
         </div>
 
+        <!-- 上传限制（仅本次生效）：填了就用这里的值，留空跟随后台「上传相关配置」 -->
+        <div class="dialog-section">
+            <div class="section-header">
+                <span class="section-title">{{ $t('uploadSettings.uploadLimits') }}</span>
+                <el-tooltip :content="$t('uploadSettings.uploadLimitsTooltip')" placement="top" raw-content>
+                    <font-awesome-icon icon="question-circle" class="section-help-icon"/>
+                </el-tooltip>
+            </div>
+            <div class="section-content">
+                <div class="setting-item">
+                    <span class="setting-label">{{ $t('uploadSettings.allowedExtensions') }}</span>
+                    <el-input
+                        :model-value="limitExtensions"
+                        @update:model-value="$emit('update:limitExtensions', $event)"
+                        :placeholder="$t('uploadSettings.allowedExtensionsPlaceholder')"
+                        clearable
+                        class="setting-input"
+                    />
+                </div>
+                <div class="setting-item">
+                    <span class="setting-label">{{ $t('uploadSettings.maxFileSize') }}</span>
+                    <div class="limit-size-wrapper">
+                        <el-input-number
+                            :model-value="limitMaxSizeMB"
+                            @update:model-value="$emit('update:limitMaxSizeMB', $event)"
+                            :min="0"
+                            :max="102400"
+                            :step="10"
+                            :value-on-clear="0"
+                            controls-position="right"
+                            class="limit-size-input"
+                        />
+                        <span class="limit-size-unit">MB</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <div class="dialog-action">
             <el-button type="primary" @click="visible = false" class="confirm-btn">{{ $t('uploadSettings.confirm') }}</el-button>
         </div>
@@ -183,7 +221,11 @@ export default {
         customerCompress: { type: Boolean, default: true },
         compressBar: { type: Number, default: 5 },
         compressPercent: { type: Number, default: 80 },
-        serverCompress: { type: Boolean, default: true }
+        serverCompress: { type: Boolean, default: true },
+        /** 允许的上传格式（本次覆盖，逗号分隔；空 = 跟随后台） */
+        limitExtensions: { type: String, default: '' },
+        /** 单文件大小上限覆盖（MB；0 = 跟随后台） */
+        limitMaxSizeMB: { type: Number, default: 0 }
     },
     emits: [
         'update:modelValue',
@@ -196,7 +238,9 @@ export default {
         'update:customerCompress',
         'update:compressBar',
         'update:compressPercent',
-        'update:serverCompress'
+        'update:serverCompress',
+        'update:limitExtensions',
+        'update:limitMaxSizeMB'
     ],
     methods: {
         handleUploadFolderInput(val) {
@@ -298,6 +342,24 @@ export default {
 }
 
 .slider-unit {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--el-text-color-secondary);
+}
+
+/* 「单文件大小上限」输入框 + MB 单位 */
+.limit-size-wrapper {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+.limit-size-input {
+    width: 140px !important;
+}
+
+.limit-size-unit {
     font-size: 13px;
     font-weight: 500;
     color: var(--el-text-color-secondary);

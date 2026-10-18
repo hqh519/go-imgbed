@@ -205,8 +205,10 @@ let UploadService = class UploadService {
             return cm;
         return 'application/octet-stream';
     }
-    async validate(input) {
-        const { exts, maxMB } = await this.limits();
+    async validate(input, override) {
+        const base = await this.limits();
+        const exts = override?.exts && override.exts.length ? override.exts : base.exts;
+        const maxMB = override?.maxMB && override.maxMB > 0 ? override.maxMB : base.maxMB;
         const ext = (input.originalName.split('.').pop() || '').toLowerCase();
         if (!ext || ext === input.originalName.toLowerCase()) {
             return '无法识别文件类型（缺少扩展名）';
@@ -592,7 +594,7 @@ let UploadService = class UploadService {
     async uploadInner(input, opts) {
         let { buffer, mime, originalName } = input;
         if (!opts.skipFileLimits) {
-            const invalid = await this.validate(input);
+            const invalid = await this.validate(input, opts.limitsOverride);
             if (invalid)
                 return { id: '', error: invalid };
         }
@@ -712,6 +714,8 @@ let UploadService = class UploadService {
                 uploader: opts.uploader || '',
                 uploadSource: (0, file_view_1.normalizeUploadSource)(opts.uploadSource),
                 ip: uploadIp,
+                uploadStartedAt: opts.uploadStartedAt || new Date(startedAt),
+                uploadFinishedAt: new Date(),
                 metas: JSON.stringify({ UploadAddress: uploadAddress }),
                 copies: {
                     create: {

@@ -40,6 +40,7 @@ import { faExclamationCircle } from '@fortawesome/free-solid-svg-icons/faExclama
 import { faExclamationTriangle } from '@fortawesome/free-solid-svg-icons/faExclamationTriangle';
 import { faExternalLinkAlt } from '@fortawesome/free-solid-svg-icons/faExternalLinkAlt';
 import { faEye } from '@fortawesome/free-solid-svg-icons/faEye';
+import { faEyeSlash } from '@fortawesome/free-solid-svg-icons/faEyeSlash';
 import { faFile } from '@fortawesome/free-solid-svg-icons/faFile';
 import { faFileAlt } from '@fortawesome/free-solid-svg-icons/faFileAlt';
 import { faFileExport } from '@fortawesome/free-solid-svg-icons/faFileExport';
@@ -138,6 +139,7 @@ export default [
     faExclamationTriangle,
     faExternalLinkAlt,
     faEye,
+    faEyeSlash,
     faFile,
     faFileAlt,
     faFileExport,

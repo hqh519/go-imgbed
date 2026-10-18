@@ -25,6 +25,31 @@ export function normalizeUploadSource(raw?: string | null): string {
   return (UPLOAD_SOURCES as readonly string[]).includes(v) ? v : 'Default';
 }
 
+/**
+ * 上传计时派生字段（文件详情 →「上传时长 / 上传速度」）：
+ *   UploadStartedAt / UploadFinishedAt —— ISO 字符串（空串 = 无记录）
+ *   UploadDurationMs                   —— 毫秒（0 = 无记录）
+ *   UploadSpeedMBps                    —— MB/s，按「当前文件体积 ÷ 耗时」计算，保留两位小数
+ * 1.9.1 之前的记录没有这两列，统一返回 0/''，前端显示「未知」。
+ */
+export function buildUploadTiming(rec: {
+  uploadStartedAt?: Date | null;
+  uploadFinishedAt?: Date | null;
+  size?: number;
+}): Record<string, unknown> {
+  const start = rec.uploadStartedAt ? new Date(rec.uploadStartedAt).getTime() : 0;
+  const end = rec.uploadFinishedAt ? new Date(rec.uploadFinishedAt).getTime() : 0;
+  const dur = start && end && end >= start ? end - start : 0;
+  const bytes = Number(rec.size) || 0;
+  const speed = dur > 0 && bytes > 0 ? bytes / (dur / 1000) / 1024 / 1024 : 0;
+  return {
+    UploadStartedAt: start ? new Date(start).toISOString() : '',
+    UploadFinishedAt: end ? new Date(end).toISOString() : '',
+    UploadDurationMs: dur,
+    UploadSpeedMBps: speed ? Number(speed.toFixed(2)) : 0,
+  };
+}
+
 /** 渠道类型 → 前端展示名（metadata.Channel） */
 export const CHANNEL_LABEL: Record<string, string> = {
   cos: 'Tencent',
@@ -247,7 +272,8 @@ export function buildMetadata(
     UploadUser: (rec as unknown as { uploader?: string }).uploader || '',
     // 上传渠道：Default / WebDAV / API-Web / API-S3（文件详情「上传用户」后面展示）
     UploadSource: normalizeUploadSource((rec as unknown as { uploadSource?: string }).uploadSource),
-    // 重定向地址（非空时 /file/:name 会 302 到该地址）
+    // 上传计时：详情页「上传时长 / 上传速度」；历史数据没有这两列 → 0，前端显示「未知」
+    ...buildUploadTiming(rec as unknown as { uploadStartedAt?: Date | null; uploadFinishedAt?: Date | null; size?: number }),    // 重定向地址（非空时 /file/:name 会 302 到该地址）
     RedirectUrl: (rec as unknown as { redirectUrl?: string }).redirectUrl || '',
     ListType: (metas.ListType as string) || 'None',
     TimeStamp: rec.createdAt.getTime(),

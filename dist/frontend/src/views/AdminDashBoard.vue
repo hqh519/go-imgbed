@@ -132,6 +132,11 @@
                 </template>
             </AdminHeader>
             <el-main class="main-container" :class="{ 'has-batch-toolbar': selectedFiles.length > 0 }">
+            <!-- 回收站模式提示条：明确当前列表是已删除文件（外链已 404，可恢复或彻底删除） -->
+            <div v-if="trashMode" class="trash-banner" role="status">
+                <font-awesome-icon icon="trash-alt" class="trash-banner-icon"/>
+                <span class="trash-banner-text">{{ $t('dashboard.trashBanner') }}</span>
+            </div>
             <!-- 目录导航 -->
             <div class="breadcrumb-container">
                 <DashboardCheckbox
@@ -383,10 +388,8 @@
                     <div class="list-col list-col-preview">{{ $t('dashboard.preview') }}</div>
                     <div class="list-col list-col-name">{{ $t('dashboard.fileName') }}</div>
                     <div class="list-col list-col-views">{{ $t('dashboard.views') }}</div>
-                    <div class="list-col list-col-tags">{{ $t('dashboard.tags') }}</div>
                     <div class="list-col list-col-channel">{{ $t('dashboard.storageChannel') }}</div>
                     <div class="list-col list-col-backup">{{ $t('dashboard.backupChannel') }}</div>
-                    <div class="list-col list-col-address">{{ $t('dashboard.uploadAddress') }}</div>
                     <div class="list-col list-col-size">{{ $t('dashboard.fileSize') }}</div>
                     <div class="list-col list-col-date">{{ $t('dashboard.uploadTime') }}</div>
                     <div class="list-col list-col-actions">{{ $t('dashboard.actions') }}</div>
@@ -1572,15 +1575,23 @@ methods: {
             isFolder: false,
             selected: false,
             trashId: it.id,
+            // 详情页「文件状态」据此显示「已删除」
+            status: it.status || 'deleted',
             metadata: {
                 FileName: it.originalName || it.name,
                 RawName: it.name,
+                // 卡片/列表视图判断视频/图片靠 FileType（回收站条目没有扩展名后缀）
+                FileType: it.mime || '',
+                FileExt: (String(it.originalName || '').split('.').pop() || '').toLowerCase(),
                 FileSizeBytes: Number(it.size) || 0,
                 TimeStamp: it.deletedAt || '',
                 UploadUser: it.uploader || '',
+                UploadSource: it.uploadSource || 'Default',
                 Channel: primary.name || '',
                 ChannelShort: primary.name || '',
                 MimeType: it.mime || '',
+                Status: it.status || 'deleted',
+                Tags: [],
                 TrashDeletedAt: deletedAtText,
                 TrashChannels: (it.channels || []).map(c => c.name).filter(Boolean)
             }
@@ -1652,6 +1663,7 @@ methods: {
             cancelButtonText: this.$t('dashboard.deleteConfirmCancel'),
             inputPattern: new RegExp(`^\\s*${escaped}\\s*$`),
             inputErrorMessage: this.$t('dashboard.deleteConfirmInputError'),
+            inputPlaceholder: this.$t('dashboard.deleteConfirmPlaceholder'),
             type: 'warning'
         });
     },
@@ -2897,8 +2909,27 @@ beforeUnmount() {
 
 /* 顶部工具栏「刷新」按钮 */
 .refresh-files-btn {
-    margin-left: 8px;
+    margin-left: 4px;
     padding: 6px 10px;
+}
+/* 回收站模式提示条 */
+.trash-banner {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+    padding: 8px 14px;
+    border-radius: 10px;
+    font-size: 13px;
+    color: var(--el-color-danger);
+    background: color-mix(in srgb, var(--el-color-danger) 10%, transparent);
+    border: 1px solid color-mix(in srgb, var(--el-color-danger) 30%, transparent);
+}
+.trash-banner-icon {
+    font-size: 13px;
+}
+.trash-banner-text {
+    line-height: 1.4;
 }
 .refresh-files-icon {
     font-size: 13px;
@@ -2912,7 +2943,8 @@ beforeUnmount() {
 
 /* 标签筛选按钮：选中态高亮为蓝色 */
 .tag-filter-badge {
-    margin-left: 8px;
+    /* 间距交给 .search-area 的 gap，多个 margin 叠起来会显得太散 */
+    margin-left: 0;
     flex: 0 0 auto;
 }
 .tag-filter-btn {
@@ -3209,20 +3241,22 @@ beforeUnmount() {
 }
 
 .history-btn {
-    height: 32px;
-    border-radius: 10px;
+    /* 与左右两侧 size="small" 按钮（24px）等高，避免比旁边按钮高出一截 */
+    height: 24px;
+    padding: 0 10px;
+    border-radius: 8px;
     font-size: 12px;
     flex-shrink: 0;
 }
 
 .history-btn-icon {
-    margin-right: 5px;
-    font-size: 12px;
+    margin-right: 4px;
+    font-size: 11px;
 }
 
 @media (max-width: 768px) {
     .history-btn {
-        height: 28px;
+        height: 24px;
         font-size: 11px;
         padding: 0 8px;
     }
@@ -3280,7 +3314,8 @@ beforeUnmount() {
     min-width: 0;
     display: flex;
     align-items: center;
-    gap: 8px;
+    /* 工具栏按钮间距：原 8px + 各按钮 margin-left 会叠成 16px，收紧到 6px */
+    gap: 6px;
 }
 @media (max-width: 768px) {
     .search-area {

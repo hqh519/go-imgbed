@@ -40,19 +40,7 @@
             <span v-if="!isFolder" class="views-count" :title="String(viewsCount)">{{ viewsCount }}</span>
             <span v-else class="list-empty">-</span>
         </div>
-        <!-- 标签 -->
-        <div class="list-col list-col-tags">
-            <template v-if="!isFolder && item.metadata?.Tags && item.metadata.Tags.length > 0">
-                <span 
-                    v-for="(tag, tagIndex) in item.metadata.Tags.slice(0, 3)" 
-                    :key="tagIndex" 
-                    class="color-tag"
-                    :style="{ background: getTagColor(tagIndex) }"
-                >{{ tag }}</span>
-                <span v-if="item.metadata.Tags.length > 3" class="color-tag color-tag-more" :style="{ background: getTagColor(3) }">+{{ item.metadata.Tags.length - 3 }}</span>
-            </template>
-            <span v-else class="list-empty">-</span>
-        </div>
+        <!-- 标签 / 上传地址 / 删除按钮：按需求不在列表视图展示（卡片视图与详情页仍保留） -->
         <!-- 存储渠道（渠道类型 / 渠道名称 合并） -->
         <div class="list-col list-col-channel">
             <div v-if="!isFolder && storageChannelText" class="channel-combined" :title="storageChannelText">{{ storageChannelText }}</div>
@@ -61,11 +49,6 @@
         <!-- 备份渠道（同格式：渠道类型 / 渠道名称） -->
         <div class="list-col list-col-backup">
             <div v-if="!isFolder && backupChannelText" class="channel-combined is-backup" :title="backupChannelText">{{ backupChannelText }}</div>
-            <span v-else class="list-empty">-</span>
-        </div>
-        <!-- 上传地址 -->
-        <div class="list-col list-col-address">
-            <div v-if="!isFolder && item.metadata?.UploadIP" class="address-box">{{ item.metadata.UploadIP }}</div>
             <span v-else class="list-empty">-</span>
         </div>
         <!-- 大小 -->
@@ -107,11 +90,6 @@
                     </button>
                 </el-tooltip>
             </template>
-            <el-tooltip :content="$t('dashboard.delete')" placement="top" :show-after="1000">
-                <button class="list-action-btn list-action-danger" @click.stop="$emit('delete')">
-                    <font-awesome-icon icon="trash-alt"/>
-                </button>
-            </el-tooltip>
         </div>
     </div>
 </template>
@@ -136,12 +114,28 @@ export default {
             // 检查 isFolder 属性或名称以 / 结尾
             return this.item.isFolder || this.item.name?.endsWith('/');
         },
+        /**
+         * 判断文件类型：**优先 metadata.FileType**（后端按 mime 下发 image / video / audio / other），
+         * 再退回按显示文件名（metadata.FileName）的后缀判断。
+         * 不能用 item.name —— 它是 File_ID（`M40QqttK...`），本身不带扩展名，
+         * 只按它判断会导致列表视图永远不出缩略图（历史 bug）。
+         */
+        fileTypeName() {
+            return String(this.item.metadata?.FileType || '').toLowerCase();
+        },
+        /** 供后缀判断用的真实文件名 */
+        realName() {
+            const n = this.item.metadata?.FileName || this.item.name || '';
+            return String(n).toLowerCase();
+        },
         isVideo() {
-            const name = this.item.name?.toLowerCase() || '';
+            if (this.fileTypeName.includes('video')) return true;
+            const name = this.realName;
             return name.endsWith('.mp4') || name.endsWith('.webm') || name.endsWith('.mov') || name.endsWith('.avi');
         },
         isImage() {
-            const name = this.item.name?.toLowerCase() || '';
+            if (this.fileTypeName.includes('image')) return true;
+            const name = this.realName;
             return name.endsWith('.jpg') || name.endsWith('.jpeg') || name.endsWith('.png') || 
                    name.endsWith('.gif') || name.endsWith('.webp') || name.endsWith('.svg') || name.endsWith('.bmp');
         },
@@ -239,8 +233,9 @@ export default {
 <style scoped>
 .list-item {
     display: grid;
-    /* 复选框 / 预览 / 文件名 / 访问次数 / 标签 / 存储渠道 / 备份渠道 / 上传地址 / 大小 / 时间 / 操作 */
-    grid-template-columns: 50px 60px minmax(180px, 1fr) 70px 130px 150px 150px 130px 80px 100px 120px;
+    /* 复选框 / 预览 / 文件名 / 访问次数 / 存储渠道 / 备份渠道 / 大小 / 时间 / 操作
+       （标签列、上传地址列已按需求移除） */
+    grid-template-columns: 50px 60px minmax(180px, 1fr) 70px 150px 150px 80px 100px 120px;
     content-visibility: auto;
     contain: layout paint style;
     contain-intrinsic-size: 65px;
@@ -404,14 +399,11 @@ export default {
 .list-action-danger:hover {
     background: var(--el-color-danger);
 }
-/* 平板端：与表头同步隐藏低优先级列，避免整表横向滚动 */
+/* 平板端：列宽收窄，避免整表横向滚动（列数与桌面端保持一致） */
 @media (min-width: 769px) and (max-width: 1199px) {
     .list-item {
-        grid-template-columns: 50px 60px minmax(160px, 1fr) 60px 150px 80px 100px 110px;
+        grid-template-columns: 40px 52px minmax(150px, 1fr) 56px 120px 120px 72px 92px 104px;
         padding: 10px 16px;
-    }
-    .list-col-tags, .list-col-backup, .list-col-address {
-        display: none;
     }
 }
 
@@ -424,8 +416,7 @@ export default {
     }
     .list-col-size, .list-col-date, .list-col-tags, .list-col-views, .list-col-channel, .list-col-backup, .list-col-address {
         display: none;
-    }
-    .list-col-name {
+    }    .list-col-name {
         padding-right: 8px;
         line-height: 1.25;
     }

@@ -74,14 +74,22 @@
                             <font-awesome-icon icon="upload" class="manual-upload-icon"/>
                             {{ $t('uploadForm.uploadNow') }}
                         </el-button>
-                        <!-- 开关文案只在右侧显示一个：开启=「自动」，关闭=「手动」 -->
+                        <!-- 开关文案固定为「自动」（不再随状态变成「手动」）；
+                             点文字也能切换，扩大触控热区 -->
                         <div class="default-upload-switch">
-                            <el-switch
-                                :model-value="autoUpload"
-                                @update:model-value="$emit('update:autoUpload', $event)"
-                                class="auto-upload-switch"
-                            />
-                            <span class="auto-upload-switch-label">{{ autoUpload ? $t('uploadForm.autoUpload') : $t('uploadForm.manualUpload') }}</span>
+                            <span class="auto-upload-switch-control" @click.stop>
+                                <el-switch
+                                    :model-value="autoUpload"
+                                    @update:model-value="$emit('update:autoUpload', $event)"
+                                    class="auto-upload-switch"
+                                />
+                            </span>
+                            <span
+                                class="auto-upload-switch-label"
+                                role="switch"
+                                :aria-checked="autoUpload ? 'true' : 'false'"
+                                @click.stop="toggleAutoUpload"
+                            >{{ $t('uploadForm.autoUpload') }}</span>
                         </div>
                     </div>
                 </div>
@@ -145,7 +153,7 @@
                 </div>
             </el-card>
         </div>
-        <el-card class="upload-list-card" :class="{'upload-list-busy': fileList.length}">
+        <el-card class="upload-list-card" :class="{'upload-list-busy': fileList.length}" :style="uploadListStyle">
             <div class="upload-list-container">
                 <el-scrollbar @scroll="handleScroll" ref="scrollContainer">
                     <div class="upload-list-dashboard" :class="{ 'list-scrolled': listScrolled }">
@@ -366,6 +374,22 @@ props: {
         type: Number,
         default: 80,
         required: false
+    },
+    /**
+     * 上传限制的「本次覆盖」值（来自上传设置弹窗）：
+     *   limitExtensions —— 逗号分隔的扩展名，如 'jpg,png,mp4'；空 = 跟随后台
+     *   limitMaxSizeMB  —— 单文件大小上限（MB）；0 / 空 = 跟随后台
+     * 只存在内存里，刷新页面即恢复后台全局设置。
+     */
+    limitExtensions: {
+        type: String,
+        default: '',
+        required: false
+    },
+    limitMaxSizeMB: {
+        type: Number,
+        default: 0,
+        required: false
     }
 },
 emits: ['update:autoUpload'],
@@ -377,6 +401,8 @@ data() {
         exceptionList: [],
         listScrolled: false,
         fileListLength: 0,
+        /** 上传列表区高度（px）：按文件数自适应，最多显示 3 个，超出滚动 */
+        uploadListHeight: 0,
         localUidCounter: 0,
         pastedUrls: '',
         pasteUploadMethod: 'save',
@@ -450,28 +476,58 @@ watch: {
     uploadFolder() { this.liveParams = null },
     uploadNameType() { this.liveParams = null },
     compressPercent() { this.liveParams = null },
-    urlPrefix() { this.liveParams = null }
+    urlPrefix() { this.liveParams = null },
+    /** 文件数或状态变化 → 重新量一次列表区高度（最多显示 3 个） */
+    listSignature() {
+        this.$nextTick(this.updateUploadListHeight)
+    }
 },
 computed: {
     ...mapGetters([
         'storeAutoReUpload',
         'userConfig'
     ]),
-    /** 允许的上传扩展名（来自系统设置，含兜底） */
+    /**
+     * 上传设置弹窗里「本次生效」的允许格式（解析后的数组）。
+     * 支持 `jpg,png` / `.jpg, .png` / 空格分隔；非法/空 → 返回空数组（跟随后台）。
+     */
+    localExtensions() {
+        if (!this.limitExtensions) return []
+        const list = String(this.limitExtensions)
+            .split(/[,，\s]+/)
+            .map((e) => e.trim().replace(/^\./, '').toLowerCase())
+            .filter((e) => /^[a-z0-9]{1,10}$/.test(e))
+        return Array.from(new Set(list))
+    },
+    /** 允许的上传扩展名（上传设置里的本次覆盖优先，其次系统设置，最后兜底） */
     allowedExtensions() {
+        if (this.localExtensions.length) return this.localExtensions
         const v = this.userConfig?.allowedExtensions
         return Array.isArray(v) && v.length
             ? v
             : ['jpg', 'png', 'gif', 'jpeg', 'webp', 'bmp', 'mp4', 'webm', 'mov', 'm4v', 'mp3', 'm4a', 'aac', 'ogg']
     },
-    /** 单文件大小上限（MB），默认 150 */
+    /** 单文件大小上限（MB）：上传设置覆盖优先，其次系统设置，默认 150 */
     maxUploadSizeMB() {
+        const local = Number(this.limitMaxSizeMB)
+        if (Number.isFinite(local) && local > 0) return local
         const v = Number(this.userConfig?.maxUploadSizeMB)
         return Number.isFinite(v) && v > 0 ? v : 150
     },
     /** 文件选择器 accept 属性（与服务端白名单保持一致） */
     acceptAttr() {
         return this.allowedExtensions.map((e) => '.' + e).join(',')
+    },
+    /**
+     * 列表区高度自适应用的「签名」：文件数 + 每个文件的状态。
+     * 状态变化（上传中 → 完成）会改变条目高度（多了外链行），需要重新量一次。
+     */
+    listSignature() {
+        return this.fileList.length + '|' + this.fileList.map((i) => i.status).join(',')
+    },
+    /** 列表卡片的内联高度（0 = 交给 CSS 兜底） */
+    uploadListStyle() {
+        return this.uploadListHeight ? { height: this.uploadListHeight + 'px' } : {}
     },
     defaultCopyFormat() {
         return COPY_FORMATS.find(format => format.value === this.selectedUrlForm) || COPY_FORMATS[0]
@@ -543,10 +599,12 @@ mounted() {
     document.addEventListener('paste', this.handlePaste)
     document.addEventListener('keydown', this.handlePasteShortcut)
     this.autoReUpload = this.storeAutoReUpload
+    window.addEventListener('resize', this.updateUploadListHeight)
 },
 beforeUnmount() {
     document.removeEventListener('paste', this.handlePaste)
     document.removeEventListener('keydown', this.handlePasteShortcut)
+    window.removeEventListener('resize', this.updateUploadListHeight)
     // 清理状态
     if (this.roundTimer) {
         clearTimeout(this.roundTimer)
@@ -575,9 +633,50 @@ methods: {
         const item = this.fileList.find(i => i.uid === uid)
         const originalSize = (item && item.originalSize) || file?.file?.size || 0
         const p = this.effParams
+        // 上传限制覆盖：只在用户真的在「上传设置」里填过时才带，避免无谓传参
+        const limitExts = this.localExtensions.join(',')
+        const limitMB = Number(this.limitMaxSizeMB) > 0 ? Number(this.limitMaxSizeMB) : 0
         return '&compressPercent=' + (p.compressPercent || 0) +
             '&backupChannel=' + encodeURIComponent(p.backupChannel || '') +
-            '&originalSize=' + originalSize
+            '&originalSize=' + originalSize +
+            (limitExts ? '&allowedExtensions=' + encodeURIComponent(limitExts) : '') +
+            (limitMB ? '&maxFileSizeMB=' + limitMB : '')
+    },
+    /**
+     * 列表区高度自适应：最多完整显示 3 个文件，超过 3 个由 el-scrollbar 出滚动条。
+     * 条目的实际高度是变的（上传中只有进度条，完成后多出「外链行」，视频缩略图最高 110px），
+     * 所以不能写死 row 高度 —— 每次文件数/状态变化后重新量一遍。
+     */
+    updateUploadListHeight() {
+        const view = this.$refs.scrollContainer?.$el?.querySelector('.el-scrollbar__view')
+        if (!view) {
+            this.uploadListHeight = 0
+            return
+        }
+        const header = view.querySelector('.upload-list-dashboard')
+        // 列表是倒序渲染的（最新在最上），从上往下取前 3 个即可
+        const items = Array.from(view.querySelectorAll('.upload-list-item')).slice(0, 3)
+        if (!items.length) {
+            this.uploadListHeight = 0
+            return
+        }
+        let h = header ? header.offsetHeight : 0
+        items.forEach((el) => {
+            const style = window.getComputedStyle(el)
+            h += el.offsetHeight +
+                (parseFloat(style.marginTop) || 0) +
+                (parseFloat(style.marginBottom) || 0)
+        })
+        // 少量余量，避免最后一条正好被裁掉几个像素
+        h += 2
+        this.uploadListHeight = h
+    },
+    /**
+     * 点「自动」文字也能切换开关（扩大触控热区）。
+     * 文案固定显示「自动」，不再随状态变成「手动」，避免用户误以为是两个不同功能。
+     */
+    toggleAutoUpload() {
+        this.$emit('update:autoUpload', !this.autoUpload)
     },
     /** 手动上传：把列表里所有等待中的文件一次性发出（可先改过文件名） */
     startManualUpload() {
@@ -1993,9 +2092,8 @@ beforeDestroy() {
     --upload-card-busy-height: 17vh;
     --upload-list-height: 7vh;
     --upload-list-inner-height: var(--upload-list-height);
-    /* 有文件时列表额外向下「长」出来的高度：
-       这里只作为「最小可用高度」的兜底（极矮视口下不至于把列表压没），
-       真正的收缩态高度由下面按视口自适应的规则决定。 */
+    /* 列表区「量到高度之前」的兜底高度（JS 量到后会被内联 style 覆盖）：
+       大约 = 头部 + 3 个条目 */
     --upload-list-busy-extra: 24vh;
     --upload-list-busy-height: calc(var(--upload-card-height) - var(--upload-card-busy-height) + var(--upload-list-height) + var(--upload-list-busy-extra));
     /* 收缩态铺满视口时，顶部（Logo / 标题 / 默认·链接标签页）与底部页脚的预留高度。
@@ -2010,19 +2108,16 @@ beforeDestroy() {
     align-items: center;
     height: calc(var(--upload-card-height) + var(--upload-list-height) + var(--upload-list-gap) + var(--upload-card-vertical-padding));
 }
-/* 有文件（列表展开）：整个上传区按「视口高度 − 顶部/页脚预留」铺开，
-   列表卡片吃掉上传卡片之外的剩余空间，底边自然落到页脚上方。
-   不再依赖固定的 vh 数值 —— 换屏幕尺寸也始终贴合页脚，且不会把页脚顶出视口。 */
+/* 有文件（列表展开）：列表区高度改为「按文件数自适应」——
+   JS 量出「头部 + 最多 3 个条目」的高度写进内联 style，
+   超过 3 个文件由 el-scrollbar 出滚动条；因此外层不再用视口高度硬撑。 */
 .upload-form:has(.upload-list-busy) {
-    height: max(
-        calc(var(--upload-card-busy-height) + var(--upload-list-busy-height) + var(--upload-list-gap) + var(--upload-card-vertical-padding)),
-        calc(100vh - var(--upload-home-reserved))
-    );
-}
-/* 列表卡片：收缩态下撑满剩余高度（极矮视口时退回 --upload-list-busy-height 兜底，页面可滚动） */
-.upload-form:has(.upload-list-busy) .upload-list-card {
-    flex: 1 1 auto;
     height: auto;
+}
+/* 列表卡片：高度由内联 style 决定（未量到之前用兜底高度） */
+.upload-form:has(.upload-list-busy) .upload-list-card {
+    flex: 0 0 auto;
+    height: var(--upload-list-busy-height);
     min-height: var(--upload-list-height);
 }
 .upload-list-card {

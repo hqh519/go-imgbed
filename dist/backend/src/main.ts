@@ -71,6 +71,15 @@ async function bootstrap() {
   const server = express();
   // 反代场景：信任 X-Forwarded-Host / X-Forwarded-Proto
   server.set('trust proxy', true);
+  /**
+   * 请求到达时刻（毫秒）—— 必须挂在**所有**中间件之前：
+   * 上传接口的 body 由 multer 先收完才进 handler，等 handler 再取时间会漏掉
+   * 「客户端 → 服务端」的传输耗时，导致详情页「上传时长 / 上传速度」偏小。
+   */
+  server.use((req, _res, next) => {
+    (req as unknown as { _arrivedAt?: number })._arrivedAt = Date.now();
+    next();
+  });
   server.use(cookieParser());
   // S3 协议接入（/s3/*）：请求体是对象的原始字节流，必须先于 JSON 解析器注册
   server.use('/s3', express.raw({ type: '*/*', limit: '200mb' }));

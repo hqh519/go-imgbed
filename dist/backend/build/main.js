@@ -64,6 +64,10 @@ function isLoopback(req) {
 async function bootstrap() {
     const server = (0, express_1.default)();
     server.set('trust proxy', true);
+    server.use((req, _res, next) => {
+        req._arrivedAt = Date.now();
+        next();
+    });
     server.use((0, cookie_parser_1.default)());
     server.use('/s3', express_1.default.raw({ type: '*/*', limit: '200mb' }));
     server.use('/dav', (req, res, next) => {

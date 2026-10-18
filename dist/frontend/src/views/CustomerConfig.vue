@@ -208,13 +208,13 @@
                     <el-table-column :label="$t('userManage.uploadChannels')" min-width="150">
                         <template #default="{ row }">
                             <el-tag
-                                v-for="ch in (row.channels || [])"
+                                v-for="ch in (row.uploadSources || [])"
                                 :key="ch"
                                 size="small"
                                 effect="plain"
                                 style="margin: 2px 4px 2px 0;"
                             >{{ ch }}</el-tag>
-                            <span v-if="!(row.channels || []).length">—</span>
+                            <span v-if="!(row.uploadSources || []).length">—</span>
                         </template>
                     </el-table-column>
                     <el-table-column :label="$t('userManage.lastUpload')" min-width="170">
@@ -267,13 +267,13 @@
                     <el-table-column :label="$t('userManage.uploadChannels')" min-width="150">
                         <template #default="{ row }">
                             <el-tag
-                                v-for="ch in (row.channels || [])"
+                                v-for="ch in (row.uploadSources || [])"
                                 :key="ch"
                                 size="small"
                                 effect="plain"
                                 style="margin: 2px 4px 2px 0;"
                             >{{ ch }}</el-tag>
-                            <span v-if="!(row.channels || []).length">—</span>
+                            <span v-if="!(row.uploadSources || []).length">—</span>
                         </template>
                     </el-table-column>
                     <el-table-column :label="$t('customerConfig.allowUpload')" :fixed="allowUploadColumnFixed" :width="allowUploadColumnWidth" align="center">
@@ -543,7 +543,7 @@ export default {
                     fileCount: collect[u.username]?.count || 0,
                     usedSize: collect[u.username]?.size || 0,
                     lastAt: collect[u.username]?.lastAt || 0,
-                    channels: collect[u.username]?.channels || [],
+                    uploadSources: collect[u.username]?.uploadSources || [],
                 }));
                 // 兜底：把「有文件但没有对应账户」的归属值也列出来（仅管理员可见）
                 // （例如管理员账户上传的、或早期用认证码上传归到 'user' 的文件），
@@ -569,7 +569,7 @@ export default {
                         fileCount: it.count || 0,
                         usedSize: it.size || 0,
                         lastAt: it.lastAt || 0,
-                        channels: it.channels || [],
+                        uploadSources: it.uploadSources || [],
                     });
                 }
             } catch (e) {
@@ -819,12 +819,12 @@ export default {
             ])
                 .then(([result, collectJson]) => {
                     const channelByIp = {};
-                    for (const it of (collectJson?.items || [])) channelByIp[it.key] = it.channels || [];
+                    for (const it of (collectJson?.items || [])) channelByIp[it.key] = it.uploadSources || [];
                     this.dealedData = this.dealedData.concat(result.map(item => ({
                         ip: item.ip,
                         address: item.address,
                         count: item.count,
-                        channels: channelByIp[item.ip] || [],
+                        uploadSources: channelByIp[item.ip] || [],
                         data: [],
                         filesLoaded: false,
                         filesLoading: false,
@@ -846,13 +846,13 @@ export default {
                     try {
                         const collectRes = await fetchWithAuth('/api/manage/users/collect?mode=ip', { method: 'GET' });
                         const collectJson = await collectRes.json();
-                        for (const it of (collectJson?.items || [])) channelByIp[it.key] = it.channels || [];
+                        for (const it of (collectJson?.items || [])) channelByIp[it.key] = it.uploadSources || [];
                     } catch { /* 渠道列加载失败不阻断列表 */ }
                     this.dealedData = result.map(item => ({
                         ip: item.ip,
                         address: item.address,
                         count: item.count,
-                        channels: channelByIp[item.ip] || [],
+                        uploadSources: channelByIp[item.ip] || [],
                         data: [],
                         filesLoaded: false,
                         filesLoading: false,

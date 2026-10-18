@@ -394,8 +394,9 @@ let LinkController = class LinkController {
             rest = rest.slice(rest.indexOf('/') + 1);
             pushName(rest);
         }
+        const adminPreview = req.query.from === 'admin';
         const record = await prisma_1.prisma.fileRecord.findFirst({
-            where: { status: 'active', OR: nameCandidates.map((n) => ({ name: n })) },
+            where: { ...(adminPreview ? {} : { status: 'active' }), OR: nameCandidates.map((n) => ({ name: n })) },
             include: { copies: true },
         });
         if (!record)
@@ -958,6 +959,7 @@ let ManageController = class ManageController {
             folder: r.folder,
             uploader: r.uploader,
             uploadSource: r.uploadSource,
+            status: r.status,
             deletedAt: r.deletedAt,
             channels: r.copies.map((c) => ({
                 name: chMap.get(c.channelId)?.name || '(已删除渠道)',

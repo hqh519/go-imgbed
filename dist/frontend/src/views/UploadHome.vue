@@ -208,6 +208,8 @@
             @update:autoUpload="autoUpload = $event"
             :backupChannel="backupChannel"
             :compressPercent="compressPercent"
+            :limitExtensions="limitExtensions"
+            :limitMaxSizeMB="limitMaxSizeMB"
             class="upload"
         />
         </div>
@@ -275,6 +277,8 @@
             v-model:compressBar="compressBar"
             v-model:compressPercent="compressPercent"
             v-model:serverCompress="serverCompress"
+            v-model:limitExtensions="limitExtensions"
+            v-model:limitMaxSizeMB="limitMaxSizeMB"
         />
     </div>
     <Footer class="footer"/>
@@ -325,6 +329,8 @@ export default {
             useCustomUrl: 'false', //是否启用自定义链接格式
             autoRetry: true, //失败自动切换
             compressPercent: 80, //压缩期望百分比（压到原体积的 x%）
+            limitExtensions: '', // 允许的上传格式覆盖（仅本次页面生效，刷新清空）
+            limitMaxSizeMB: 0, // 单文件大小上限覆盖（MB，0 = 跟随后台）
             customDomain: '', //自定义访问域名（所有文件链接统一使用）
             autoUpload: true, //自动上传（默认启用，刷新恢复）
             useDefaultWallPaper: false,
@@ -995,10 +1001,11 @@ export default {
 }
 @media (max-width: 768px) {
     .upload-folder-container {
-        right: 58px;
+        /* 与右侧「更多」按钮之间的间距收紧一点点（原 58px → 54px，留 8px 呼吸） */
+        right: 54px;
     }
     .upload-folder-container.no-announcement {
-        right: 58px;
+        right: 54px;
     }
 
     /* 聚焦时容器保持原位，输入框只向左扩展，
@@ -1057,6 +1064,8 @@ export default {
     .directory-tree-trigger {
         width: 2rem;
         height: 2rem;
+        /* 「上传目录」输入框与「上传分类」按钮之间的间距：10px → 6px */
+        margin-left: 6px;
     }
     .directory-tree-trigger .svg-inline--fa {
         font-size: 1.1em;
@@ -1224,7 +1233,8 @@ html.dark .upload-folder:hover :deep(.el-input__wrapper) {
         --quick-toolbar-size: 2rem;
         --quick-toolbar-button-size: calc(var(--quick-toolbar-size) - 4px);
 
-        right: 18px;
+        /* 右侧边距调小一点点（18px → 12px），与顶部「更多」按钮视觉更齐 */
+        right: 12px;
         bottom: max(72px, calc(6vh + 20px + env(safe-area-inset-bottom)));
         padding: 2px;
     }
