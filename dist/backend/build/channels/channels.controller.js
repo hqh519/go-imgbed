@@ -45,7 +45,8 @@ var __param = (this && this.__param) || function (paramIndex, decorator) {
     return function (target, key) { decorator(target, key, paramIndex); }
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.ChannelManageController = exports.StorageSettingsController = exports.ChannelsController = exports.ChannelsService = exports.LOCAL_CHANNEL_CODE = exports.BUILTIN_CHANNEL_TYPES = exports.CHANNEL_TYPES = void 0;
+exports.ChannelManageController = exports.StorageSettingsController = exports.ChannelsController = exports.ChannelsService = exports.CHANNEL_ORDER_BY = exports.CHANNEL_TYPE_CODE = exports.LEGACY_LOCAL_CHANNEL_CODE = exports.LOCAL_CHANNEL_CODE = exports.BUILTIN_CHANNEL_TYPES = exports.CHANNEL_TYPES = void 0;
+exports.channelTypeCode = channelTypeCode;
 const common_1 = require("@nestjs/common");
 const prisma_1 = require("../common/prisma");
 const crypto_service_1 = require("../common/crypto.service");
@@ -67,7 +68,25 @@ const SECRET_FIELDS = {
 };
 exports.CHANNEL_TYPES = ['cos', 'minio', 'r2', 's3', 'aliyun', 'easyimages', 'lsky', 'webdav', 'immich', 'custom'];
 exports.BUILTIN_CHANNEL_TYPES = ['local'];
-exports.LOCAL_CHANNEL_CODE = '100000';
+exports.LOCAL_CHANNEL_CODE = '999999';
+exports.LEGACY_LOCAL_CHANNEL_CODE = '100000';
+exports.CHANNEL_TYPE_CODE = {
+    easyimages: 100,
+    lsky: 110,
+    immich: 120,
+    minio: 130,
+    r2: 140,
+    s3: 150,
+    cos: 160,
+    aliyun: 170,
+    webdav: 180,
+    custom: 190,
+    local: 999,
+};
+function channelTypeCode(type) {
+    return exports.CHANNEL_TYPE_CODE[type] ?? 998;
+}
+exports.CHANNEL_ORDER_BY = [{ typeCode: 'asc' }, { code: 'asc' }];
 async function makeTestPng() {
     try {
         const sharp = (await Promise.resolve().then(() => __importStar(require('sharp')))).default;
@@ -121,6 +140,30 @@ let ChannelsService = class ChannelsService {
         return channelIdentity(type, this.decryptConfig(type, configJson));
     }
     async ensureBuiltinLocalChannel() {
+        const legacy = await prisma_1.prisma.channel.findUnique({ where: { code: exports.LEGACY_LOCAL_CHANNEL_CODE } });
+        if (legacy) {
+            const taken = await prisma_1.prisma.channel.findUnique({ where: { code: exports.LOCAL_CHANNEL_CODE } });
+            if (!taken) {
+                await prisma_1.prisma.channel.update({ where: { id: legacy.id }, data: { code: exports.LOCAL_CHANNEL_CODE } });
+            }
+            else if (taken.id !== legacy.id) {
+                let alt = '';
+                for (let i = 0; i < 60 && !alt; i++) {
+                    const c = String(100000 + Math.floor(Math.random() * 899000));
+                    if (c !== exports.LOCAL_CHANNEL_CODE && !(await prisma_1.prisma.channel.findUnique({ where: { code: c } })))
+                        alt = c;
+                }
+                await prisma_1.prisma.channel.update({ where: { id: taken.id }, data: { code: alt || '100001' } });
+                await prisma_1.prisma.channel.update({ where: { id: legacy.id }, data: { code: exports.LOCAL_CHANNEL_CODE } });
+            }
+        }
+        const all = await prisma_1.prisma.channel.findMany({ select: { id: true, type: true, typeCode: true } });
+        for (const c of all) {
+            const want = channelTypeCode(c.type);
+            if (c.typeCode !== want) {
+                await prisma_1.prisma.channel.update({ where: { id: c.id }, data: { typeCode: want } });
+            }
+        }
         const existing = await prisma_1.prisma.channel.findUnique({ where: { code: exports.LOCAL_CHANNEL_CODE } });
         if (existing) {
             const patch = {};
@@ -128,6 +171,8 @@ let ChannelsService = class ChannelsService {
                 patch.type = 'local';
             if (!existing.enabled)
                 patch.enabled = true;
+            if (existing.typeCode !== channelTypeCode('local'))
+                patch.typeCode = channelTypeCode('local');
             if (!existing.isMain && !existing.isBackup) {
                 const hasMain = await prisma_1.prisma.channel.count({
                     where: { isMain: true, enabled: true, NOT: { id: existing.id } },
@@ -149,6 +194,7 @@ let ChannelsService = class ChannelsService {
                 code: exports.LOCAL_CHANNEL_CODE,
                 name,
                 type: 'local',
+                typeCode: channelTypeCode('local'),
                 enabled: true,
                 isMain: hasMain === 0,
                 isBackup: false,
@@ -171,7 +217,7 @@ let ChannelsController = class ChannelsController {
     async list(includeDisabled) {
         const channels = await prisma_1.prisma.channel.findMany({
             where: includeDisabled === 'true' ? {} : { enabled: true },
-            orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+            orderBy: exports.CHANNEL_ORDER_BY,
         });
         const grouped = {};
         for (const c of channels) {
@@ -182,6 +228,7 @@ let ChannelsController = class ChannelsController {
                 code: c.code,
                 name: c.name,
                 type: c.type,
+                typeCode: c.typeCode,
                 enabled: c.enabled,
                 isMain: c.isMain,
                 isBackup: c.isBackup,
@@ -292,7 +339,7 @@ let ChannelManageController = class ChannelManageController {
     }
     async list() {
         const channels = await prisma_1.prisma.channel.findMany({
-            orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+            orderBy: exports.CHANNEL_ORDER_BY,
         });
         const copies = await prisma_1.prisma.fileCopy.findMany({
             where: { status: 'active' },
@@ -303,7 +350,8 @@ let ChannelManageController = class ChannelManageController {
             usageMB.set(c.channelId, (usageMB.get(c.channelId) || 0) + (c.file?.size || 0) / 1024 / 1024);
         }
         const grouped = {};
-        for (const type of exports.CHANNEL_TYPES)
+        const addable = [...exports.CHANNEL_TYPES].sort((a, b) => channelTypeCode(a) - channelTypeCode(b));
+        for (const type of addable)
             grouped[type] = [];
         for (const type of exports.BUILTIN_CHANNEL_TYPES)
             grouped[type] = [];
@@ -314,6 +362,7 @@ let ChannelManageController = class ChannelManageController {
                 code: c.code,
                 name: c.name,
                 type: c.type,
+                typeCode: c.typeCode,
                 enabled: c.enabled,
                 isMain: c.isMain,
                 isBackup: c.isBackup,
@@ -360,7 +409,7 @@ let ChannelManageController = class ChannelManageController {
     }
     async nextCode() {
         for (let i = 0; i < 60; i++) {
-            const code = String(100000 + Math.floor(Math.random() * 900000));
+            const code = String(100000 + Math.floor(Math.random() * 899000));
             if (code === exports.LOCAL_CHANNEL_CODE)
                 continue;
             if (!(await prisma_1.prisma.channel.findUnique({ where: { code } })))
@@ -396,6 +445,7 @@ let ChannelManageController = class ChannelManageController {
             data: {
                 name: body.name,
                 type: body.type,
+                typeCode: channelTypeCode(body.type),
                 config: JSON.stringify(encrypted),
                 isMain: !!body.isMain,
                 isBackup: !!body.isBackup,

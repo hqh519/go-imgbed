@@ -54,6 +54,11 @@ model Channel {
   isMain    Boolean  @default(false) // 主渠道（可多条，上传走 enable 的第一条主渠道）
   isBackup  Boolean  @default(false) // 备份渠道
   config    String   @default("{}") // JSON：各渠道配置，敏感字段加密存储
+  // 渠道类型编号（排序用，与渠道 code 无关）：
+  //   easyimages 100 / lsky 110 / immich 120 / minio 130 / r2 140 / s3 150
+  //   cos 160 / aliyun 170 / webdav 180 / custom 190 / local 999
+  // 所有渠道下拉框的排序规则：typeCode 升序 → code 升序
+  typeCode  Int      @default(0)
   sortOrder Int      @default(0)
   metas     String   @default("{}")
   createdAt DateTime @default(now())

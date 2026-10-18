@@ -391,6 +391,7 @@
                     <div class="list-col list-col-channel">{{ $t('dashboard.storageChannel') }}</div>
                     <div class="list-col list-col-backup">{{ $t('dashboard.backupChannel') }}</div>
                     <div class="list-col list-col-size">{{ $t('dashboard.fileSize') }}</div>
+                    <div class="list-col list-col-user">{{ $t('dashboard.uploadUser') }}</div>
                     <div class="list-col list-col-date">{{ $t('dashboard.uploadTime') }}</div>
                     <div class="list-col list-col-actions">{{ $t('dashboard.actions') }}</div>
                 </div>
@@ -660,6 +661,7 @@ import {
     filePublicUrl as filePublicUrlUtil,
 } from '@/utils/fileDetail';
 import { CHANNEL_TYPES } from '@/components/config/channel-schema';
+import { channelTypeCode } from '@/utils/storageChannels';
 import fetchWithAuth from '@/utils/fetchWithAuth';
 import axios from '@/utils/axios';
 import { validateFolderPath } from '@/utils/pathValidator';
@@ -1379,6 +1381,9 @@ methods: {
                                 channelOptions.push({
                                     name: channel.name,
                                     type: channel.type,
+                                    // 排序依据：渠道类型编号 + 渠道 ID（与后端 / 其他下拉完全一致）
+                                    typeCode: Number(channel.typeCode) || channelTypeCode(channel.type),
+                                    code: channel.code || '',
                                     typeLabel: typeLabels[type] || type,
                                     // 使用 channel.type:channel.name 作为唯一标识
                                     value: `${channel.type}:${channel.name}`,
@@ -1388,12 +1393,10 @@ methods: {
                     }
                 });
 
-                // 按类型和名称排序
+                // 统一排序：渠道类型编号升序 → 渠道 ID 升序
                 channelOptions.sort((a, b) => {
-                    if (a.type !== b.type) {
-                        return a.type.localeCompare(b.type);
-                    }
-                    return a.name.localeCompare(b.name);
+                    if (a.typeCode !== b.typeCode) return a.typeCode - b.typeCode;
+                    return String(a.code).localeCompare(String(b.code));
                 });
 
                 this.channelNameOptions = channelOptions;
@@ -3236,6 +3239,14 @@ beforeUnmount() {
     min-width: 0;
 }
 
+/* Element Plus 默认给相邻 el-button 加 margin-left: 12px，
+   会让「新建目录 → 历史记录」的间距（12+8=20）明显大于「用户选择 → 新建目录」（8）。
+   组内统一交给 gap 控制，间距处处均匀。 */
+.breadcrumb-right-group :deep(.el-button + .el-button),
+.breadcrumb-right-group :deep(.el-select + .el-button) {
+    margin-left: 0;
+}
+
 .breadcrumb-right-group .stats-badge {
     margin-left: 0;
 }
@@ -3740,8 +3751,10 @@ beforeUnmount() {
 
 .list-header {
     display: grid;
-    /* 复选框 / 预览 / 文件名 / 访问次数 / 标签 / 存储渠道 / 备份渠道 / 上传地址 / 大小 / 时间 / 操作 */
-    grid-template-columns: 50px 60px minmax(180px, 1fr) 70px 130px 150px 150px 130px 80px 100px 120px;
+    /* 复选框 / 预览 / 文件名 / 访问次数 / 存储渠道 / 备份渠道 / 大小 / 上传用户 / 时间 / 操作
+       —— 必须与 FileListItem.vue 的 .list-item grid-template-columns 完全一致，
+       多一列或少一列都会导致表头与内容错位（历史 bug）。 */
+    grid-template-columns: 50px 60px minmax(180px, 1fr) 70px 110px 110px 80px 120px 100px 120px;
     padding: 12px 20px;
     background: var(--admin-dashboard-stats-bg);
     font-weight: 600;
@@ -3773,15 +3786,14 @@ beforeUnmount() {
     }
 }
 
-/* 平板端列表视图：隐藏低优先级列，避免整表横向滚动 */
+/* 平板端列表视图：与行保持同一套列宽（10 列），避免整表横向滚动 */
 @media (min-width: 769px) and (max-width: 1199px) {
     .list-header {
-        grid-template-columns: 50px 60px minmax(160px, 1fr) 60px 150px 80px 100px 110px;
-        padding: 12px 16px;
+        grid-template-columns: 40px 52px minmax(150px, 1fr) 56px 92px 92px 72px 96px 92px 104px;
+        padding: 10px 16px;
     }
 
     .list-header .list-col-tags,
-    .list-header .list-col-backup,
     .list-header .list-col-address {
         display: none;
     }

@@ -283,6 +283,9 @@ export function buildMetadata(
     Channel: channelLabel,
     // 渠道类型简称（前端卡片角标 / 自动标签统一从这里取，前端不再各自维护映射）
     ChannelShort: primary?.channel ? channelShort(primary.channel.type) : '',
+    // 主渠道类型（cos/minio/r2/s3/aliyun/easyimages/lsky/webdav/immich/custom/local）
+    // 列表视图用它渲染「渠道简称图标」，前端不再按名称反查类型
+    ChannelType: primary?.channel?.type || '',
     ChannelId: primary?.channelId || '',
     ChannelCode: primary?.channel?.code || '',
     ChannelName: primary?.channel?.name || '',

@@ -179,6 +179,13 @@
                                             </div>
                                         </template>
                                     </el-table-column>
+                                    <!-- 上传渠道：按「每个文件」取值（metadata.UploadSource），
+                                         位置在上传时间前一列（需求：不要在折叠汇总行上显示） -->
+                                    <el-table-column :label="$t('userManage.uploadChannels')" min-width="110">
+                                        <template #default="{ row }">
+                                            <el-tag size="small" effect="plain">{{ row.metadata?.UploadSource || 'Default' }}</el-tag>
+                                        </template>
+                                    </el-table-column>
                                     <el-table-column
                                         :label="$t('customerConfig.uploadTimeCol')"
                                         prop="metadata.TimeStamp"
@@ -205,18 +212,7 @@
                     <el-table-column :label="$t('userManage.usedSize')" width="130" align="center" sortable :sort-method="(a, b) => (a.usedSize || 0) - (b.usedSize || 0)">
                         <template #default="{ row }">{{ formatSize(row.usedSize || 0) }}</template>
                     </el-table-column>
-                    <el-table-column :label="$t('userManage.uploadChannels')" min-width="150">
-                        <template #default="{ row }">
-                            <el-tag
-                                v-for="ch in (row.uploadSources || [])"
-                                :key="ch"
-                                size="small"
-                                effect="plain"
-                                style="margin: 2px 4px 2px 0;"
-                            >{{ ch }}</el-tag>
-                            <span v-if="!(row.uploadSources || []).length">—</span>
-                        </template>
-                    </el-table-column>
+                    <!-- 「上传渠道」不在汇总行显示（改到展开后的每个文件行，见内层表格） -->
                     <el-table-column :label="$t('userManage.lastUpload')" min-width="170">
                         <template #default="{ row }">{{ row.lastAt ? formatTimeStamp(row.lastAt) : '—' }}</template>
                     </el-table-column>
@@ -248,6 +244,13 @@
                                             </div>
                                         </template>
                                     </el-table-column>
+                                    <!-- 上传渠道：按「每个文件」取值（metadata.UploadSource），
+                                         位置在上传时间前一列（需求：不要在折叠汇总行上显示） -->
+                                    <el-table-column :label="$t('userManage.uploadChannels')" min-width="110">
+                                        <template v-slot="{ row }">
+                                            <el-tag size="small" effect="plain">{{ row.metadata?.UploadSource || 'Default' }}</el-tag>
+                                        </template>
+                                    </el-table-column>
                                     <el-table-column
                                         :label="$t('customerConfig.uploadTimeCol')"
                                         prop="metadata.TimeStamp"
@@ -264,18 +267,7 @@
                     <el-table-column prop="ip" :label="$t('customerConfig.ipAddress')" min-width="180"></el-table-column>
                     <el-table-column prop="address" :label="$t('customerConfig.address')" min-width="220"></el-table-column>
                     <el-table-column prop="count" :label="$t('customerConfig.uploadCount')" sortable min-width="110"></el-table-column>
-                    <el-table-column :label="$t('userManage.uploadChannels')" min-width="150">
-                        <template #default="{ row }">
-                            <el-tag
-                                v-for="ch in (row.uploadSources || [])"
-                                :key="ch"
-                                size="small"
-                                effect="plain"
-                                style="margin: 2px 4px 2px 0;"
-                            >{{ ch }}</el-tag>
-                            <span v-if="!(row.uploadSources || []).length">—</span>
-                        </template>
-                    </el-table-column>
+                    <!-- 「上传渠道」不在汇总行显示（改到展开后的每个文件行，见内层表格） -->
                     <el-table-column :label="$t('customerConfig.allowUpload')" :fixed="allowUploadColumnFixed" :width="allowUploadColumnWidth" align="center">
                         <template v-slot="{ row }">
                             <el-switch

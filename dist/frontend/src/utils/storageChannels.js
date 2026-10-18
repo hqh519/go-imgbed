@@ -23,7 +23,31 @@ let channelCache = null;
 let inflight = null;
 
 /**
- * 拉取渠道列表并归一化为 `[{ id, code, name, type }]`。
+ * 渠道类型编号 —— 与后端 `CHANNEL_TYPE_CODE` 完全一致（排序用，与渠道 code 无关）：
+ *   easyimages 100 / lsky 110 / immich 120 / minio 130 / r2 140 / s3 150
+ *   cos 160 / aliyun(ali) 170 / webdav 180 / custom 190 / local 999
+ */
+export const CHANNEL_TYPE_CODE = {
+    easyimages: 100,
+    lsky: 110,
+    immich: 120,
+    minio: 130,
+    r2: 140,
+    s3: 150,
+    cos: 160,
+    aliyun: 170,
+    webdav: 180,
+    custom: 190,
+    local: 999,
+};
+
+/** 取渠道类型编号（未知类型排最后） */
+export function channelTypeCode(type) {
+    return CHANNEL_TYPE_CODE[type] ?? 998;
+}
+
+/**
+ * 拉取渠道列表并归一化为 `[{ id, code, name, type, typeCode }]`。
  * 后端 `/api/manage/channels` 返回的是「按类型分组」的对象，这里展平。
  * 拉取失败时返回空数组（不抛错，避免阻塞设置页渲染）。
  */
@@ -39,7 +63,14 @@ export async function fetchStorageChannels(force = false) {
                     // 值统一用 code（渠道 ID）；个别历史数据没有 code 时回退主键
                     const value = c.code || c.id || '';
                     if (!value) continue;
-                    list.push({ id: value, code: c.code || value, name: c.name || '', type: c.type || type });
+                    list.push({
+                        id: value,
+                        code: c.code || value,
+                        name: c.name || '',
+                        type: c.type || type,
+                        // 渠道类型编号（后端下发；缺失时按类型名兜底）
+                        typeCode: Number(c.typeCode) || (CHANNEL_TYPE_CODE[c.type || type] || 998),
+                    });
                 }
             }
             channelCache = list;
@@ -100,8 +131,13 @@ export function buildChannelOptions(channels, opts = {}) {
             icon: 'ban',
         });
     }
-    // 3) 具体渠道（按 code 排序，保证三处顺序一致）
-    const sorted = [...list].sort((a, b) => String(a.code).localeCompare(String(b.code)));
+    // 3) 具体渠道（统一排序：渠道类型编号升序 → 渠道 ID 升序，保证三处顺序一致）
+    const sorted = [...list].sort((a, b) => {
+        const ta = Number(a.typeCode) || channelTypeCode(a.type);
+        const tb = Number(b.typeCode) || channelTypeCode(b.type);
+        if (ta !== tb) return ta - tb;
+        return String(a.code).localeCompare(String(b.code));
+    });
     for (const ch of sorted) {
         out.push({ value: ch.code || ch.id, label: channelLabel(ch), type: ch.type || '', icon: '' });
     }

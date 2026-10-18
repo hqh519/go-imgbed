@@ -41,19 +41,36 @@
             <span v-else class="list-empty">-</span>
         </div>
         <!-- 标签 / 上传地址 / 删除按钮：按需求不在列表视图展示（卡片视图与详情页仍保留） -->
-        <!-- 存储渠道（渠道类型 / 渠道名称 合并） -->
+        <!-- 存储渠道：只显示「渠道简称图标」（品牌色徽标，如 COS / ALI / EI），完整值放 title -->
         <div class="list-col list-col-channel">
-            <div v-if="!isFolder && storageChannelText" class="channel-combined" :title="storageChannelText">{{ storageChannelText }}</div>
+            <span v-if="!isFolder && storageChannelType" class="channel-badge-wrap" :title="storageChannelText">
+                <ChannelIcon :type="storageChannelType" class="channel-badge-icon"/>
+            </span>
+            <span v-else-if="!isFolder" class="channel-combined" :title="storageChannelText">{{ storageChannelShort || '-' }}</span>
             <span v-else class="list-empty">-</span>
         </div>
-        <!-- 备份渠道（同格式：渠道类型 / 渠道名称） -->
+        <!-- 备份渠道：同样只显示简称图标（可多个，橙色调区分） -->
         <div class="list-col list-col-backup">
-            <div v-if="!isFolder && backupChannelText" class="channel-combined is-backup" :title="backupChannelText">{{ backupChannelText }}</div>
+            <template v-if="!isFolder && backupTags.length">
+                <span
+                    v-for="(bk, i) in backupTags"
+                    :key="'bk-' + i"
+                    class="channel-badge-wrap is-backup"
+                    :title="bk.full"
+                >
+                    <ChannelIcon :type="bk.type" class="channel-badge-icon"/>
+                </span>
+            </template>
             <span v-else class="list-empty">-</span>
         </div>
         <!-- 大小 -->
         <div class="list-col list-col-size">
             {{ isFolder ? '-' : fileSizeDisplay }}
+        </div>
+        <!-- 上传用户（紧随大小之后） -->
+        <div class="list-col list-col-user">
+            <span v-if="!isFolder && uploadUser" class="upload-user-text" :title="uploadUser">{{ uploadUser }}</span>
+            <span v-else class="list-empty">-</span>
         </div>
         <!-- 上传时间 -->
         <div class="list-col list-col-date">
@@ -95,8 +112,11 @@
 </template>
 
 <script>
+import ChannelIcon from '@/components/icons/ChannelIcon.vue';
+
 export default {
     name: 'FileListItem',
+    components: { ChannelIcon },
     props: {
         item: { type: Object, required: true },
         selected: { type: Boolean, default: false },
@@ -169,21 +189,48 @@ export default {
         viewsCount() {
             return Number(this.item.metadata?.Views || 0);
         },
-        /** 存储渠道：渠道类型 / 渠道名称 */
+        /** 存储渠道：渠道类型 / 渠道名称（title 悬浮用） */
         storageChannelText() {
             const type = this.item.metadata?.Channel;
             const name = this.item.metadata?.ChannelName;
             if (type && name) return `${type} / ${name}`;
             return type || name || '';
         },
-        /** 备份渠道：渠道类型 / 渠道名称（多个用逗号连接） */
-        backupChannelText() {
+        /** 存储渠道的渠道类型（渲染简称图标用；历史数据缺失时退回用简称判断） */
+        storageChannelType() {
+            return this.item.metadata?.ChannelType || this.guessTypeByShort(this.item.metadata?.ChannelShort);
+        },
+        /** 存储渠道简称（无类型时兜底显示文字） */
+        storageChannelShort() {
+            return this.item.metadata?.ChannelShort || '';
+        },
+        /** 备份渠道（有备份才显示）：{ type, short, full } */
+        backupTags() {
             const list = this.item.metadata?.BackupChannels;
-            if (!Array.isArray(list) || list.length === 0) return '';
+            if (!Array.isArray(list)) return [];
             return list
-                .map((b) => (b.label && b.name ? `${b.label} / ${b.name}` : b.name || b.label || ''))
+                .map((b) => {
+                    const label = b.label || '';
+                    const name = b.name || '';
+                    return {
+                        type: b.type || '',
+                        short: b.short || label || name,
+                        full: label && name ? `${label} / ${name}` : name || label,
+                    };
+                })
+                .filter((b) => b.type || b.short);
+        },
+        /** 备份渠道纯文本（无类型时兜底） */
+        backupChannelText() {
+            return this.backupTags
+                .filter((b) => !b.type)
+                .map((b) => b.short)
                 .filter(Boolean)
                 .join('，');
+        },
+        /** 上传用户（账户名；未登录上传为空） */
+        uploadUser() {
+            return this.item.metadata?.UploadUser || '';
         },
         fileSizeDisplay() {
             const sizeBytes = this.item.metadata?.FileSizeBytes;
@@ -223,6 +270,15 @@ export default {
             const parts = (name || '').split('/');
             return parts[parts.length - 1];
         },
+        /** 简称 → 渠道类型（仅历史数据没有 metadata.ChannelType 时兜底） */
+        guessTypeByShort(short) {
+            const map = {
+                COS: 'cos', ALI: 'aliyun', MI: 'minio', R2: 'r2', S3: 's3',
+                EI: 'easyimages', LS: 'lsky', WD: 'webdav', IM: 'immich',
+                DIY: 'custom', LOCAL: 'local',
+            };
+            return map[String(short || '').toUpperCase()] || '';
+        },
         getTagColor(index) {
             return this.tagColors[index % this.tagColors.length];
         }
@@ -233,9 +289,10 @@ export default {
 <style scoped>
 .list-item {
     display: grid;
-    /* 复选框 / 预览 / 文件名 / 访问次数 / 存储渠道 / 备份渠道 / 大小 / 时间 / 操作
-       （标签列、上传地址列已按需求移除） */
-    grid-template-columns: 50px 60px minmax(180px, 1fr) 70px 150px 150px 80px 100px 120px;
+    /* 复选框 / 预览 / 文件名 / 访问次数 / 存储渠道 / 备份渠道 / 大小 / 上传用户 / 时间 / 操作
+       （标签列、上传地址列已按需求移除；渠道列改为简称图标，宽度收窄，给「上传用户」腾位）
+       —— 表头（AdminDashBoard.vue 的 .list-header）必须与此处完全一致，否则列会错位 */
+    grid-template-columns: 50px 60px minmax(180px, 1fr) 70px 110px 110px 80px 120px 100px 120px;
     content-visibility: auto;
     contain: layout paint style;
     contain-intrinsic-size: 65px;
@@ -293,9 +350,38 @@ export default {
     flex-shrink: 0;
     white-space: nowrap;
 }
-.list-col-size, .list-col-date, .list-col-channel, .list-col-backup, .list-col-views {
+.list-col-size, .list-col-date, .list-col-channel, .list-col-backup, .list-col-views, .list-col-user {
     font-size: 13px;
     color: var(--el-text-color-secondary);
+}
+/* 渠道简称图标（复用 ChannelIcon 的品牌色徽标）：整列居中，鼠标悬浮看完整渠道名 */
+.list-col-channel, .list-col-backup {
+    gap: 4px;
+}
+.channel-badge-wrap {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 17px;
+    line-height: 1;
+}
+/* 备份渠道图标：略小 + 橙色虚线外圈，与主渠道一眼区分（列名已写明是备份渠道） */
+.channel-badge-wrap.is-backup {
+    font-size: 15px;
+    outline: 1px dashed color-mix(in srgb, var(--el-color-warning) 55%, transparent);
+    outline-offset: 2px;
+    border-radius: 4px;
+}
+.channel-badge-icon {
+    display: inline-flex;
+}
+/* 上传用户：单行省略，避免长账户名把列撑破 */
+.upload-user-text {
+    display: inline-block;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 .list-col-address {
     font-size: 13px;
@@ -402,7 +488,7 @@ export default {
 /* 平板端：列宽收窄，避免整表横向滚动（列数与桌面端保持一致） */
 @media (min-width: 769px) and (max-width: 1199px) {
     .list-item {
-        grid-template-columns: 40px 52px minmax(150px, 1fr) 56px 120px 120px 72px 92px 104px;
+        grid-template-columns: 40px 52px minmax(150px, 1fr) 56px 92px 92px 72px 96px 92px 104px;
         padding: 10px 16px;
     }
 }
@@ -414,7 +500,7 @@ export default {
         gap: 6px;
         font-size: 12px;
     }
-    .list-col-size, .list-col-date, .list-col-tags, .list-col-views, .list-col-channel, .list-col-backup, .list-col-address {
+    .list-col-size, .list-col-date, .list-col-tags, .list-col-views, .list-col-channel, .list-col-backup, .list-col-address, .list-col-user {
         display: none;
     }    .list-col-name {
         padding-right: 8px;

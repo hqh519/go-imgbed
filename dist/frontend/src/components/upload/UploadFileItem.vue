@@ -4,7 +4,7 @@
             <!-- 视频 -->
             <video
                 v-if="isVideo(file.name)"
-                style="width: 10vw; border-radius: 12px;"
+                style="width: 10vw; border-radius: 4px;"
                 autoplay
                 muted
                 playsinline
@@ -16,12 +16,12 @@
             <!-- 图片 -->
             <img
                 v-else-if="isImage(file.name)"
-                style="width: 10vw; border-radius: 12px;"
+                style="width: 10vw; border-radius: 4px;"
                 :src="thumbSrc"
                 @error="onThumbError"
             />
             <!-- 其他文件 -->
-            <div v-else style="width: 10vw; border-radius: 12px;">
+            <div v-else style="width: 10vw; border-radius: 4px;">
                 <font-awesome-icon icon="file" class="file-icon"></font-awesome-icon>
             </div>
         </a>
@@ -265,8 +265,8 @@ export default {
     display: block;
     flex: 0 0 auto;
     line-height: 0;
-    /* 缩略图圆角：8px（原来 12px 偏圆） */
-    border-radius: 8px;
+    /* 缩略图圆角：4px（与上传列表整体小圆角风格一致） */
+    border-radius: 4px;
     overflow: hidden;
 }
 .upload-list-item-preview img,

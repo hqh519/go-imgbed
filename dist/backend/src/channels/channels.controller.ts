@@ -32,7 +32,38 @@ export const CHANNEL_TYPES = ['cos', 'minio', 'r2', 's3', 'aliyun', 'easyimages'
 export const BUILTIN_CHANNEL_TYPES = ['local'] as const;
 
 /** 内置本地渠道的固定业务 ID（6 位），全站以它识别 */
-export const LOCAL_CHANNEL_CODE = '100000';
+export const LOCAL_CHANNEL_CODE = '999999';
+
+/** 历史版本（≤1.9.1）内置本地渠道的业务 ID —— 启动时自动迁到 999999 */
+export const LEGACY_LOCAL_CHANNEL_CODE = '100000';
+
+/**
+ * 渠道类型编号（写进 channels.typeCode，纯排序用，与渠道业务 ID `code` 无关）：
+ *   100 easyimages / 110 lsky / 120 immich / 130 minio / 140 r2 / 150 s3
+ *   160 cos / 170 aliyun(ali) / 180 webdav / 190 custom / 999 local
+ * 全站所有渠道下拉框的排序：typeCode 升序 → code 升序。
+ */
+export const CHANNEL_TYPE_CODE: Record<string, number> = {
+  easyimages: 100,
+  lsky: 110,
+  immich: 120,
+  minio: 130,
+  r2: 140,
+  s3: 150,
+  cos: 160,
+  aliyun: 170,
+  webdav: 180,
+  custom: 190,
+  local: 999,
+};
+
+/** 取某渠道类型对应的类型编号（未知类型排最后，避免脏数据插到前面） */
+export function channelTypeCode(type: string): number {
+  return CHANNEL_TYPE_CODE[type] ?? 998;
+}
+
+/** 全站统一的渠道排序：typeCode 升序 → code 升序 */
+export const CHANNEL_ORDER_BY = [{ typeCode: 'asc' as const }, { code: 'asc' as const }];
 
 /**
  * 生成「测试连接」用的测试图：512×512 的合法 PNG。
@@ -111,17 +142,47 @@ export class ChannelsService {
    * 确保「本地存储」内置渠道存在（幂等，每次启动都跑）。
    *
    * 规则：
-   *   1) 按固定 code（100000）查找；不存在则创建（排序值 9999，永远排在列表最后）；
-   *   2) 已存在时只修复三件事：type 被改坏、被意外禁用、以及「库里一条主渠道都没有」时兜底为主渠道
-   *      —— 不去覆盖用户改过的名字与容量设置；
+   *   1) 按固定 code（999999）查找；不存在则创建（排序值 9999，永远排在列表最后）；
+   *      1.9.2 之前用的是 100000，发现旧记录时原地改 code（连同 file_copies 的 channelId 引用不变，
+   *      因为改的是同一条记录的 code 字段，id 不变）；
+   *   2) 已存在时只修复四件事：type 被改坏、被意外禁用、typeCode 不是 999、以及
+   *      「库里一条主渠道都没有」时兜底为主渠道 —— 不去覆盖用户改过的名字与容量设置；
    *   3) 库里已有主渠道时一律尊重用户设置，绝不抢占。
    */
   async ensureBuiltinLocalChannel(): Promise<void> {
+    // 0) 存量迁移：旧的内置本地渠道 code 100000 → 999999
+    const legacy = await prisma.channel.findUnique({ where: { code: LEGACY_LOCAL_CHANNEL_CODE } });
+    if (legacy) {
+      const taken = await prisma.channel.findUnique({ where: { code: LOCAL_CHANNEL_CODE } });
+      if (!taken) {
+        await prisma.channel.update({ where: { id: legacy.id }, data: { code: LOCAL_CHANNEL_CODE } });
+      } else if (taken.id !== legacy.id) {
+        // 极少数情况：999999 已被普通渠道占用（随机 code 撞上）→ 把占用者挪走，保证内置 ID 唯一
+        let alt = '';
+        for (let i = 0; i < 60 && !alt; i++) {
+          const c = String(100000 + Math.floor(Math.random() * 899000));
+          if (c !== LOCAL_CHANNEL_CODE && !(await prisma.channel.findUnique({ where: { code: c } }))) alt = c;
+        }
+        await prisma.channel.update({ where: { id: taken.id }, data: { code: alt || '100001' } });
+        await prisma.channel.update({ where: { id: legacy.id }, data: { code: LOCAL_CHANNEL_CODE } });
+      }
+    }
+
+    // 1) 回填所有渠道的类型编号（含历史数据）；类型被改坏的也顺手纠正
+    const all = await prisma.channel.findMany({ select: { id: true, type: true, typeCode: true } });
+    for (const c of all) {
+      const want = channelTypeCode(c.type);
+      if (c.typeCode !== want) {
+        await prisma.channel.update({ where: { id: c.id }, data: { typeCode: want } });
+      }
+    }
+
     const existing = await prisma.channel.findUnique({ where: { code: LOCAL_CHANNEL_CODE } });
     if (existing) {
-      const patch: { type?: string; enabled?: boolean; isMain?: boolean } = {};
+      const patch: { type?: string; enabled?: boolean; isMain?: boolean; typeCode?: number } = {};
       if (existing.type !== 'local') patch.type = 'local';
       if (!existing.enabled) patch.enabled = true;
+      if (existing.typeCode !== channelTypeCode('local')) patch.typeCode = channelTypeCode('local');
       // 没有任何主渠道 → 用本地存储兜底，避免上传时报「未配置可用的主渠道」
       if (!existing.isMain && !existing.isBackup) {
         const hasMain = await prisma.channel.count({
@@ -143,6 +204,7 @@ export class ChannelsService {
         code: LOCAL_CHANNEL_CODE,
         name,
         type: 'local',
+        typeCode: channelTypeCode('local'),
         enabled: true,
         isMain: hasMain === 0,
         isBackup: false,
@@ -165,7 +227,8 @@ export class ChannelsController {
   async list(@Query('includeDisabled') includeDisabled?: string) {
     const channels = await prisma.channel.findMany({
       where: includeDisabled === 'true' ? {} : { enabled: true },
-      orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+      // 统一下拉排序：渠道类型编号升序 → 渠道 ID 升序
+      orderBy: CHANNEL_ORDER_BY,
     });
     const grouped: Record<string, unknown[]> = {};
     for (const c of channels) {
@@ -175,6 +238,7 @@ export class ChannelsController {
         code: c.code,
         name: c.name,
         type: c.type,
+        typeCode: c.typeCode,
         enabled: c.enabled,
         isMain: c.isMain,
         isBackup: c.isBackup,
@@ -281,7 +345,8 @@ export class ChannelManageController {
   @Get()
   async list() {
     const channels = await prisma.channel.findMany({
-      orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+      // 统一排序：渠道类型编号升序 → 渠道 ID 升序（前端下拉直接复用此顺序）
+      orderBy: CHANNEL_ORDER_BY,
     });
     // 各渠道已用容量（按文件副本 size 累加）—— 供卡片上的容量进度条使用
     const copies = await prisma.fileCopy.findMany({
@@ -294,7 +359,9 @@ export class ChannelManageController {
     }
 
     const grouped: Record<string, unknown[]> = {};
-    for (const type of CHANNEL_TYPES) grouped[type] = [];
+    // 分组顺序同样按类型编号排（前端设置页按 key 顺序渲染分组标题）
+    const addable = [...CHANNEL_TYPES].sort((a, b) => channelTypeCode(a) - channelTypeCode(b));
+    for (const type of addable) grouped[type] = [];
     // 内置类型（本地存储）排在最后
     for (const type of BUILTIN_CHANNEL_TYPES) grouped[type] = [];
     for (const c of channels) {
@@ -304,6 +371,7 @@ export class ChannelManageController {
         code: c.code, // 6 位渠道 ID（内部识别用，创建后不变）
         name: c.name,
         type: c.type,
+        typeCode: c.typeCode, // 渠道类型编号（排序依据）
         enabled: c.enabled,
         isMain: c.isMain,
         isBackup: c.isBackup,
@@ -362,12 +430,12 @@ export class ChannelManageController {
 
   /**
    * 生成唯一的 6 位数字渠道 ID（内部识别用；渠道名可改，ID 不变）。
-   * 必须避开 LOCAL_CHANNEL_CODE（100000）—— 那是内置本地存储的固定 ID，
+   * 必须避开 LOCAL_CHANNEL_CODE（999999）—— 那是内置本地存储的固定 ID，
    * 一旦被普通渠道占用，启动时的幂等修复会把它的类型改写成 local。
    */
   private async nextCode(): Promise<string> {
     for (let i = 0; i < 60; i++) {
-      const code = String(100000 + Math.floor(Math.random() * 900000));
+      const code = String(100000 + Math.floor(Math.random() * 899000));
       if (code === LOCAL_CHANNEL_CODE) continue;
       if (!(await prisma.channel.findUnique({ where: { code } }))) return code;
     }
@@ -403,6 +471,7 @@ export class ChannelManageController {
       data: {
         name: body.name,
         type: body.type,
+        typeCode: channelTypeCode(body.type), // 渠道类型编号（排序依据，创建时固化）
         config: JSON.stringify(encrypted),
         isMain: !!body.isMain,
         isBackup: !!body.isBackup,

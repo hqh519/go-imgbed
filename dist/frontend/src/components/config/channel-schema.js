@@ -11,30 +11,32 @@
  */
 
 /**
- * 渠道类型，顺序即界面展示顺序（上传设置 / 筛选下拉均按此排序）。
+ * 渠道类型，**顺序即渠道类型编号 typeCode 的升序**（上传设置分组 / 筛选下拉 / 添加渠道下拉均按此排序）：
+ *   100 easyimages / 110 lsky / 120 immich / 130 minio / 140 r2 / 150 s3
+ *   160 cos / 170 aliyun(ali) / 180 webdav / 190 custom / 999 local（内置，恒排最后）
  *   dedicated = 走自有专属通道（后端有独立适配器实现）
  *   generic   = 与「自定义 Web 通道」共用同一套通用 HTTP 上传适配器
  *   builtin   = 系统内置渠道，随安装自动存在，**不允许通过「添加渠道」创建**（排在最后）
  */
 export const CHANNEL_TYPES = [
-    { value: 'easyimages', label: 'EasyImages 简单图床', dedicated: false, generic: true },
-    { value: 'lsky', label: 'Lsky Pro 兰空图床', dedicated: false, generic: true },
-    { value: 'cos', label: '腾讯云 COS', dedicated: true },
-    { value: 'aliyun', label: '阿里云 OSS', dedicated: true },
-    { value: 'immich', label: 'Immich 相册', dedicated: true },
-    { value: 'minio', label: 'MinIO 对象存储', dedicated: true },
-    { value: 'r2', label: 'Cloudflare R2', dedicated: true },
-    { value: 's3', label: 'S3 兼容存储', dedicated: true },
-    { value: 'webdav', label: 'WebDAV 协议存储', dedicated: true },
-    { value: 'custom', label: '自定义 Web 通道', dedicated: false, generic: true },
-    { value: 'local', label: '本地存储', dedicated: true, builtin: true }
+    { value: 'easyimages', label: 'EasyImages 简单图床', dedicated: false, generic: true, typeCode: 100 },
+    { value: 'lsky', label: 'Lsky Pro 兰空图床', dedicated: false, generic: true, typeCode: 110 },
+    { value: 'immich', label: 'Immich 相册', dedicated: true, typeCode: 120 },
+    { value: 'minio', label: 'MinIO 对象存储', dedicated: true, typeCode: 130 },
+    { value: 'r2', label: 'Cloudflare R2', dedicated: true, typeCode: 140 },
+    { value: 's3', label: 'S3 兼容存储', dedicated: true, typeCode: 150 },
+    { value: 'cos', label: '腾讯云 COS', dedicated: true, typeCode: 160 },
+    { value: 'aliyun', label: '阿里云 OSS', dedicated: true, typeCode: 170 },
+    { value: 'webdav', label: 'WebDAV 协议存储', dedicated: true, typeCode: 180 },
+    { value: 'custom', label: '自定义 Web 通道', dedicated: false, generic: true, typeCode: 190 },
+    { value: 'local', label: '本地存储', dedicated: true, builtin: true, typeCode: 999 }
 ];
 
 /** 「添加渠道」时可选类型 —— 排除系统内置渠道 */
 export const ADDABLE_CHANNEL_TYPES = CHANNEL_TYPES.filter((t) => !t.builtin);
 
-/** 内置渠道的固定业务 ID（与后端 LOCAL_CHANNEL_CODE 保持一致） */
-export const LOCAL_CHANNEL_CODE = '100000';
+/** 内置渠道的固定业务 ID（与后端 LOCAL_CHANNEL_CODE 保持一致，1.9.2 起为 999999） */
+export const LOCAL_CHANNEL_CODE = '999999';
 
 /**
  * 渠道类型 → 后端 CHANNEL_LABEL（用于「渠道类型」筛选参数、卡片角标）。

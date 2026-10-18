@@ -477,9 +477,12 @@ watch: {
     uploadNameType() { this.liveParams = null },
     compressPercent() { this.liveParams = null },
     urlPrefix() { this.liveParams = null },
-    /** 文件数或状态变化 → 重新量一次列表区高度（最多显示 3 个） */
+    /** 文件数或状态变化 → 重新观察 + 重新量一次列表区高度（最多显示 3 个） */
     listSignature() {
-        this.$nextTick(this.updateUploadListHeight)
+        this.$nextTick(() => {
+            this.observeUploadList()
+            this.updateUploadListHeight()
+        })
     }
 },
 computed: {
@@ -595,16 +598,31 @@ computed: {
         }
     }
 },
+created() {
+    // 非响应式的内部句柄（放 data 里会被 Proxy 包一层，没必要）
+    this._heightRaf = null
+    this._listRO = null
+},
 mounted() {
     document.addEventListener('paste', this.handlePaste)
     document.addEventListener('keydown', this.handlePasteShortcut)
     this.autoReUpload = this.storeAutoReUpload
     window.addEventListener('resize', this.updateUploadListHeight)
+    // 高度自适应：先挂观察器，再量一次（列表可能是带着历史文件重新挂载的）
+    this.$nextTick(() => {
+        this.observeUploadList()
+        this.updateUploadListHeight()
+    })
 },
 beforeUnmount() {
     document.removeEventListener('paste', this.handlePaste)
     document.removeEventListener('keydown', this.handlePasteShortcut)
     window.removeEventListener('resize', this.updateUploadListHeight)
+    this.disconnectUploadListObserver()
+    if (this._heightRaf) {
+        cancelAnimationFrame(this._heightRaf)
+        this._heightRaf = null
+    }
     // 清理状态
     if (this.roundTimer) {
         clearTimeout(this.roundTimer)
@@ -646,8 +664,23 @@ methods: {
      * 列表区高度自适应：最多完整显示 3 个文件，超过 3 个由 el-scrollbar 出滚动条。
      * 条目的实际高度是变的（上传中只有进度条，完成后多出「外链行」，视频缩略图最高 110px），
      * 所以不能写死 row 高度 —— 每次文件数/状态变化后重新量一遍。
+     *
+     * PC 端此前「不动」的原因：只在 listSignature（数量+状态）变化后的下一个 tick 量一次，
+     * 而条目的最终高度常常晚一帧才定下来（缩略图解码、状态行渲染、字体加载），
+     * 于是量到的是上一个文件数的高度，1.5 个条目就裁掉了。移动端条目矮（79px），
+     * 少算一条也看不出来，所以只有 PC 明显。现在改为：
+     *   - rAF 合帧后再量（等当前帧布局落定）
+     *   - ResizeObserver 盯住容器与每个条目，任何尺寸变化都自动重量
      */
     updateUploadListHeight() {
+        if (this._heightRaf) cancelAnimationFrame(this._heightRaf)
+        this._heightRaf = requestAnimationFrame(() => {
+            this._heightRaf = null
+            this.measureUploadListHeight()
+        })
+    },
+    /** 真正量高度：头部 + 最多 3 个条目 + 余量 */
+    measureUploadListHeight() {
         const view = this.$refs.scrollContainer?.$el?.querySelector('.el-scrollbar__view')
         if (!view) {
             this.uploadListHeight = 0
@@ -670,6 +703,25 @@ methods: {
         // 少量余量，避免最后一条正好被裁掉几个像素
         h += 2
         this.uploadListHeight = h
+    },
+    /** 重新挂 ResizeObserver（条目增删后要重新 observe 新元素） */
+    observeUploadList() {
+        this.disconnectUploadListObserver()
+        if (typeof ResizeObserver === 'undefined') return
+        const view = this.$refs.scrollContainer?.$el?.querySelector('.el-scrollbar__view')
+        if (!view) return
+        this._listRO = new ResizeObserver(() => this.updateUploadListHeight())
+        // 容器 + 头部 + 每个条目：任一尺寸变化（缩略图加载、状态行出现）都重量一次
+        this._listRO.observe(view)
+        const header = view.querySelector('.upload-list-dashboard')
+        if (header) this._listRO.observe(header)
+        view.querySelectorAll('.upload-list-item').forEach((el) => this._listRO.observe(el))
+    },
+    disconnectUploadListObserver() {
+        if (this._listRO) {
+            this._listRO.disconnect()
+            this._listRO = null
+        }
     },
     /**
      * 点「自动」文字也能切换开关（扩大触控热区）。
@@ -2181,12 +2233,15 @@ beforeDestroy() {
     border: 1px solid var(--glass-border);
     border-radius: 10px;
 }
-/* 开关只保留右侧单一文案（开启=自动 / 关闭=手动） */
+/* 开关只保留右侧单一文案（开启/关闭都显示「自动」） */
 .auto-upload-switch-label {
     font-size: 13px;
     line-height: 1;
     color: var(--text-color-secondary, #666);
     white-space: nowrap;
+    /* 文案本身也是开关热区（点击可切换），必须给出手型光标 */
+    cursor: pointer;
+    user-select: none;
 }
 /* 有文件（列表展开）时整体收缩，操作行间距同步压缩（与 paste-card-actions 的 busy 态一致） */
 .upload-card-busy .default-upload-actions {

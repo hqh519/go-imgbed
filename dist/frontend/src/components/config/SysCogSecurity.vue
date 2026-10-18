@@ -1808,9 +1808,16 @@ html.dark .token-table :deep(.el-table__row:hover td) {
     min-width: 0;
 }
 .token-cell .token-display {
-    flex: 1 1 auto;
+    /* flex-basis 固定为 0：打码值 / 明文值长度不同也不会改变这一格的宽度，
+       点小眼睛前后输入框（凭据框）宽度完全一致，右侧两个按钮不会左右跳。 */
+    flex: 1 1 0;
+    width: 0;
     min-width: 0;
     text-align: left;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    word-break: normal;
 }
 .inline-copy-btn {
     flex: 0 0 auto;

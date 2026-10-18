@@ -195,6 +195,7 @@ function buildMetadata(rec, copies, opts = {}) {
         Tags: opts.tags || metas.Tags || [],
         Channel: channelLabel,
         ChannelShort: primary?.channel ? channelShort(primary.channel.type) : '',
+        ChannelType: primary?.channel?.type || '',
         ChannelId: primary?.channelId || '',
         ChannelCode: primary?.channel?.code || '',
         ChannelName: primary?.channel?.name || '',
