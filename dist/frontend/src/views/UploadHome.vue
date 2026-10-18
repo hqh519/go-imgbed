@@ -332,7 +332,7 @@ export default {
             limitExtensions: '', // 允许的上传格式覆盖（仅本次页面生效，刷新清空）
             limitMaxSizeMB: 0, // 单文件大小上限覆盖（MB，0 = 跟随后台）
             customDomain: '', //自定义访问域名（所有文件链接统一使用）
-            autoUpload: true, //自动上传（默认启用，刷新恢复）
+            autoUpload: localStorage.getItem('goimgbed_autoUpload') !== '0', //自动上传（记忆模式：记住上次选择，刷新不重置）
             useDefaultWallPaper: false,
             uploadMethod: 'default', //上传方式
             uploadFolder: '', // 上传文件夹
@@ -346,6 +346,10 @@ export default {
         }
     },
     watch: {
+        // 自动/手动切换记忆：用户选了「手动」后刷新页面仍保持手动
+        autoUpload(val) {
+            try { localStorage.setItem('goimgbed_autoUpload', val ? '1' : '0'); } catch (e) { /* 隐私模式忽略 */ }
+        },
         customerCompress(val) {
             this.updateCompressConfig('customerCompress', val)
         },

@@ -131,12 +131,12 @@ export function buildChannelOptions(channels, opts = {}) {
             icon: 'ban',
         });
     }
-    // 3) 具体渠道（统一排序：渠道类型编号升序 → 渠道 ID 升序，保证三处顺序一致）
+    // 3) 具体渠道（统一排序：类型编号升序 → name a→z，保证三处顺序一致）
     const sorted = [...list].sort((a, b) => {
         const ta = Number(a.typeCode) || channelTypeCode(a.type);
         const tb = Number(b.typeCode) || channelTypeCode(b.type);
         if (ta !== tb) return ta - tb;
-        return String(a.code).localeCompare(String(b.code));
+        return String(a.name).localeCompare(String(b.name));
     });
     for (const ch of sorted) {
         out.push({ value: ch.code || ch.id, label: channelLabel(ch), type: ch.type || '', icon: '' });

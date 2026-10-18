@@ -1,5 +1,5 @@
 <template>
-    <div class="upload-form">
+    <div class="upload-form" :class="{'upload-form-busy': fileList.length}">
         <textarea
             ref="clipboardPasteReceiver"
             class="clipboard-paste-receiver"
@@ -153,7 +153,7 @@
                 </div>
             </el-card>
         </div>
-        <el-card class="upload-list-card" :class="{'upload-list-busy': fileList.length}" :style="uploadListStyle">
+        <el-card class="upload-list-card" :class="{'upload-list-busy': fileList.length}">
             <div class="upload-list-container">
                 <el-scrollbar @scroll="handleScroll" ref="scrollContainer">
                     <div class="upload-list-dashboard" :class="{ 'list-scrolled': listScrolled }">
@@ -401,8 +401,6 @@ data() {
         exceptionList: [],
         listScrolled: false,
         fileListLength: 0,
-        /** 上传列表区高度（px）：按文件数自适应，最多显示 3 个，超出滚动 */
-        uploadListHeight: 0,
         localUidCounter: 0,
         pastedUrls: '',
         pasteUploadMethod: 'save',
@@ -527,10 +525,6 @@ computed: {
      */
     listSignature() {
         return this.fileList.length + '|' + this.fileList.map((i) => i.status).join(',')
-    },
-    /** 列表卡片的内联高度（0 = 交给 CSS 兜底） */
-    uploadListStyle() {
-        return this.uploadListHeight ? { height: this.uploadListHeight + 'px' } : {}
     },
     defaultCopyFormat() {
         return COPY_FORMATS.find(format => format.value === this.selectedUrlForm) || COPY_FORMATS[0]
@@ -661,16 +655,12 @@ methods: {
             (limitMB ? '&maxFileSizeMB=' + limitMB : '')
     },
     /**
-     * 列表区高度自适应：最多完整显示 3 个文件，超过 3 个由 el-scrollbar 出滚动条。
-     * 条目的实际高度是变的（上传中只有进度条，完成后多出「外链行」，视频缩略图最高 110px），
-     * 所以不能写死 row 高度 —— 每次文件数/状态变化后重新量一遍。
-     *
-     * PC 端此前「不动」的原因：只在 listSignature（数量+状态）变化后的下一个 tick 量一次，
-     * 而条目的最终高度常常晚一帧才定下来（缩略图解码、状态行渲染、字体加载），
-     * 于是量到的是上一个文件数的高度，1.5 个条目就裁掉了。移动端条目矮（79px），
-     * 少算一条也看不出来，所以只有 PC 明显。现在改为：
-     *   - rAF 合帧后再量（等当前帧布局落定）
-     *   - ResizeObserver 盯住容器与每个条目，任何尺寸变化都自动重量
+     * 列表区高度自适应（v2.0.0 重新设计）：
+     * 基础方案改为纯 CSS —— 卡片 height:auto 由内容撑开，内容可见性不再依赖 JS；
+     * JS 只负责一件事：把滚动封顶值 --upload-list-max-h 实测成「头部 + 3 个条目」，
+     * 让「超过 3 个出滚动条」的阈值贴合真实条目高度（条目高度可变：上传中只有进度条、
+     * 完成后多外链行、视频缩略图最高 110px）。
+     * JS 失效（老浏览器）时封顶回落 58vh，内容依旧完整可见/可滚 —— 任何环境都不会裁掉内容。
      */
     updateUploadListHeight() {
         if (this._heightRaf) cancelAnimationFrame(this._heightRaf)
@@ -679,18 +669,20 @@ methods: {
             this.measureUploadListHeight()
         })
     },
-    /** 真正量高度：头部 + 最多 3 个条目 + 余量 */
+    /** 实测「头部 + 最多 3 个条目」写入 --upload-list-max-h；量不到则恢复 CSS 兜底 */
     measureUploadListHeight() {
+        const root = this.$el
+        if (!root) return
         const view = this.$refs.scrollContainer?.$el?.querySelector('.el-scrollbar__view')
         if (!view) {
-            this.uploadListHeight = 0
+            root.style.removeProperty('--upload-list-max-h')
             return
         }
         const header = view.querySelector('.upload-list-dashboard')
         // 列表是倒序渲染的（最新在最上），从上往下取前 3 个即可
         const items = Array.from(view.querySelectorAll('.upload-list-item')).slice(0, 3)
         if (!items.length) {
-            this.uploadListHeight = 0
+            root.style.removeProperty('--upload-list-max-h')
             return
         }
         let h = header ? header.offsetHeight : 0
@@ -700,9 +692,9 @@ methods: {
                 (parseFloat(style.marginTop) || 0) +
                 (parseFloat(style.marginBottom) || 0)
         })
-        // 少量余量，避免最后一条正好被裁掉几个像素
-        h += 2
-        this.uploadListHeight = h
+        // 少量余量：避免第 3 条底部边距被 max-height 精确裁掉、或恰好压出一像素滚动条
+        h += 6
+        root.style.setProperty('--upload-list-max-h', h + 'px')
     },
     /** 重新挂 ResizeObserver（条目增删后要重新 observe 新元素） */
     observeUploadList() {
@@ -2144,10 +2136,10 @@ beforeDestroy() {
     --upload-card-busy-height: 17vh;
     --upload-list-height: 7vh;
     --upload-list-inner-height: var(--upload-list-height);
-    /* 列表区「量到高度之前」的兜底高度（JS 量到后会被内联 style 覆盖）：
-       大约 = 头部 + 3 个条目 */
-    --upload-list-busy-extra: 24vh;
-    --upload-list-busy-height: calc(var(--upload-card-height) - var(--upload-card-busy-height) + var(--upload-list-height) + var(--upload-list-busy-extra));
+    /* 列表区封顶高度（滚动阈值）：默认 58vh 兜底；
+       JS 会按「头部 + 3 个条目」实测后覆盖（--upload-list-max-h），
+       JS 完全失效时也只影响封顶精确度，不影响内容可见（height:auto 由内容撑开）。 */
+    --upload-list-max-h: 58vh;
     /* 收缩态铺满视口时，顶部（Logo / 标题 / 默认·链接标签页）与底部页脚的预留高度。
        调大 = 列表区整体变矮、离页脚更远；调小 = 列表区更高、更贴近页脚。 */
     --upload-home-reserved: 200px;
@@ -2160,16 +2152,16 @@ beforeDestroy() {
     align-items: center;
     height: calc(var(--upload-card-height) + var(--upload-list-height) + var(--upload-list-gap) + var(--upload-card-vertical-padding));
 }
-/* 有文件（列表展开）：列表区高度改为「按文件数自适应」——
-   JS 量出「头部 + 最多 3 个条目」的高度写进内联 style，
-   超过 3 个文件由 el-scrollbar 出滚动条；因此外层不再用视口高度硬撑。 */
-.upload-form:has(.upload-list-busy) {
+/* 有文件（列表展开）：外层不再用视口高度硬撑，改由内容自然撑开。
+   （v2.0.0：不再用 :has() —— 部分浏览器不支持导致 PC 端列表区被裁；
+   改为组件根 class 绑定，所有浏览器行为一致。） */
+.upload-form.upload-form-busy {
     height: auto;
 }
-/* 列表卡片：高度由内联 style 决定（未量到之前用兜底高度） */
-.upload-form:has(.upload-list-busy) .upload-list-card {
+/* 列表卡片：高度 = 内容自适应；滚动条由内部 el-scrollbar 的 max-height 触发 */
+.upload-list-card.upload-list-busy {
     flex: 0 0 auto;
-    height: var(--upload-list-busy-height);
+    height: auto;
     min-height: var(--upload-list-height);
 }
 .upload-list-card {
@@ -2289,7 +2281,18 @@ beforeDestroy() {
     }
 }
 .upload-list-card.upload-list-busy {
-    height: var(--upload-list-busy-height);
+    height: auto;
+}
+
+/* busy 态滚动控制：内容 ≤ 封顶值时卡片由内容撑开（自适应）；
+   超过封顶值（≈3 个条目）时 el-scrollbar 内部出滚动条。
+   max-height 挂在 wrap 上 —— el-scrollbar 的 height:100% 在 height:auto 父级里
+   无法建立滚动约束，必须直接约束 wrap。 */
+.upload-form .upload-list-card.upload-list-busy :deep(.el-scrollbar) {
+    height: auto;
+}
+.upload-form .upload-list-card.upload-list-busy :deep(.el-scrollbar__wrap) {
+    max-height: var(--upload-list-max-h);
 }
 
 .upload-list-card:not(.upload-list-busy) :deep(.el-scrollbar__view) {

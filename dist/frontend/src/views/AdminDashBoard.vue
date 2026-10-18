@@ -711,7 +711,7 @@ data() {
         searchIconPressStart: null,
         searchIconLongPressed: false,
         currentPage: 1,
-        pageSize: 15,
+        pageSize: 18,
         selectedFiles: [],
         sortField: getStoredOption('sortField', SORT_FIELDS, 'time'),
         sortOrder: getStoredOption('sortOrder', SORT_ORDERS, 'desc'),
@@ -1393,10 +1393,10 @@ methods: {
                     }
                 });
 
-                // 统一排序：渠道类型编号升序 → 渠道 ID 升序
+                // 统一排序：类型编号升序 → name a→z
                 channelOptions.sort((a, b) => {
                     if (a.typeCode !== b.typeCode) return a.typeCode - b.typeCode;
-                    return String(a.code).localeCompare(String(b.code));
+                    return String(a.name).localeCompare(String(b.name));
                 });
 
                 this.channelNameOptions = channelOptions;
@@ -2343,7 +2343,7 @@ methods: {
         return window.innerWidth < 768;
     },
     updateResponsivePageSize() {
-        const nextPageSize = this.isMobileViewport() ? 16 : 15;
+        const nextPageSize = this.isMobileViewport() ? 16 : 18;
         if (this.pageSize === nextPageSize) return;
         const firstVisibleIndex = (this.currentPage - 1) * this.pageSize;
         this.pageSize = nextPageSize;
@@ -3085,6 +3085,21 @@ beforeUnmount() {
 
 .breadcrumb-view-toggle:hover {
     border-color: var(--glass-border-hover);
+}
+
+/* 视图切换按钮不出现聚焦边框（outline / focus-ring） */
+.breadcrumb-view-toggle:focus,
+.breadcrumb-view-toggle:focus-visible,
+.breadcrumb-view-toggle:active {
+    outline: none;
+    outline-offset: 0;
+    box-shadow: none;
+}
+.breadcrumb-view-toggle:focus-visible {
+    border-color: var(--glass-border);
+}
+.breadcrumb-view-toggle:where(:focus, :focus-visible)::after {
+    content: none;
 }
 
 .breadcrumb-view-toggle::before {

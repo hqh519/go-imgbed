@@ -84,7 +84,7 @@ export default {
 
 /*
  * 页脚自定义代码（传送门链接 / 统计代码）容器：
- * 颜色与字号严格继承「Powered by」所在行的样式，只给超链接加下划线，
+ * 颜色与字号严格继承「Powered by」所在行的样式，超链接不带下划线（v2.0.0），
  * 鼠标悬浮时变为蓝色，避免默认浏览器蓝色链接把页脚视觉打散。
  */
 .footer-custom-code {
@@ -97,8 +97,7 @@ export default {
 .footer-custom-code :deep(a) {
     color: inherit;
     font-size: inherit;
-    text-decoration: underline;
-    text-underline-offset: 2px;
+    text-decoration: none;
     transition: color 0.2s ease;
 }
 

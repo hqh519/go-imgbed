@@ -207,48 +207,8 @@ async function bootstrap() {
 
   await app.init();
 
-  /*
-   * SQLite 运行参数（Web 服务标准姿势，多人并发前的稳定性垫片）：
-   *   journal_mode = WAL       读写不互斥。持久属性（写进库文件头），一次设置永久生效
-   *   busy_timeout = 5000      写锁冲突时等待 5s，而不是立刻抛 SQLITE_BUSY
-   *   synchronous  = NORMAL    WAL 模式下安全/性能的平衡点
-   * 注意：后两条是「连接级」参数，只对执行它们的连接生效；journal_mode=WAL 是库级持久属性，
-   * 设置一次后所有连接（含 Prisma 连接池里的其余连接）都以 WAL 运行。
-   * 不要试图在 DATABASE_URL 上加 `?connection_limit=1` 来简化 —— SQLite 的 schema engine
-   * 不认 URL 查询参数，会把整串当文件路径（实测 os error 123，db push 直接失败）。
-   * 换 PostgreSQL 时这三条对 PG 无意义，可用 DB_SKIP_PRAGMAS=1 跳过。
-   *
-   * v1.9.0 修正：PRAGMA 分两类返回语义，混用会抛错且**整段失效**。
-   *   - `journal_mode=WAL` / `busy_timeout` 会返回一行结果 → 必须用 $queryRawUnsafe，
-   *     用 $executeRawUnsafe 会报 "Execute returned results, which is not allowed in SQLite"
-   *   - `synchronous=NORMAL` 不返回结果 → 用 $executeRawUnsafe
-   * 早期三条挤在一个 try 里，第一条就抛错，导致后面两条（以及日志）从未执行。
-   */
-  if (process.env.DB_SKIP_PRAGMAS !== '1') {
-    const applied: string[] = [];
-    // ① WAL：库级持久属性，返回当前模式
-    try {
-      const rows = await prisma.$queryRawUnsafe<Array<{ journal_mode?: string }>>('PRAGMA journal_mode=WAL;');
-      applied.push(`journal_mode=${rows?.[0]?.journal_mode ?? '?'}`);
-    } catch (err) {
-      console.warn(`[pragmas] journal_mode 设置失败：${(err as Error).message}`);
-    }
-    // ② busy_timeout：连接级，返回当前值
-    try {
-      const rows = await prisma.$queryRawUnsafe<Array<{ timeout?: number }>>('PRAGMA busy_timeout=5000;');
-      applied.push(`busy_timeout=${rows?.[0]?.timeout ?? 5000}`);
-    } catch (err) {
-      console.warn(`[pragmas] busy_timeout 设置失败：${(err as Error).message}`);
-    }
-    // ③ synchronous：连接级，不返回结果
-    try {
-      await prisma.$executeRawUnsafe('PRAGMA synchronous=NORMAL;');
-      applied.push('synchronous=NORMAL');
-    } catch (err) {
-      console.warn(`[pragmas] synchronous 设置失败：${(err as Error).message}`);
-    }
-    if (applied.length) appLog.info('app', `SQLite PRAGMA：${applied.join(' / ')}`);
-  }
+  // v2.0.0：数据库只支持 PostgreSQL，SQLite 时代的 PRAGMA 稳定性垫片（WAL /
+  // busy_timeout / synchronous）已随 SQLite 双轨一并移除；PG 的并发控制由服务端自己管理。
 
   /*
    * 内置「本地存储」渠道：随启动幂等创建。
