@@ -80,11 +80,14 @@ let UsersController = class UsersController {
             backupChannelId: u.backupChannelId,
             mainChannelName: cName.get(u.mainChannelId) || '',
             backupChannelName: cName.get(u.backupChannelId) || '',
+            adminNote: u.adminNote || '',
             createdAt: u.createdAt,
         }));
         if (!this.isAdmin(req)) {
             const me = this.me(req);
-            return rows.filter((r) => r.username === me);
+            return rows
+                .filter((r) => r.username === me)
+                .map(({ adminNote: _omit, ...rest }) => rest);
         }
         const adminUser = await this.adminUsername();
         if (!rows.some((r) => r.username === adminUser)) {
@@ -105,6 +108,7 @@ let UsersController = class UsersController {
                 backupChannelId: backupId,
                 mainChannelName: cName.get(mainId) || '',
                 backupChannelName: cName.get(backupId) || '',
+                adminNote: String(prof.adminNote || ''),
                 createdAt: null,
                 builtin: true,
             });
@@ -195,6 +199,7 @@ let UsersController = class UsersController {
                 enforceLimits: body.enforceLimits !== false,
                 mainChannelId: String(body.mainChannelId || ''),
                 backupChannelId: String(body.backupChannelId || ''),
+                adminNote: String(body.adminNote || '').slice(0, 4000),
             },
         });
         return { success: true, data: { id: u.id } };
@@ -212,6 +217,8 @@ let UsersController = class UsersController {
                 patch.backupChannelId = String(body.backupChannelId);
             if (body.enforceLimits !== undefined)
                 patch.enforceLimits = !!body.enforceLimits;
+            if (body.adminNote !== undefined)
+                patch.adminNote = String(body.adminNote).slice(0, 4000);
             await this.sysConfig.save('adminProfile', patch);
             return { success: true };
         }
@@ -252,6 +259,7 @@ let UsersController = class UsersController {
                 ...(body.enforceLimits !== undefined ? { enforceLimits: !!body.enforceLimits } : {}),
                 ...(body.mainChannelId !== undefined ? { mainChannelId: String(body.mainChannelId) } : {}),
                 ...(body.backupChannelId !== undefined ? { backupChannelId: String(body.backupChannelId) } : {}),
+                ...(body.adminNote !== undefined ? { adminNote: String(body.adminNote).slice(0, 4000) } : {}),
             },
         });
         return { success: true };

@@ -531,6 +531,16 @@ export class LinkController {
     });
     if (!record) return res.status(404).send('Not Found');
 
+    /*
+     * 限时访问（v2.1.0）：设置了截止时间且已过期 → 410 Gone。
+     *   · 管理端预览（?from=admin）不受限，否则回收站 / 详情缩略图会失效；
+     *   · 用 no-store 避免 CDN / 浏览器缓存住 410 或过期前的 200。
+     */
+    if (record.linkExpiresAt && !adminPreview && !isAdminRole(currentSession(req)?.role) && Date.now() > record.linkExpiresAt.getTime()) {
+      res.setHeader('Cache-Control', 'no-store');
+      return res.status(410).send('链接已过期');
+    }
+
     // 访问控制：黑白名单 / 白名单模式 / 域名白名单（放行返回 true）
     if (!(await this.checkAccess(req, res, record))) return;
 
@@ -1358,10 +1368,85 @@ export class ManageController {
     const owner = this.admin(req) ? '' : currentSession(req)?.user || '';
     const rec = await this.resolveFile(wildcardParam(req), owner);
     if (!rec) return { success: false, message: '文件不存在' };
+    const metadata = serializeFile(rec, rec.copies, {
+      tags: rec.tags.map((t) => t.tag.name),
+      resolveDirectUrl: this.directUrlResolver(),
+    }).metadata as Record<string, unknown>;
+    // 限时：把截止时间带给前端（0 = 永久）
+    metadata.LinkExpiresAt = rec.linkExpiresAt ? rec.linkExpiresAt.getTime() : 0;
     return {
       success: true,
-      data: { metas: rec.metas, name: rec.name, metadata: serializeFile(rec, rec.copies, { tags: rec.tags.map((t) => t.tag.name), resolveDirectUrl: this.directUrlResolver() }).metadata },
+      data: {
+        metas: rec.metas,
+        name: rec.name,
+        // 文件备注：只有作者本人能拿到（其它人连字段都不下发）
+        ...(this.isAuthor(req, rec) ? { note: rec.note, Note: rec.note } : {}),
+        metadata,
+      },
     };
+  }
+
+  /**
+   * 是否是文件的「作者」（上传者本人）。
+   * 历史数据 uploader 为空时（早期版本 / 管理员直传），仅管理员视为作者。
+   */
+  private isAuthor(req: Request, rec: { uploader?: string | null }): boolean {
+    const me = currentSession(req)?.user || '';
+    if (!me) return false;
+    const up = String(rec.uploader || '');
+    if (up) return up === me;
+    return this.admin(req);
+  }
+
+  /**
+   * 限时访问（v2.1.0）：设置 / 取消文件的访问截止时间。
+   *   body: { seconds: 3600 }              —— 从现在起 N 秒后失效
+   *         { expiresAt: "2026-10-20T12:00" } —— 指定截止时间（本地/ISO 字符串或毫秒时间戳）
+   *         { clear: true }                  —— 取消限时，恢复永久有效
+   * 权限：文件作者本人或管理员（普通用户还要有 canEdit 权限）。
+   */
+  @Post('expiry/*')
+  async setExpiry(
+    @Req() req: Request,
+    @Body() body: { seconds?: number | string; expiresAt?: string | number | null; clear?: boolean },
+  ) {
+    if (!(await this.userPerm(req, 'edit'))) return { success: false, message: '没有编辑权限' };
+    const owner = this.admin(req) ? '' : currentSession(req)?.user || '';
+    const rec = await this.resolveFile(wildcardParam(req), owner);
+    if (!rec) return { success: false, message: '文件不存在' };
+    if (!this.isAuthor(req, rec)) return { success: false, message: '只有上传者本人可以设置限时' };
+
+    let at: Date | null = null;
+    if (!body?.clear) {
+      if (body?.expiresAt !== undefined && body?.expiresAt !== null && body?.expiresAt !== '') {
+        const raw = typeof body.expiresAt === 'number' ? body.expiresAt : Date.parse(String(body.expiresAt));
+        if (!Number.isFinite(raw)) return { success: false, message: '截止时间格式不正确' };
+        at = new Date(raw);
+      } else {
+        const sec = Number(body?.seconds);
+        if (!Number.isFinite(sec) || sec <= 0) return { success: false, message: '请设置有效时长或截止时间' };
+        at = new Date(Date.now() + sec * 1000);
+      }
+      if (at.getTime() <= Date.now()) return { success: false, message: '截止时间必须晚于当前时间' };
+    }
+
+    await prisma.fileRecord.update({ where: { id: rec.id }, data: { linkExpiresAt: at } });
+    // 外链本身不变，但缓存必须失效：旧 200 不能被 CDN/浏览器继续复用
+    return {
+      success: true,
+      data: { name: rec.name, LinkExpiresAt: at ? at.getTime() : 0, link: `${await this.linkPrefixSafe()}/${rec.name}` },
+    };
+  }
+
+  /** 外链前缀（用于限时保存后回显完整链接；失败时回退空串） */
+  private async linkPrefixSafe(): Promise<string> {
+    try {
+      const s = this.settings;
+      const domain = await s.getServerDomain();
+      return (await s.getLinkPrefix(domain)).replace(/\/+$/, '');
+    } catch {
+      return '';
+    }
   }
 
   @Put('metadata/*')
@@ -1392,12 +1477,17 @@ export class ManageController {
      * 会被当成空对象覆盖写回，把标签/备注等已有 metas 全部抹掉。这里按形状分开处理。
      */
     let metasRaw: string;
-    const patch: { originalName?: string; folder?: string } = {};
+    const patch: { originalName?: string; folder?: string; note?: string } = {};
     if (body && body.metas !== undefined) {
       metasRaw = typeof body.metas === 'string' ? body.metas : JSON.stringify(body.metas || {});
     } else {
       const cur = safeParse(rec.metas);
       const b = (body || {}) as Record<string, unknown>;
+      // 文件备注（v2.1.0）：仅作者本人可写；存 note 列，不进 metas，避免被覆盖写回抹掉
+      if (b.Note !== undefined || b.note !== undefined) {
+        if (!this.isAuthor(req, rec)) return { success: false, message: '只有上传者本人可以编辑备注' };
+        patch.note = String(b.Note ?? b.note ?? '').slice(0, 4000);
+      }
       if (b.FileName !== undefined) {
         const next = String(b.FileName || '').trim();
         if (next) patch.originalName = next; // 显示文件名实际存在 originalName 上
@@ -1426,6 +1516,7 @@ export class ManageController {
       data: {
         metas: metasRaw,
         name: rec.name,
+        ...(this.isAuthor(req, rec) ? { note: patch.note !== undefined ? patch.note : rec.note } : {}),
         metadata: updated
           ? serializeFile(updated, updated.copies, { tags: updated.tags.map((t) => t.tag.name), resolveDirectUrl: this.directUrlResolver() }).metadata
           : undefined,

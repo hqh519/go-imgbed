@@ -84,7 +84,7 @@ export const CHANNEL_SHORT: Record<string, string> = {
   s3: 'S3',
   webdav: 'WD',
   custom: 'DIY',
-  local: 'LOCAL',
+  local: 'LCL',
 };
 
 /**
@@ -275,6 +275,10 @@ export function buildMetadata(
     // 上传计时：详情页「上传时长 / 上传速度」；历史数据没有这两列 → 0，前端显示「未知」
     ...buildUploadTiming(rec as unknown as { uploadStartedAt?: Date | null; uploadFinishedAt?: Date | null; size?: number }),    // 重定向地址（非空时 /file/:name 会 302 到该地址）
     RedirectUrl: (rec as unknown as { redirectUrl?: string }).redirectUrl || '',
+    // 限时访问截止时间（毫秒时间戳；0 = 永久有效）
+    LinkExpiresAt: (rec as unknown as { linkExpiresAt?: Date | null }).linkExpiresAt
+      ? (rec as unknown as { linkExpiresAt: Date }).linkExpiresAt.getTime()
+      : 0,
     ListType: (metas.ListType as string) || 'None',
     TimeStamp: rec.createdAt.getTime(),
     Label: (metas.Label as string) || 'None',

@@ -678,7 +678,7 @@ let UploadService = class UploadService {
                 continue;
             try {
                 const info = this.toChannelInfo(ch);
-                result = await (0, adapter_factory_1.createAdapter)(info).upload({ buffer, mime, originalName }, key, info);
+                result = await (0, adapter_factory_1.createAdapter)(info).upload({ buffer, mime, originalName }, key, info, { owner: opts.uploader });
                 usedChannel = ch;
                 break;
             }
@@ -770,13 +770,13 @@ let UploadService = class UploadService {
                 if (!backup || backup.id === usedChannel.id)
                     return;
                 await this.enqueueLowPriority(async () => {
-                    await this.backupUpload(record.id, payload, key, backup);
+                    await this.backupUpload(record.id, payload, key, backup, opts.uploader);
                 });
             });
         }
         return { id: fileId };
     }
-    async backupUpload(fileId, file, key, backup) {
+    async backupUpload(fileId, file, key, backup, owner) {
         await prisma_1.prisma.fileCopy.upsert({
             where: { fileId_channelId: { fileId, channelId: backup.id } },
             update: { status: 'pending' },
@@ -786,7 +786,7 @@ let UploadService = class UploadService {
             const info = this.toChannelInfo(backup);
             const adapter = (0, adapter_factory_1.createAdapter)(info);
             const t0 = Date.now();
-            const result = await adapter.upload(file, key, info);
+            const result = await adapter.upload(file, key, info, { owner });
             await prisma_1.prisma.fileCopy.update({
                 where: { fileId_channelId: { fileId, channelId: backup.id } },
                 data: { remoteKey: result.remoteKey, remoteUrl: result.remoteUrl || '', status: 'active' },

@@ -29,8 +29,17 @@ export interface UploadResult {
 }
 
 export interface StorageAdapter {
-  /** 上传文件，返回渠道内资源标识 */
-  upload(file: { buffer: Buffer; mime: string; originalName: string }, key: string, channel: ChannelInfo): Promise<UploadResult>;
+  /**
+   * 上传文件，返回渠道内资源标识。
+   * ctx.owner：上传者用户名。仅本地存储渠道使用 —— 落盘路径按
+   * `uploads/<上传者>/年/月/文件` 归档，未指定上传者时归入 `default/`。
+   */
+  upload(
+    file: { buffer: Buffer; mime: string; originalName: string },
+    key: string,
+    channel: ChannelInfo,
+    ctx?: { owner?: string },
+  ): Promise<UploadResult>;
   /** 删除渠道内资源 */
   delete(copy: CopyInfo, channel: ChannelInfo): Promise<void>;
   /** 按渠道当前配置构造直链（返回 null 表示无法构造） */

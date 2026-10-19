@@ -56,7 +56,7 @@ exports.CHANNEL_SHORT = {
     s3: 'S3',
     webdav: 'WD',
     custom: 'DIY',
-    local: 'LOCAL',
+    local: 'LCL',
 };
 function channelShort(typeOrLabel) {
     const raw = String(typeOrLabel || '').trim();
@@ -188,6 +188,9 @@ function buildMetadata(rec, copies, opts = {}) {
         UploadSource: normalizeUploadSource(rec.uploadSource),
         ...buildUploadTiming(rec),
         RedirectUrl: rec.redirectUrl || '',
+        LinkExpiresAt: rec.linkExpiresAt
+            ? rec.linkExpiresAt.getTime()
+            : 0,
         ListType: metas.ListType || 'None',
         TimeStamp: rec.createdAt.getTime(),
         Label: metas.Label || 'None',

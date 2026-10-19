@@ -13,11 +13,12 @@ import { backendSub } from '../common/project-paths';
  * 本地渠道把文件写在系统自身目录下，零外部依赖，也是「我不信任第三方存储」时
  * 唯一可靠的兜底选项。
  *
- * ## 落盘规则（重要，与「虚拟分类」解耦）
+ * ## 落盘规则（v2.1.0 起：按上传者归档，与「虚拟分类」解耦）
  * 上传服务生成的 key 形如 `202610/ab12cd.jpg`（年+月 拼成一个目录段）。
- * 本适配器在写盘时把它展开成 `uploads/2026/10/ab12cd.jpg`，
- * 即**实体文件永远按「年份/月份」归档**，与用户在后台给文件设置的
- * 「文件分类（folder）」完全无关 —— 后者只是数据库里的虚拟目录。
+ * 本适配器在写盘时把它展开成：
+ *   `uploads/<上传者>/2026/10/ab12cd.jpg`
+ * 没有上传者的（例如 API 直接上传、未指定账户）归入 `uploads/default/2026/10/`。
+ * 目录段只做安全清洗（去掉路径分隔符），不改用户名本身，便于人工排查。
  *
  * 这样设计的好处：
  *   1) 在文件管理里改分类，实体文件不会搬家，不会出现「改一次目录就要搬运 GB 级数据」；
@@ -35,9 +36,9 @@ export class LocalAdapter implements StorageAdapter {
   }
 
   /**
-   * key → 磁盘相对路径。
+   * key → 磁盘相对路径（**不含上传者目录**）。
    *   `202610/ab12.jpg` → `2026/10/ab12.jpg`
-   * 其它形态的 key（例如 S3 客户端直接给的多级路径）原样保留，
+   * 其它形态的 key（例如 S3 客户端直接给的多级路径、已展开的 remoteKey）原样保留，
    * 只做安全性校验（禁止 `..` 穿越）。
    */
   static toRelativePath(key: string): string {
@@ -57,6 +58,35 @@ export class LocalAdapter implements StorageAdapter {
     return parts.join('/');
   }
 
+  /** 上传者目录名：只清洗路径分隔符等非法字符，保留中文/字母数字，空值归 default */
+  static ownerSegment(owner?: string | null): string {
+    const s = String(owner || '')
+      .trim()
+      .replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_')
+      .replace(/^\.+$/, '')
+      .replace(/\/{2,}/g, '/');
+    return s || 'default';
+  }
+
+  /**
+   * 新上传的 key → 带上传者目录的相对路径：
+   *   `202610/ab12.jpg` + 用户 alice → `alice/2026/10/ab12.jpg`
+   *   `202610/ab12.jpg` + 无用户   → `default/2026/10/ab12.jpg`
+   * 已是展开形态（首段不是 6 位数字，如备份时传入的 remoteKey）则原样返回，
+   * 避免重复叠加用户名目录。
+   */
+  static toRelativePathFor(key: string, owner?: string | null): string {
+    const rel = LocalAdapter.toRelativePath(key);
+    const rawHead = String(key || '')
+      .replace(/\\/g, '/')
+      .replace(/^\/+/, '')
+      .split('/')[0];
+    // 只有「刚生成的原始 key（202610/xxx）」才需要加上传者目录；
+    // 已展开的 remoteKey（备份 / 补备份时传入）原样使用，避免重复叠加。
+    if (!/^\d{6}$/.test(rawHead)) return rel;
+    return `${LocalAdapter.ownerSegment(owner)}/${rel}`;
+  }
+
   /** 磁盘绝对路径（带越界校验：结果必须仍在上传根目录内） */
   static absolutePath(key: string): string {
     const root = LocalAdapter.root();
@@ -72,16 +102,19 @@ export class LocalAdapter implements StorageAdapter {
     file: { buffer: Buffer; mime: string; originalName: string },
     key: string,
     _channel: ChannelInfo,
+    ctx?: { owner?: string },
   ): Promise<UploadResult> {
-    const abs = LocalAdapter.absolutePath(key);
+    // 落盘路径：uploads/<上传者或 default>/年/月/文件
+    const relKey = LocalAdapter.toRelativePathFor(key, ctx?.owner);
+    const abs = LocalAdapter.absolutePath(relKey);
     try {
       await fsp.mkdir(dirname(abs), { recursive: true });
       await fsp.writeFile(abs, file.buffer);
     } catch (err) {
       throw new AdapterError(`写入本地文件失败：${(err as Error).message}`, 'local');
     }
-    // remoteKey 存「展开后」的相对路径，读取时直接按它定位
-    return { remoteKey: LocalAdapter.toRelativePath(key), metas: { local: true } };
+    // remoteKey 存「展开后」的相对路径（含上传者目录），读取时直接按它定位
+    return { remoteKey: relKey, metas: { local: true, owner: LocalAdapter.ownerSegment(ctx?.owner) } };
   }
 
   async delete(copy: CopyInfo, _channel: ChannelInfo): Promise<void> {

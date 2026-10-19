@@ -43,6 +43,10 @@
             <el-button type="primary" plain @click="openRedirectDialog()" round size="small" class="detail-action" v-if="!isEditing && canEditAction && !trashMode">
                 <font-awesome-icon icon="exchange-alt" style="margin-right: 3px;"></font-awesome-icon> {{ $t('dashboard.redirect') }}
             </el-button>
+            <!-- 限时：设置链接有效期（到时外链自动 410，旧链接同样失效） -->
+            <el-button type="warning" plain @click="openExpiryDialog()" round size="small" class="detail-action" v-if="!isEditing && canEditAction && !trashMode && noteLoaded">
+                <font-awesome-icon icon="clock" style="margin-right: 3px;"></font-awesome-icon> {{ $t('fileDetail.expiryButton') }}
+            </el-button>
             <el-button type="success" @click="saveMetadata()" round size="small" class="detail-action" v-if="isEditing" :loading="editSaving">
                 <font-awesome-icon icon="save" style="margin-right: 3px;" v-if="!editSaving"></font-awesome-icon> {{ $t('fileDetail.save') }}
             </el-button>
@@ -228,6 +232,30 @@
                 <span v-else style="color: var(--el-text-color-secondary);">{{ $t('dashboard.filterRedirectNo') }}</span>
             </el-descriptions-item>
         </el-descriptions>
+        <!-- 限时状态：有效期中 / 已过期 / 永久有效 -->
+        <div class="detail-expiry-line">
+            <span class="detail-expiry-label">{{ $t('fileDetail.expiryCurrent') }}：</span>
+            <el-tag v-if="expiryAt" size="small" :type="expiryExpired ? 'danger' : 'success'">{{ expiryText }}</el-tag>
+            <span v-else class="detail-note-muted">{{ $t('fileDetail.expiryNever') }}</span>
+        </div>
+        <!-- 备注：仅上传者本人可见可改，后端也只对作者下发该字段 -->
+        <div class="detail-note" v-if="noteVisible && !trashMode">
+            <div class="detail-note-head">
+                <span class="detail-note-title">{{ $t('fileDetail.noteTitle') }}</span>
+                <span class="detail-note-hint">{{ $t('fileDetail.noteHint') }}</span>
+            </div>
+            <el-input
+                v-model="noteText"
+                type="textarea"
+                :rows="3"
+                maxlength="4000"
+                show-word-limit
+                :placeholder="$t('fileDetail.notePlaceholder')"
+            />
+            <div class="detail-note-actions">
+                <el-button size="small" type="primary" :loading="noteSaving" @click="saveNote">{{ $t('common.save') }}</el-button>
+            </div>
+        </div>
         <!-- 重命名弹窗 -->
         <el-dialog
             v-model="showRenameDialog"
@@ -269,6 +297,36 @@
                 <el-button type="primary" @click="submitRedirect(false)" :loading="redirectSaving">{{ $t('common.save') }}</el-button>
             </template>
         </el-dialog>
+        <!-- 限时弹窗：永久 / 有效时长 / 指定截止时间 -->
+        <el-dialog v-model="showExpiryDialog" :title="$t('fileDetail.expiryTitle')" :width="dialogWidth" append-to-body>
+            <el-radio-group v-model="expiryForm.mode" class="expiry-modes">
+                <el-radio label="forever">{{ $t('fileDetail.expiryForever') }}</el-radio>
+                <el-radio label="duration">{{ $t('fileDetail.expiryDuration') }}</el-radio>
+                <el-radio label="datetime">{{ $t('fileDetail.expiryDatetime') }}</el-radio>
+            </el-radio-group>
+            <div v-if="expiryForm.mode === 'duration'" class="expiry-row">
+                <el-input-number v-model="expiryForm.amount" :min="1" :max="9999" controls-position="right" />
+                <el-select v-model="expiryForm.unit" style="width: 110px; margin-left: 8px;">
+                    <el-option :label="$t('fileDetail.expiryUnitMinute')" value="m" />
+                    <el-option :label="$t('fileDetail.expiryUnitHour')" value="h" />
+                    <el-option :label="$t('fileDetail.expiryUnitDay')" value="d" />
+                </el-select>
+            </div>
+            <div v-if="expiryForm.mode === 'datetime'" class="expiry-row">
+                <el-date-picker
+                    v-model="expiryForm.at"
+                    type="datetime"
+                    :placeholder="$t('fileDetail.expiryDatetime')"
+                    value-format="YYYY-MM-DDTHH:mm:ss"
+                    style="width: 100%;"
+                />
+            </div>
+            <div class="redirect-tip">{{ $t('fileDetail.expiryTip') }}</div>
+            <template #footer>
+                <el-button @click="showExpiryDialog = false">{{ $t('common.cancel') }}</el-button>
+                <el-button type="primary" :loading="expirySaving" @click="submitExpiry">{{ $t('common.save') }}</el-button>
+            </template>
+        </el-dialog>
         </div>
     </el-dialog>
 </template>
@@ -302,7 +360,14 @@ export default {
                 // 关闭弹窗时退出编辑状态
                 this.isEditing = false;
                 this.editSaving = false;
+                this.noteLoaded = false;
+                this.noteVisible = false;
+                this.noteText = '';
+                this.expiryAt = 0;
+                return;
             }
+            // 打开时补拉一次元数据：限时截止时间 / 作者备注只在详情接口下发
+            this.loadExtraMeta();
         }
     },
     data() {
@@ -330,7 +395,17 @@ export default {
             // 重定向
             showRedirectDialog: false,
             redirectForm: { url: '' },
-            redirectSaving: false
+            redirectSaving: false,
+            // 限时（v2.1.0）
+            showExpiryDialog: false,
+            expirySaving: false,
+            expiryAt: 0,
+            expiryForm: { mode: 'forever', amount: 24, unit: 'h', at: '' },
+            // 备注（v2.1.0）：仅作者可见，noteVisible 由接口是否下发 Note 决定
+            noteLoaded: false,
+            noteVisible: false,
+            noteText: '',
+            noteSaving: false
         }
     },
     computed: {
@@ -419,6 +494,18 @@ export default {
         backupChannelList() {
             const list = this.file?.metadata?.BackupChannels;
             return Array.isArray(list) ? list : [];
+        },
+        /** 限时是否已过期 */
+        expiryExpired() {
+            return this.expiryAt > 0 && Date.now() > this.expiryAt;
+        },
+        /** 限时展示文本：永久 / 已过期 / 具体到期时间 */
+        expiryText() {
+            if (!this.expiryAt) return this.$t('fileDetail.expiryNever');
+            const d = new Date(this.expiryAt);
+            const pad = (n) => String(n).padStart(2, '0');
+            const text = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+            return this.expiryExpired ? `${this.$t('fileDetail.expiryExpired')}（${text}）` : text;
         },
         /** 文件类型展示值：MIME / 扩展名，如 image/jpeg / jpeg */
         fileTypeDisplay() {
@@ -526,6 +613,111 @@ export default {
         }
     },
     methods: {
+        /**
+         * 补拉详情接口：拿到「限时截止时间」与「作者备注」。
+         * 列表接口为了性能与隐私不下发这两项，所以每次打开弹窗按需取一次。
+         */
+        async loadExtraMeta() {
+            this.noteLoaded = false;
+            this.noteVisible = false;
+            this.noteText = '';
+            this.expiryAt = 0;
+            const name = this.file?.name;
+            if (!name) {
+                this.noteLoaded = true;
+                return;
+            }
+            try {
+                const res = await fetchWithAuth(`/api/manage/metadata/${encodeURIComponent(name)}`);
+                const json = await res.json().catch(() => ({}));
+                const data = json?.data || {};
+                this.expiryAt = Number(data?.metadata?.LinkExpiresAt || data?.LinkExpiresAt || 0) || 0;
+                if (data.Note !== undefined) {
+                    this.noteVisible = true;
+                    this.noteText = String(data.Note || '');
+                }
+            } catch {
+                /* 拉取失败不影响详情展示 */
+            } finally {
+                this.noteLoaded = true;
+            }
+        },
+        openExpiryDialog() {
+            if (this.expiryAt > Date.now()) {
+                const d = new Date(this.expiryAt);
+                const pad = (n) => String(n).padStart(2, '0');
+                this.expiryForm.mode = 'datetime';
+                this.expiryForm.at = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+            } else {
+                this.expiryForm.mode = 'forever';
+                this.expiryForm.amount = 24;
+                this.expiryForm.unit = 'h';
+                this.expiryForm.at = '';
+            }
+            this.showExpiryDialog = true;
+        },
+        async submitExpiry() {
+            const name = this.file?.name;
+            if (!name) return;
+            const body = {};
+            if (this.expiryForm.mode === 'forever') {
+                body.clear = true;
+            } else if (this.expiryForm.mode === 'duration') {
+                const mult = { m: 60, h: 3600, d: 86400 }[this.expiryForm.unit] || 60;
+                const amount = Number(this.expiryForm.amount) || 0;
+                if (amount <= 0) {
+                    ElMessage.warning(this.$t('fileDetail.expiryInvalid'));
+                    return;
+                }
+                body.seconds = amount * mult;
+            } else {
+                if (!this.expiryForm.at) {
+                    ElMessage.warning(this.$t('fileDetail.expiryInvalid'));
+                    return;
+                }
+                body.expiresAt = this.expiryForm.at;
+            }
+            this.expirySaving = true;
+            try {
+                const res = await fetchWithAuth(`/api/manage/expiry/${encodeURIComponent(name)}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                const json = await res.json().catch(() => ({}));
+                if (!res.ok || json.success === false) throw new Error(json.message || this.$t('fileDetail.metadataSaveFailed'));
+                this.expiryAt = Number(json?.data?.LinkExpiresAt || 0) || 0;
+                if (this.file?.metadata) this.file.metadata.LinkExpiresAt = this.expiryAt;
+                this.showExpiryDialog = false;
+                this.$emit('metadataUpdated', name, { LinkExpiresAt: this.expiryAt });
+                ElMessage.success(this.$t('fileDetail.expirySaved'));
+            } catch (err) {
+                ElMessage.error(err.message || this.$t('fileDetail.metadataSaveFailed'));
+            } finally {
+                this.expirySaving = false;
+            }
+        },
+        /** 保存作者备注（仅作者本人可见；后端也只接受作者写入） */
+        async saveNote() {
+            const name = this.file?.name;
+            if (!name) return;
+            this.noteSaving = true;
+            try {
+                const res = await fetchWithAuth(`/api/manage/metadata/${encodeURIComponent(name)}`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ Note: this.noteText })
+                });
+                const json = await res.json().catch(() => ({}));
+                if (!res.ok || json.success === false) throw new Error(json.message || this.$t('fileDetail.metadataSaveFailed'));
+                if (json?.data?.note !== undefined) this.noteText = String(json.data.note || '');
+                ElMessage.success(this.$t('fileDetail.noteSaved'));
+            } catch (err) {
+                ElMessage.error(err.message || this.$t('fileDetail.metadataSaveFailed'));
+            } finally {
+                this.noteSaving = false;
+            }
+        },
         handleVideoClick(e) {
             const video = e.target;
             if (video.paused) video.play();
@@ -937,6 +1129,61 @@ export default {
 .detail-folder-select {
     width: 100%;
 }
+
+/* 限时状态行 */
+.detail-expiry-line {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 6px 0 10px;
+    font-size: 13px;
+}
+.detail-expiry-label {
+    color: var(--el-text-color-regular);
+}
+/* 作者备注区 */
+.detail-note {
+    margin-top: 4px;
+    padding: 10px 12px;
+    border: 1px solid var(--el-border-color-lighter);
+    border-radius: 6px;
+    background: var(--el-fill-color-lighter);
+}
+.detail-note-head {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    margin-bottom: 6px;
+}
+.detail-note-title {
+    font-weight: 600;
+    font-size: 13px;
+    color: var(--el-text-color-primary);
+}
+.detail-note-hint {
+    font-size: 12px;
+    color: var(--el-text-color-secondary);
+}
+.detail-note-actions {
+    margin-top: 8px;
+    text-align: right;
+}
+.detail-note-muted {
+    color: var(--el-text-color-secondary);
+}
+/* 限时弹窗 */
+.expiry-modes {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 16px;
+    margin-bottom: 12px;
+}
+.expiry-row {
+    display: flex;
+    align-items: center;
+    margin-bottom: 8px;
+}
+
 @media (max-width: 768px) {
     .detail-actions {
         justify-content: center;

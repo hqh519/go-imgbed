@@ -51,6 +51,8 @@ model User {
   canEdit         Boolean  @default(true) // 允许编辑自身文件（重命名/元数据/标签）
   canDelete       Boolean  @default(true) // 允许删除自身文件
   linkEnabled     Boolean  @default(true) // 链接权限：关闭后该账户的文件外链（/file/*）不可访问
+  // 管理备注（v2.1.0）：仅管理员在「用户管理 → 编辑账户」里可见可改，绝不下发给普通用户
+  adminNote       String   @default("")
   enforceLimits   Boolean  @default(true) // 类型和大小限制：开启时受「允许上传格式 + 单文件大小上限」约束，关闭则跳过
   mainChannelId   String   @default("") // 该账户上传时优先使用的主渠道 ID（空 = 用全局）
   backupChannelId String   @default("") // 该账户上传时优先使用的备份渠道 ID（空 = 用全局）
@@ -118,6 +120,12 @@ model FileRecord {
   // 重定向地址：非空时 /file/:name 直接 302 到该地址（在不改图床外链的前提下替换真实文件源）；
   // 清空后自动恢复使用渠道真实直链。
   redirectUrl  String    @default("")
+  // 限时访问（v2.1.0）：非空时 /file/:name 只在该时刻之前可用，过期返回 410 Gone；
+  // 为空 = 永久有效（默认）。由文件详情页「限时」按钮设置/取消。
+  linkExpiresAt DateTime?
+  // 文件备注（v2.1.0）：仅上传者本人（作者）可见，管理端列表不下发；
+  // 与 metas 分开存，避免被通用的 metas 覆盖写回逻辑抹掉。
+  note         String    @default("")
   views        Int       @default(0) // 被访问次数（GET /file/:name 命中累计，管理端预览不计）
   status       String    @default("active") // active | deleted（deleted = 在回收站，可恢复）
   deletedAt    DateTime? // 进入回收站的时间；恢复时清空。排序/定期清理依据

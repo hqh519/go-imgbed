@@ -401,6 +401,10 @@ let LinkController = class LinkController {
         });
         if (!record)
             return res.status(404).send('Not Found');
+        if (record.linkExpiresAt && !adminPreview && !(0, auth_guard_1.isAdminRole)((0, auth_guard_1.currentSession)(req)?.role) && Date.now() > record.linkExpiresAt.getTime()) {
+            res.setHeader('Cache-Control', 'no-store');
+            return res.status(410).send('链接已过期');
+        }
         if (!(await this.checkAccess(req, res, record)))
             return;
         if (req.query.from !== 'admin') {
@@ -1115,10 +1119,71 @@ let ManageController = class ManageController {
         const rec = await this.resolveFile(wildcardParam(req), owner);
         if (!rec)
             return { success: false, message: '文件不存在' };
+        const metadata = (0, file_view_1.serializeFile)(rec, rec.copies, {
+            tags: rec.tags.map((t) => t.tag.name),
+            resolveDirectUrl: this.directUrlResolver(),
+        }).metadata;
+        metadata.LinkExpiresAt = rec.linkExpiresAt ? rec.linkExpiresAt.getTime() : 0;
         return {
             success: true,
-            data: { metas: rec.metas, name: rec.name, metadata: (0, file_view_1.serializeFile)(rec, rec.copies, { tags: rec.tags.map((t) => t.tag.name), resolveDirectUrl: this.directUrlResolver() }).metadata },
+            data: {
+                metas: rec.metas,
+                name: rec.name,
+                ...(this.isAuthor(req, rec) ? { note: rec.note, Note: rec.note } : {}),
+                metadata,
+            },
         };
+    }
+    isAuthor(req, rec) {
+        const me = (0, auth_guard_1.currentSession)(req)?.user || '';
+        if (!me)
+            return false;
+        const up = String(rec.uploader || '');
+        if (up)
+            return up === me;
+        return this.admin(req);
+    }
+    async setExpiry(req, body) {
+        if (!(await this.userPerm(req, 'edit')))
+            return { success: false, message: '没有编辑权限' };
+        const owner = this.admin(req) ? '' : (0, auth_guard_1.currentSession)(req)?.user || '';
+        const rec = await this.resolveFile(wildcardParam(req), owner);
+        if (!rec)
+            return { success: false, message: '文件不存在' };
+        if (!this.isAuthor(req, rec))
+            return { success: false, message: '只有上传者本人可以设置限时' };
+        let at = null;
+        if (!body?.clear) {
+            if (body?.expiresAt !== undefined && body?.expiresAt !== null && body?.expiresAt !== '') {
+                const raw = typeof body.expiresAt === 'number' ? body.expiresAt : Date.parse(String(body.expiresAt));
+                if (!Number.isFinite(raw))
+                    return { success: false, message: '截止时间格式不正确' };
+                at = new Date(raw);
+            }
+            else {
+                const sec = Number(body?.seconds);
+                if (!Number.isFinite(sec) || sec <= 0)
+                    return { success: false, message: '请设置有效时长或截止时间' };
+                at = new Date(Date.now() + sec * 1000);
+            }
+            if (at.getTime() <= Date.now())
+                return { success: false, message: '截止时间必须晚于当前时间' };
+        }
+        await prisma_1.prisma.fileRecord.update({ where: { id: rec.id }, data: { linkExpiresAt: at } });
+        return {
+            success: true,
+            data: { name: rec.name, LinkExpiresAt: at ? at.getTime() : 0, link: `${await this.linkPrefixSafe()}/${rec.name}` },
+        };
+    }
+    async linkPrefixSafe() {
+        try {
+            const s = this.settings;
+            const domain = await s.getServerDomain();
+            return (await s.getLinkPrefix(domain)).replace(/\/+$/, '');
+        }
+        catch {
+            return '';
+        }
     }
     async putMeta(req, body) {
         return this.saveMeta(req, body);
@@ -1141,6 +1206,11 @@ let ManageController = class ManageController {
         else {
             const cur = (0, file_view_1.safeParse)(rec.metas);
             const b = (body || {});
+            if (b.Note !== undefined || b.note !== undefined) {
+                if (!this.isAuthor(req, rec))
+                    return { success: false, message: '只有上传者本人可以编辑备注' };
+                patch.note = String(b.Note ?? b.note ?? '').slice(0, 4000);
+            }
             if (b.FileName !== undefined) {
                 const next = String(b.FileName || '').trim();
                 if (next)
@@ -1170,6 +1240,7 @@ let ManageController = class ManageController {
             data: {
                 metas: metasRaw,
                 name: rec.name,
+                ...(this.isAuthor(req, rec) ? { note: patch.note !== undefined ? patch.note : rec.note } : {}),
                 metadata: updated
                     ? (0, file_view_1.serializeFile)(updated, updated.copies, { tags: updated.tags.map((t) => t.tag.name), resolveDirectUrl: this.directUrlResolver() }).metadata
                     : undefined,
@@ -1522,6 +1593,14 @@ __decorate([
     __metadata("design:paramtypes", [Object]),
     __metadata("design:returntype", Promise)
 ], ManageController.prototype, "getMeta", null);
+__decorate([
+    (0, common_1.Post)('expiry/*'),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Object]),
+    __metadata("design:returntype", Promise)
+], ManageController.prototype, "setExpiry", null);
 __decorate([
     (0, common_1.Put)('metadata/*'),
     __param(0, (0, common_1.Req)()),

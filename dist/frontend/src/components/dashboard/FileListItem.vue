@@ -275,7 +275,7 @@ export default {
             const map = {
                 COS: 'cos', ALI: 'aliyun', MI: 'minio', R2: 'r2', S3: 's3',
                 EI: 'easyimages', LS: 'lsky', WD: 'webdav', IM: 'immich',
-                DIY: 'custom', LOCAL: 'local',
+                DIY: 'custom', LCL: 'local', LOCAL: 'local',
             };
             return map[String(short || '').toUpperCase()] || '';
         },

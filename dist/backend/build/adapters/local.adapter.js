@@ -28,6 +28,24 @@ class LocalAdapter {
         }
         return parts.join('/');
     }
+    static ownerSegment(owner) {
+        const s = String(owner || '')
+            .trim()
+            .replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_')
+            .replace(/^\.+$/, '')
+            .replace(/\/{2,}/g, '/');
+        return s || 'default';
+    }
+    static toRelativePathFor(key, owner) {
+        const rel = LocalAdapter.toRelativePath(key);
+        const rawHead = String(key || '')
+            .replace(/\\/g, '/')
+            .replace(/^\/+/, '')
+            .split('/')[0];
+        if (!/^\d{6}$/.test(rawHead))
+            return rel;
+        return `${LocalAdapter.ownerSegment(owner)}/${rel}`;
+    }
     static absolutePath(key) {
         const root = LocalAdapter.root();
         const abs = (0, path_1.normalize)((0, path_1.join)(root, LocalAdapter.toRelativePath(key)));
@@ -37,8 +55,9 @@ class LocalAdapter {
         }
         return abs;
     }
-    async upload(file, key, _channel) {
-        const abs = LocalAdapter.absolutePath(key);
+    async upload(file, key, _channel, ctx) {
+        const relKey = LocalAdapter.toRelativePathFor(key, ctx?.owner);
+        const abs = LocalAdapter.absolutePath(relKey);
         try {
             await fs_1.promises.mkdir((0, path_1.dirname)(abs), { recursive: true });
             await fs_1.promises.writeFile(abs, file.buffer);
@@ -46,7 +65,7 @@ class LocalAdapter {
         catch (err) {
             throw new adapter_interface_1.AdapterError(`写入本地文件失败：${err.message}`, 'local');
         }
-        return { remoteKey: LocalAdapter.toRelativePath(key), metas: { local: true } };
+        return { remoteKey: relKey, metas: { local: true, owner: LocalAdapter.ownerSegment(ctx?.owner) } };
     }
     async delete(copy, _channel) {
         const rel = String(copy.remoteKey || '');

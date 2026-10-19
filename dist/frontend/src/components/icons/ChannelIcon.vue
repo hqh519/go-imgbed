@@ -39,7 +39,7 @@ const CHANNEL_BADGE = {
     webdav: 'WD',
     immich: 'IM',
     custom: 'DIY',
-    local: 'LOCAL'
+    local: 'LCL'
 };
 
 const CHANNEL_LABEL = {

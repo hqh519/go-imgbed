@@ -108,12 +108,16 @@ export class UsersController {
       backupChannelId: u.backupChannelId,
       mainChannelName: cName.get(u.mainChannelId) || '',
       backupChannelName: cName.get(u.backupChannelId) || '',
+      // 管理备注（v2.1.0）：仅管理员可见，下面非管理员分支会剔除该字段
+      adminNote: u.adminNote || '',
       createdAt: u.createdAt,
     }));
-    // 普通用户：只返回自己这一条，看不到任何其它账户
+    // 普通用户：只返回自己这一条，看不到任何其它账户（也不下发管理备注）
     if (!this.isAdmin(req)) {
       const me = this.me(req);
-      return rows.filter((r) => r.username === me);
+      return rows
+        .filter((r) => r.username === me)
+        .map(({ adminNote: _omit, ...rest }) => rest);
     }
     // 管理员账户（不在 users 表中）也列为一行：可编辑，其配置存在 adminProfile
     const adminUser = await this.adminUsername();
@@ -135,6 +139,7 @@ export class UsersController {
         backupChannelId: backupId,
         mainChannelName: cName.get(mainId) || '',
         backupChannelName: cName.get(backupId) || '',
+        adminNote: String(prof.adminNote || ''),
         createdAt: null,
         builtin: true,
       });
@@ -236,6 +241,8 @@ export class UsersController {
       enforceLimits?: boolean;
       mainChannelId?: string;
       backupChannelId?: string;
+      /** 管理备注：仅管理员可见 */
+      adminNote?: string;
     },
   ) {
     if (!this.isAdmin(req)) return { success: false, message: '没有权限创建用户' };
@@ -265,6 +272,7 @@ export class UsersController {
         enforceLimits: body.enforceLimits !== false,
         mainChannelId: String(body.mainChannelId || ''),
         backupChannelId: String(body.backupChannelId || ''),
+        adminNote: String(body.adminNote || '').slice(0, 4000),
       },
     });
     return { success: true, data: { id: u.id } };
@@ -288,6 +296,8 @@ export class UsersController {
       enforceLimits?: boolean;
       mainChannelId?: string;
       backupChannelId?: string;
+      /** 管理备注：仅管理员可见 */
+      adminNote?: string;
     },
   ) {
     /*
@@ -303,6 +313,7 @@ export class UsersController {
       if (body.mainChannelId !== undefined) patch.mainChannelId = String(body.mainChannelId);
       if (body.backupChannelId !== undefined) patch.backupChannelId = String(body.backupChannelId);
       if (body.enforceLimits !== undefined) patch.enforceLimits = !!body.enforceLimits;
+      if (body.adminNote !== undefined) patch.adminNote = String(body.adminNote).slice(0, 4000);
       await this.sysConfig.save('adminProfile', patch);
       return { success: true };
     }
@@ -344,6 +355,7 @@ export class UsersController {
         ...(body.enforceLimits !== undefined ? { enforceLimits: !!body.enforceLimits } : {}),
         ...(body.mainChannelId !== undefined ? { mainChannelId: String(body.mainChannelId) } : {}),
         ...(body.backupChannelId !== undefined ? { backupChannelId: String(body.backupChannelId) } : {}),
+        ...(body.adminNote !== undefined ? { adminNote: String(body.adminNote).slice(0, 4000) } : {}),
       },
     });
     return { success: true };

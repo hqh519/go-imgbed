@@ -319,6 +319,22 @@
                 <el-form-item :label="$t('userManage.backupChannel')">
                     <ChannelSelect v-model="userForm.backupChannelId" kind="backup" class="full-width"/>
                 </el-form-item>
+                <!-- 管理备注（v2.1.0）：仅管理员可见，普通用户接口不下发 -->
+                <el-form-item v-if="isAdminRole">
+                    <template #label>
+                        <span>{{ $t('userManage.adminNote') }}
+                            <span class="admin-note-hint">{{ $t('userManage.adminNoteHint') }}</span>
+                        </span>
+                    </template>
+                    <el-input
+                        v-model="userForm.adminNote"
+                        type="textarea"
+                        :rows="3"
+                        maxlength="4000"
+                        show-word-limit
+                        :placeholder="$t('userManage.adminNotePlaceholder')"
+                    />
+                </el-form-item>
                 <el-form-item :label="$t('userManage.permissions')">
                     <div class="permission-row">
                         <span>{{ $t('userManage.canEdit') }}<el-switch v-model="userForm.canEdit" /></span>
@@ -585,7 +601,7 @@ export default {
         openCreateDialog() {
             this.editingUser = null;
             this.userForm = {
-                username: '', nickname: '', password: '',
+                username: '', nickname: '', password: '', adminNote: '',
                 mainChannelId: '', backupChannelId: '',
                 canEdit: true, canDelete: true, linkEnabled: true, enabled: true, enforceLimits: true
             };
@@ -600,6 +616,7 @@ export default {
             this.userForm = {
                 username: row.username,
                 nickname: row.nickname || '',
+                adminNote: row.adminNote || '',
                 password: '',
                 mainChannelId: row.mainChannelId || '',
                 backupChannelId: row.backupChannelId || '',
@@ -631,6 +648,7 @@ export default {
                 if (this.editingUser) {
                     res = await axios.put(`/api/manage/users/${this.editingUser.id}`, {
                         nickname: this.userForm.nickname,
+                        adminNote: this.userForm.adminNote,
                         mainChannelId: this.userForm.mainChannelId,
                         backupChannelId: this.userForm.backupChannelId,
                         canEdit: this.userForm.canEdit,
@@ -644,6 +662,7 @@ export default {
                         username: this.userForm.username,
                         password: this.userForm.password,
                         nickname: this.userForm.nickname,
+                        adminNote: this.userForm.adminNote,
                         mainChannelId: this.userForm.mainChannelId,
                         backupChannelId: this.userForm.backupChannelId,
                         canEdit: this.userForm.canEdit,
@@ -871,6 +890,12 @@ export default {
 
 <style scoped src="@/styles/admin-common.css"></style>
 <style scoped>
+.admin-note-hint {
+    font-size: 12px;
+    font-weight: 400;
+    color: var(--el-text-color-secondary);
+    margin-left: 6px;
+}
 .main-table {
     width: 95%;
     max-width: 1400px;
