@@ -63,7 +63,7 @@ export function channelTypeCode(type: string): number {
 }
 
 /** 全站统一的渠道排序：typeCode 升序 → code 升序 */
-export const CHANNEL_ORDER_BY = [{ typeCode: 'asc' as const }, { code: 'asc' as const }];
+export const CHANNEL_ORDER_BY = [{ typeCode: 'asc' as const }, { name: 'asc' as const }];
 
 /**
  * 生成「测试连接」用的测试图：512×512 的合法 PNG。

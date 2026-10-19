@@ -13,6 +13,7 @@ import { prisma } from './common/prisma';
 import { SESSION_COOKIE, parseSession } from './auth/auth.guard';
 import { rateLimiter } from './common/rate-limit';
 import { appLog } from './common/app-log';
+import { CryptoService } from './common/crypto.service';
 import { backendSub, frontendAppDir } from './common/project-paths';
 
 // 接管 console —— 此后所有 console.log/warn/error 都会进入后台「系统日志」
@@ -65,6 +66,51 @@ function clientIp(req: express.Request): string {
 function isLoopback(req: express.Request): boolean {
   const ip = clientIp(req);
   return ip === '127.0.0.1' || ip === '::1' || ip === 'localhost';
+}
+
+/**
+ * 首次安装写入初始管理员账户（幂等）。
+ *
+ * 取值：ADMIN_USER / ADMIN_PASSWORD，未配置时用 admin / go-imgbed。
+ * 只有在「users 表里没有任何管理员」时才写；已有管理员 → 直接返回，
+ * 保证后台改过的账号密码不会被下次启动覆盖。
+ */
+async function ensureInitialAdmin(): Promise<void> {
+  const adminCount = await prisma.user.count({ where: { role: 'admin' } });
+  if (adminCount > 0) return;
+
+  const username = (process.env.ADMIN_USER || 'admin').trim() || 'admin';
+  const password = process.env.ADMIN_PASSWORD || 'go-imgbed';
+  const hash = CryptoService.hashPassword(password);
+
+  const existing = await prisma.user.findUnique({ where: { username } });
+  if (existing) {
+    // 同名账户存在但不是管理员（历史数据）→ 提升为管理员并同步密码
+    await prisma.user.update({
+      where: { id: existing.id },
+      data: { role: 'admin', passwordHash: hash, uploadPassword: hash, enabled: true, canEdit: true, canDelete: true },
+    });
+    console.log(`[seed] 已把账户「${username}」提升为管理员（来自 ADMIN_USER / ADMIN_PASSWORD）`);
+    return;
+  }
+
+  await prisma.user.create({
+    data: {
+      username,
+      passwordHash: hash,
+      uploadPassword: hash,
+      nickname: '管理员',
+      role: 'admin',
+      enabled: true,
+      canEdit: true,
+      canDelete: true,
+    },
+  });
+  const fromEnv = !!(process.env.ADMIN_USER || process.env.ADMIN_PASSWORD);
+  console.log(
+    `[seed] 已创建初始管理员账户：${username}` +
+      `（密码取自 ${fromEnv ? 'ADMIN_PASSWORD' : '默认值 go-imgbed'}，请登录后台后立即修改）`,
+  );
 }
 
 async function bootstrap() {
@@ -219,6 +265,33 @@ async function bootstrap() {
     await app.get(ChannelsService).ensureBuiltinLocalChannel();
   } catch (err) {
     console.warn(`[local-channel] 内置本地存储渠道初始化失败：${(err as Error).message}`);
+  }
+
+  /*
+   * 初始管理员账户（v2.0.0）：首次安装把 yaml/.env 里的管理员配置落成 users 表里的
+   * 真实记录 —— 此后「用户管理」里能看到它，也能正常改密码/改权限。
+   *
+   *   · ADMIN_USER / ADMIN_PASSWORD 有配置 → 用配置值；
+   *   · 都没配置 → 用默认 admin / go-imgbed；
+   *   · 库里已存在管理员 → 完全不动（尊重后台改过的账号密码，重启不会回滚）。
+   *
+   * 说明：登录校验本身还有「环境变量兜底」通道（见 AuthController.verifyAccount），
+   * 所以即使这一步失败，首次登录也不会被卡住；但落库后才是完整的初始数据。
+   */
+  try {
+    await ensureInitialAdmin();
+  } catch (err) {
+    console.warn(`[seed] 初始管理员账户写入失败：${(err as Error).message}`);
+  }
+
+  // CONFIG_SECRET 缺失时 CryptoService 会退化成内置开发密钥 —— 渠道密钥虽能加密，
+  // 但任何人拿到代码就能解开。首次部署必须显式配置，这里给出醒目告警。
+  const secret = process.env.CONFIG_SECRET || '';
+  if (!secret || /^(please-change|change-me)/.test(secret)) {
+    console.warn(
+      '[security] ⚠️ CONFIG_SECRET 未配置或仍是模板默认值：渠道密钥将使用内置开发密钥加密，' +
+        '请尽快在 .env / compose 里设置随机长串（修改后已保存的渠道密钥需重新填写）。',
+    );
   }
 
   const port = Number(process.env.PORT || 3618);

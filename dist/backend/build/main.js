@@ -17,6 +17,7 @@ const prisma_1 = require("./common/prisma");
 const auth_guard_1 = require("./auth/auth.guard");
 const rate_limit_1 = require("./common/rate-limit");
 const app_log_1 = require("./common/app-log");
+const crypto_service_1 = require("./common/crypto.service");
 const project_paths_1 = require("./common/project-paths");
 app_log_1.appLog.patchConsole();
 let listCache = { at: 0, white: [], block: [], enabled: false };
@@ -60,6 +61,38 @@ function clientIp(req) {
 function isLoopback(req) {
     const ip = clientIp(req);
     return ip === '127.0.0.1' || ip === '::1' || ip === 'localhost';
+}
+async function ensureInitialAdmin() {
+    const adminCount = await prisma_1.prisma.user.count({ where: { role: 'admin' } });
+    if (adminCount > 0)
+        return;
+    const username = (process.env.ADMIN_USER || 'admin').trim() || 'admin';
+    const password = process.env.ADMIN_PASSWORD || 'go-imgbed';
+    const hash = crypto_service_1.CryptoService.hashPassword(password);
+    const existing = await prisma_1.prisma.user.findUnique({ where: { username } });
+    if (existing) {
+        await prisma_1.prisma.user.update({
+            where: { id: existing.id },
+            data: { role: 'admin', passwordHash: hash, uploadPassword: hash, enabled: true, canEdit: true, canDelete: true },
+        });
+        console.log(`[seed] 已把账户「${username}」提升为管理员（来自 ADMIN_USER / ADMIN_PASSWORD）`);
+        return;
+    }
+    await prisma_1.prisma.user.create({
+        data: {
+            username,
+            passwordHash: hash,
+            uploadPassword: hash,
+            nickname: '管理员',
+            role: 'admin',
+            enabled: true,
+            canEdit: true,
+            canDelete: true,
+        },
+    });
+    const fromEnv = !!(process.env.ADMIN_USER || process.env.ADMIN_PASSWORD);
+    console.log(`[seed] 已创建初始管理员账户：${username}` +
+        `（密码取自 ${fromEnv ? 'ADMIN_PASSWORD' : '默认值 go-imgbed'}，请登录后台后立即修改）`);
 }
 async function bootstrap() {
     const server = (0, express_1.default)();
@@ -161,6 +194,17 @@ async function bootstrap() {
     }
     catch (err) {
         console.warn(`[local-channel] 内置本地存储渠道初始化失败：${err.message}`);
+    }
+    try {
+        await ensureInitialAdmin();
+    }
+    catch (err) {
+        console.warn(`[seed] 初始管理员账户写入失败：${err.message}`);
+    }
+    const secret = process.env.CONFIG_SECRET || '';
+    if (!secret || /^(please-change|change-me)/.test(secret)) {
+        console.warn('[security] ⚠️ CONFIG_SECRET 未配置或仍是模板默认值：渠道密钥将使用内置开发密钥加密，' +
+            '请尽快在 .env / compose 里设置随机长串（修改后已保存的渠道密钥需重新填写）。');
     }
     const port = Number(process.env.PORT || 3618);
     await app.listen(port, '0.0.0.0');

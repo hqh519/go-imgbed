@@ -86,7 +86,7 @@ exports.CHANNEL_TYPE_CODE = {
 function channelTypeCode(type) {
     return exports.CHANNEL_TYPE_CODE[type] ?? 998;
 }
-exports.CHANNEL_ORDER_BY = [{ typeCode: 'asc' }, { code: 'asc' }];
+exports.CHANNEL_ORDER_BY = [{ typeCode: 'asc' }, { name: 'asc' }];
 async function makeTestPng() {
     try {
         const sharp = (await Promise.resolve().then(() => __importStar(require('sharp')))).default;
