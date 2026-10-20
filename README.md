@@ -9,4 +9,4 @@
 ---
 
 【版本说明】
-v2.0以下的版本使用的是 SQLite，v2.0.0及以上版本改为了 PostgreSQL
+** v2.0以下的版本使用的是 SQLite，v2.0.0及以上版本改为了 PostgreSQL **
