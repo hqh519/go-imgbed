@@ -214,6 +214,7 @@
                             <span class="channel-name">{{ channel.name }}</span>
                             <el-tag v-if="channel.isMain" size="small" type="success">主渠道</el-tag>
                             <el-tag v-else-if="channel.isBackup" size="small" type="warning">备份渠道</el-tag>
+                            <el-tag v-if="channel.backupPool" size="small" type="info">备用库</el-tag>
                         </div>
                         <el-switch
                             :model-value="channel.enabled"
@@ -257,6 +258,15 @@
                         <el-button text type="primary" size="small" @click="openEditDialog(channelType.value, channel)">
                             <font-awesome-icon icon="edit" style="margin-right: 4px;"/>编辑
                         </el-button>
+                        <el-button
+                            v-if="channel.type !== 'local'"
+                            text
+                            type="primary"
+                            size="small"
+                            @click="openAuthDialog(channel)"
+                        >
+                            <font-awesome-icon icon="user-cog" style="margin-right: 4px;"/>授权
+                        </el-button>
                         <el-dropdown trigger="click" @command="(cmd) => handleCardCommand(cmd, channel)">
                             <el-button text type="primary" size="small">
                                 <font-awesome-icon icon="ellipsis-h" style="margin-right: 4px;"/>更多
@@ -268,6 +278,9 @@
                                     </el-dropdown-item>
                                     <el-dropdown-item command="setBackup" :disabled="channel.isBackup">
                                         <font-awesome-icon icon="copy" style="margin-right: 6px;"/>设为备份渠道
+                                    </el-dropdown-item>
+                                    <el-dropdown-item command="togglePool">
+                                        <font-awesome-icon icon="database" style="margin-right: 6px;"/>{{ channel.backupPool ? '取消备用库' : '设为备用库' }}
                                     </el-dropdown-item>
                                     <el-dropdown-item
                                         command="clearFlag"
@@ -291,6 +304,38 @@
                 <span>暂无 {{ channelType.label }} 渠道</span>
             </div>
         </div>
+
+        <!-- 用户授权弹窗：勾选哪些账户可以使用该渠道 -->
+        <el-dialog
+            v-model="showAuthDialog"
+            :title="`用户授权 - ${authChannel?.name || ''}`"
+            class="channel-dialog auth-dialog"
+            width="560px"
+        >
+            <div class="auth-tip">
+                <font-awesome-icon icon="info-circle" style="margin-right: 6px;"/>
+                仅被勾选的账户能在自己的上传设置里看到并使用该渠道；管理员不受限制，始终可用。
+            </div>
+            <div v-loading="authLoading" class="auth-body">
+                <el-checkbox-group v-model="authSelected" v-if="authUsers.length">
+                    <el-checkbox
+                        v-for="u in authUsers"
+                        :key="u.username"
+                        :label="u.username"
+                        class="auth-item"
+                    >
+                        <span class="auth-name">{{ u.nickname || u.username }}</span>
+                        <span class="auth-account">{{ u.username }}</span>
+                        <el-tag v-if="u.role === 'admin' || u.role === 'super'" size="small" type="success" effect="plain">管理员</el-tag>
+                    </el-checkbox>
+                </el-checkbox-group>
+                <div v-else class="auth-empty">暂无其它账户，可先在「用户管理」里创建账户。</div>
+            </div>
+            <template #footer>
+                <el-button @click="showAuthDialog = false">取消</el-button>
+                <el-button type="primary" :loading="authSaving" @click="saveAuth">保存授权</el-button>
+            </template>
+        </el-dialog>
 
         <!-- 添加渠道弹窗 -->
         <el-dialog
@@ -506,6 +551,14 @@ export default {
             testResult: null,
             saving: false,
             loading: false,
+
+            // 用户授权弹窗
+            showAuthDialog: false,
+            authChannel: null,
+            authUsers: [],
+            authSelected: [],
+            authLoading: false,
+            authSaving: false,
 
             formRules: {
                 type: [{ required: true, message: '请选择渠道类型', trigger: 'change' }],
@@ -780,8 +833,79 @@ export default {
         async handleCardCommand(cmd, channel) {
             if (cmd === 'setMain') return this.patchChannel(channel.id, { isMain: true, isBackup: false });
             if (cmd === 'setBackup') return this.patchChannel(channel.id, { isBackup: true, isMain: false });
+            if (cmd === 'togglePool') return this.togglePool(channel);
             if (cmd === 'clearFlag') return this.patchChannel(channel.id, { isMain: false, isBackup: false });
             if (cmd === 'delete') return this.deleteChannel(channel);
+        },
+
+        /* ------------ 备用库（主渠道失败时的轮换池） ------------ */
+        async togglePool(channel) {
+            const enabled = !channel.backupPool;
+            try {
+                const resp = await fetchWithAuth(`/api/manage/channels/${channel.id}/pool`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ enabled })
+                });
+                const data = await resp.json();
+                if (data.success) {
+                    this.$message.success(
+                        enabled
+                            ? `已设为备用库（当前共 ${data.data?.count ?? 1} 个）：主渠道上传失败时会轮流切换到这里`
+                            : '已取消备用库'
+                    );
+                    await this.loadChannels();
+                } else {
+                    this.$message.error(data.message || '操作失败');
+                }
+            } catch (e) {
+                this.$message.error('操作失败：' + e.message);
+            }
+        },
+
+        /* ------------ 用户授权 ------------ */
+        async openAuthDialog(channel) {
+            this.authChannel = channel;
+            this.authUsers = [];
+            this.authSelected = [];
+            this.showAuthDialog = true;
+            this.authLoading = true;
+            try {
+                const resp = await fetchWithAuth(`/api/manage/channels/${channel.id}/authorize`);
+                const data = await resp.json();
+                if (data.success) {
+                    this.authUsers = data.data?.users || [];
+                    this.authSelected = data.data?.authorizedUsers || [];
+                } else {
+                    this.$message.error(data.message || '加载授权名单失败');
+                }
+            } catch (e) {
+                this.$message.error('加载授权名单失败：' + e.message);
+            } finally {
+                this.authLoading = false;
+            }
+        },
+        async saveAuth() {
+            if (!this.authChannel) return;
+            this.authSaving = true;
+            try {
+                const resp = await fetchWithAuth(`/api/manage/channels/${this.authChannel.id}/authorize`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ usernames: this.authSelected })
+                });
+                const data = await resp.json();
+                if (data.success) {
+                    this.$message.success('授权已保存');
+                    this.showAuthDialog = false;
+                } else {
+                    this.$message.error(data.message || '保存失败');
+                }
+            } catch (e) {
+                this.$message.error('保存失败：' + e.message);
+            } finally {
+                this.authSaving = false;
+            }
         },
         async patchChannel(id, patch) {
             try {
@@ -1210,6 +1334,61 @@ export default {
     padding: 36px 20px;
     color: var(--el-text-color-placeholder);
     gap: 12px;
+}
+
+/* ---------- 用户授权弹窗 ---------- */
+.auth-tip {
+    display: flex;
+    align-items: flex-start;
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--el-text-color-secondary);
+    background: var(--el-fill-color-lighter);
+    border-radius: 6px;
+    padding: 10px 12px;
+    margin-bottom: 12px;
+}
+
+.auth-body {
+    max-height: 46vh;
+    overflow-y: auto;
+    min-height: 80px;
+}
+
+.auth-body :deep(.el-checkbox-group) {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.auth-item {
+    display: flex;
+    align-items: center;
+    height: auto;
+    padding: 7px 4px;
+    margin-right: 0;
+    border-radius: 6px;
+}
+
+.auth-item:hover {
+    background: var(--el-fill-color-light);
+}
+
+.auth-name {
+    margin-right: 8px;
+}
+
+.auth-account {
+    font-size: 12px;
+    color: var(--el-text-color-secondary);
+    margin-right: 8px;
+}
+
+.auth-empty {
+    padding: 24px 0;
+    text-align: center;
+    color: var(--el-text-color-placeholder);
+    font-size: 13px;
 }
 
 .empty-icon {

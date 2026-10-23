@@ -1,7 +1,8 @@
-import { Body, Controller, Delete, Get, Injectable, Param, Post, Put, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Injectable, Param, Post, Put, Query, Req, UseGuards } from '@nestjs/common';
+import { Request } from 'express';
 import { prisma } from '../common/prisma';
 import { CryptoService } from '../common/crypto.service';
-import { AdminGuard } from '../auth/auth.guard';
+import { AdminGuard, ManageAuthGuard, currentSession, isAdminRole } from '../auth/auth.guard';
 import { SettingsService } from '../settings/settings.service';
 import { createAdapter } from '../adapters/adapter.factory';
 import { ChannelInfo } from '../adapters/adapter.interface';
@@ -215,6 +216,10 @@ export class ChannelsService {
   }
 }
 
+/** 渠道授权判定（实现在 common/channel-access，这里转出供其它模块复用） */
+import { channelVisibleTo, parseAuthorizedUsers } from '../common/channel-access';
+export { channelVisibleTo, parseAuthorizedUsers };
+
 @Controller('api/channels')
 export class ChannelsController {
   constructor(private svc: ChannelsService) {}
@@ -222,16 +227,22 @@ export class ChannelsController {
   /**
    * 上传页 / 管理页共用：按渠道类型分组返回（兼容原系统契约）
    *   { cos: [{id,name,enabled,isMain,isBackup,config}], minio: [...], ... }
+   *
+   * v202610221824 起按「用户授权」过滤：普通用户只拿到自己被授权的渠道 + 本地存储。
    */
   @Get()
-  async list(@Query('includeDisabled') includeDisabled?: string) {
+  async list(@Req() req: Request, @Query('includeDisabled') includeDisabled?: string) {
+    const session = currentSession(req);
+    const admin = isAdminRole(session?.role);
+    const username = session?.user || '';
     const channels = await prisma.channel.findMany({
-      where: includeDisabled === 'true' ? {} : { enabled: true },
+      where: includeDisabled === 'true' && admin ? {} : { enabled: true },
       // 统一下拉排序：渠道类型编号升序 → 渠道 ID 升序
       orderBy: CHANNEL_ORDER_BY,
     });
     const grouped: Record<string, unknown[]> = {};
     for (const c of channels) {
+      if (!channelVisibleTo(c.authorizedUsers, c.type, username, admin)) continue;
       if (!grouped[c.type]) grouped[c.type] = [];
       grouped[c.type].push({
         id: c.id,
@@ -242,6 +253,7 @@ export class ChannelsController {
         enabled: c.enabled,
         isMain: c.isMain,
         isBackup: c.isBackup,
+        backupPool: c.backupPool,
         config: this.svc.maskConfig(c.type, c.config),
       });
     }
@@ -375,6 +387,9 @@ export class ChannelManageController {
         enabled: c.enabled,
         isMain: c.isMain,
         isBackup: c.isBackup,
+        // 备用库（可多条）与用户授权名单 —— 后台渠道卡片的「更多」菜单与授权弹窗据此渲染
+        backupPool: c.backupPool,
+        authorizedUsers: parseAuthorizedUsers(c.authorizedUsers),
         sortOrder: c.sortOrder,
         config,
         quota: {
@@ -583,6 +598,95 @@ export class ChannelManageController {
     } catch (err) {
       return { success: false, message: (err as Error).message, data: { elapsedMs: Date.now() - started } };
     }
+  }
+
+  /**
+   * 设为 / 取消「备用库」（v202610221824）。
+   *
+   * 与「备份渠道」不同：
+   *   - 备份渠道 isBackup 全局唯一，是主备双写的目标，失败只记日志不重传；
+   *   - 备用库 backupPool 可以多个，是主渠道失败后的轮换池 —— 上传失败时
+   *     按轮转游标依次尝试，直到有一条成功。
+   */
+  @Post(':id/pool')
+  async setPool(@Param('id') id: string, @Body() body: { enabled?: boolean }) {
+    const ch = await prisma.channel.findUnique({ where: { id } });
+    if (!ch) return { success: false, message: '渠道不存在' };
+    const enabled = body.enabled !== false;
+    await prisma.channel.update({ where: { id }, data: { backupPool: enabled } });
+    const count = await prisma.channel.count({ where: { backupPool: true } });
+    return { success: true, data: { backupPool: enabled, count } };
+  }
+
+  /** 渠道的授权用户名单 + 全部账户候选 */
+  @Get(':id/authorize')
+  async getAuthorize(@Param('id') id: string) {
+    const ch = await prisma.channel.findUnique({ where: { id } });
+    if (!ch) return { success: false, message: '渠道不存在' };
+    const users = await prisma.user.findMany({
+      orderBy: { createdAt: 'asc' },
+      select: { username: true, nickname: true, role: true, avatar: true },
+    });
+    return {
+      success: true,
+      data: {
+        authorizedUsers: parseAuthorizedUsers(ch.authorizedUsers),
+        users: users.map((u) => ({
+          username: u.username,
+          nickname: u.nickname || u.username,
+          role: u.role,
+          avatar: u.avatar || '',
+        })),
+      },
+    };
+  }
+
+  /** 保存授权用户名单（传空数组 = 取消所有人的授权） */
+  @Post(':id/authorize')
+  async setAuthorize(@Param('id') id: string, @Body() body: { usernames?: string[] }) {
+    const ch = await prisma.channel.findUnique({ where: { id } });
+    if (!ch) return { success: false, message: '渠道不存在' };
+    const wanted = Array.isArray(body.usernames) ? body.usernames.map((x) => String(x || '').trim()).filter(Boolean) : [];
+    // 只保留真实存在的账户，防止脏名字写进配置
+    const exists = await prisma.user.findMany({
+      where: { username: { in: wanted } },
+      select: { username: true },
+    });
+    const valid = exists.map((u) => u.username);
+    await prisma.channel.update({ where: { id }, data: { authorizedUsers: JSON.stringify(valid) } });
+    return { success: true, data: { authorizedUsers: valid } };
+  }
+
+  /**
+   * 某账户可用的渠道列表（下拉框数据源）。
+   *   管理员 → 可查任意账户（username 参数），不传则返回全部渠道；
+   *   普通用户 → 只能查自己，返回自己被授权的渠道 + 本地存储。
+   */
+  @Get('allowed/list')
+  async allowed(@Req() req: Request, @Query('username') username?: string) {
+    const session = currentSession(req);
+    const admin = isAdminRole(session?.role);
+    const target = String(username || session?.user || '').trim();
+    if (!admin && target && target !== session?.user) {
+      return { success: false, message: '只能查看自己的渠道' };
+    }
+    const channels = await prisma.channel.findMany({
+      where: { enabled: true },
+      orderBy: CHANNEL_ORDER_BY,
+    });
+    const list = channels
+      .filter((c) => (admin && !target ? true : channelVisibleTo(c.authorizedUsers, c.type, target, admin)))
+      .map((c) => ({
+        id: c.id,
+        code: c.code,
+        name: c.name,
+        type: c.type,
+        typeCode: c.typeCode,
+        isMain: c.isMain,
+        isBackup: c.isBackup,
+        backupPool: c.backupPool,
+      }));
+    return { success: true, data: list };
   }
 
   @Delete(':id')

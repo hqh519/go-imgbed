@@ -32,10 +32,14 @@ export class WebdavAdapter implements StorageAdapter {
     if (!channel.config.baseUri) throw new AdapterError('缺少 baseUri 配置', channel.type);
     const url = this.fullPath(key, channel);
     // 逐级建目录（PUT 对不存在的父目录会 409）
+    // 目录来源有两段：固定「存储目录」+ key 自带的对象前缀（{y}/{m}/ 渲染后的 2026/10/），
+    // 两段都要建，否则按日期分目录后第一次上传必然 409。
     const base = this.baseOf(channel);
     const dir = (channel.config.directory || '').replace(/^\/+|\/+$/g, '');
-    if (dir) {
-      const parts = dir.split('/');
+    const keyDir = key.includes('/') ? key.slice(0, key.lastIndexOf('/')) : '';
+    const fullDir = [dir, keyDir].filter(Boolean).join('/');
+    if (fullDir) {
+      const parts = fullDir.split('/').filter(Boolean);
       for (let i = 1; i <= parts.length; i++) {
         const p = `${base}/${parts.slice(0, i).join('/')}`;
         try {

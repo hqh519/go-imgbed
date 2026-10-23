@@ -668,6 +668,7 @@ import { validateFolderPath } from '@/utils/pathValidator';
 import { copyText } from '@/utils/clipboard';
 import { getLinkPrefix } from '@/utils/fileLink';
 import backgroundManager from '@/mixins/backgroundManager';
+import pageActivation from '@/mixins/pageActivation';
 import { ref } from 'vue';
 import { useDragSelect } from '@/utils/dashboard/useDragSelect.js';
 
@@ -686,7 +687,7 @@ function getStoredOption(key, validValues, fallback) {
 
 export default {
 name: 'AdminDashBoard',
-mixins: [backgroundManager],
+mixins: [backgroundManager, pageActivation],
 data() {
     return {
         Number: 0,
@@ -1013,6 +1014,10 @@ watch: {
     }
 },
 methods: {
+    // 页面重新激活（长时间未操作 / 从浏览器后台切回）时刷新数据，避免白屏或数据过期
+    onPageActivate() {
+        this.fetchFileList({ preserveSelection: true });
+    },
     // 切换视图模式
     setViewMode(mode) {
         if (this.viewMode === mode) {

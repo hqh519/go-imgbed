@@ -52,6 +52,7 @@ export default {
       this.initOverlayScrollbars()
       this.setupImageViewerObserver()
     })
+    this.setupPageActivation()
   },
   beforeUnmount() {
     // 清理 MutationObserver
@@ -62,6 +63,45 @@ export default {
   watch: {
   },
   methods: {
+    /**
+     * 页面「自动激活」（v202610221824）。
+     *
+     * 问题：浏览器标签页长时间挂着、或关掉再打开（含 bfcache 前进后退），
+     * 页面回来时是「冻结」时的样子 —— 数据不刷新，偶发还是一片空白，只能手动刷新。
+     * 解决：重新可见 / bfcache 恢复 / 窗口聚焦时，
+     *   1) 重拉一次用户配置（主题、语言、公告等全局状态）；
+     *   2) 派发 goimgbed:activate 事件，各页面按需重新加载自己的数据；
+     *   3) bfcache 恢复时重建 OverlayScrollbars（实例会随页面冻结失效）。
+     * 30 秒节流：只是切一下标签页不会造成接口风暴。
+     */
+    setupPageActivation() {
+      let lastActive = 0
+      const activate = (reason) => {
+        if (document.hidden) return
+        const now = Date.now()
+        if (reason !== 'pageshow' && now - lastActive < 30 * 1000) return
+        lastActive = now
+        this.$store.dispatch('fetchUserConfig').catch(() => {})
+        window.dispatchEvent(new CustomEvent('goimgbed:activate', { detail: { reason } }))
+        if (reason === 'pageshow') {
+          // bfcache 恢复：滚动条实例已失效，重建一次
+          try {
+            if (OverlayScrollbars.valid(document.body)) {
+              this.osInstance = OverlayScrollbars(document.body)
+            }
+          } catch (e) {
+            /* 忽略：滚动条重建失败不影响业务 */
+          }
+        }
+      }
+      document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) activate('visible')
+      })
+      window.addEventListener('pageshow', (e) => {
+        if (e.persisted) activate('pageshow')
+      })
+      window.addEventListener('focus', () => activate('focus'))
+    },
     openSecuritySettings() {
       this.$store.commit('dismissAdminAuthWarning')
       this.$router.push('/systemConfig#security')

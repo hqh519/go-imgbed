@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { prisma } from '../common/prisma';
 import { SysConfigService } from '../settings/sysconfig.service';
+import { channelVisibleTo } from '../common/channel-access';
 
 /**
  * 默认存储渠道 / 备份渠道的【统一获取入口】。
@@ -56,6 +57,8 @@ export interface StorageChannelInfo {
   name: string;
   type: string;
   config: string;
+  /** 授权用户名 JSON 数组（普通用户只能使用自己被授权的渠道） */
+  authorizedUsers?: string;
 }
 
 /** 关闭备份的哨兵值（API 的 backup 参数传 none / __none__ 表示本次不备份） */
@@ -96,7 +99,31 @@ export class StorageChannelService {
       (await prisma.channel.findUnique({ where: { id: k } })) ||
       null;
     if (!c || !c.enabled) return null;
-    return { id: c.id, code: c.code, name: c.name, type: c.type, config: c.config };
+    return {
+      id: c.id,
+      code: c.code,
+      name: c.name,
+      type: c.type,
+      config: c.config,
+      authorizedUsers: c.authorizedUsers,
+    };
+  }
+
+  /**
+   * 调用方身份：'user' 时启用「用户授权」过滤。
+   * 返回 null 表示未知账户（匿名 / 内建管理员 / 已删除账户）—— 保持历史行为不过滤，
+   * 避免 WebDAV、API Token 等无账户上下文的通道被误伤。
+   */
+  private async uploaderRole(uploader?: string): Promise<'admin' | 'user' | null> {
+    const name = String(uploader || '').trim();
+    if (!name) return null;
+    try {
+      const u = await prisma.user.findUnique({ where: { username: name }, select: { role: true } });
+      if (!u) return null;
+      return u.role === 'admin' ? 'admin' : 'user';
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -109,8 +136,21 @@ export class StorageChannelService {
   ): Promise<StorageChannelInfo[]> {
     const out: StorageChannelInfo[] = [];
     const seen = new Set<string>();
+    /*
+     * 用户授权过滤（v202610221824）：
+     * 只有「已登录的普通用户」这一种身份会被限制 —— 他们只能使用
+     * 渠道「用户授权」里勾选过的渠道（本地存储恒可用）。
+     * 匿名 / 管理员 / WebDAV / API Token 保持历史行为，不做过滤。
+     */
+    const role = await this.uploaderRole(q.uploader);
+    const restrictToUser = role === 'user';
+    const allow = (c: StorageChannelInfo | null): c is StorageChannelInfo => {
+      if (!c) return false;
+      if (!restrictToUser) return true;
+      return channelVisibleTo(c.authorizedUsers, c.type, String(q.uploader || ''), false);
+    };
     const push = (c: StorageChannelInfo | null) => {
-      if (c && !seen.has(c.id)) {
+      if (c && allow(c) && !seen.has(c.id)) {
         seen.add(c.id);
         out.push(c);
       }
@@ -149,7 +189,7 @@ export class StorageChannelService {
       where: kind === 'backup' ? { isBackup: true, enabled: true } : { isMain: true, enabled: true },
       orderBy: { sortOrder: 'asc' },
     });
-    for (const g of globals) push({ id: g.id, code: g.code, name: g.name, type: g.type, config: g.config });
+    for (const g of globals) push({ id: g.id, code: g.code, name: g.name, type: g.type, config: g.config, authorizedUsers: g.authorizedUsers });
 
     // 5) 兜底：上面都没取到时，按「渠道类型」在本类型内选（主渠道优先、再按排序）
     if (out.length === 0 && q.channelType) {
@@ -157,7 +197,7 @@ export class StorageChannelService {
         where: { type: q.channelType, enabled: true },
         orderBy: [{ isMain: 'desc' }, { sortOrder: 'asc' }],
       });
-      for (const c of byType) push({ id: c.id, code: c.code, name: c.name, type: c.type, config: c.config });
+      for (const c of byType) push({ id: c.id, code: c.code, name: c.name, type: c.type, config: c.config, authorizedUsers: c.authorizedUsers });
     }
 
     return out;

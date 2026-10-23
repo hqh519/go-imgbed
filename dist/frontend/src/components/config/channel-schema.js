@@ -84,7 +84,7 @@ export const TYPE_TIPS = {
     lsky: 'Lsky Pro 兰空图床：v2 版接口为 /api/v1/upload，需带上 Authorization 头；v1 版响应路径为 data.url。',
     webdav: 'WebDAV 作为「存储渠道」：直接 PUT 文件到你的网盘，与「对外提供 WebDAV 服务」无关。地址同样支持内网 IP / 容器名（如 nas.local:5005/dav）。',
     immich: 'Immich 走专属通道：按「去重检查 → 上传 → 入相册 → 建分享链接」四步流程实现，外链为分享原图地址。服务地址支持填容器名（如 immich:2283）走内网。',
-    custom: '自定义 Web 存储：只需「上传接口地址 + 文件字段名 + 响应 URL 路径」三件套即可接入任意 HTTP 图床；需要鉴权或附加参数时，用「自定义请求头 (JSON)」和「附加表单字段 (JSON)」。同时兼容主流通用 API：请求方法可选 POST/PUT/PATCH，请求体可选 multipart 或 JSON+Base64，响应 URL 路径支持多候选与自动探测，相对路径响应会自动补全域名。'
+    custom: '自定义 Web 存储：只需「上传接口地址 + 文件字段名 + 响应 URL 路径」三件套即可接入任意 HTTP 图床；需要鉴权或附加参数时，用「自定义请求头 (JSON)」和「自定义Body (JSON)」。同时兼容主流通用 API：请求方法可选 POST/PUT/PATCH，请求体可选 multipart 或 JSON+Base64，响应 URL 路径支持多候选与自动探测，相对路径响应会自动补全域名。'
 };
 
 const f = (key, label, extra = {}) => ({ key, label, type: 'text', ...extra });
@@ -104,6 +104,19 @@ const INTERNAL_ADDR_TIP =
     '支持内网直连：可直接填内网 IP 或 Docker 容器名（如 minio:9000、immich:2283、lsky:8080、192.168.1.10:9000、nas.local）。' +
     '与图床在同一网络时走内网通信、上传更快。不写协议时自动判断：内网 / 容器名按 http，公网域名按 https。' +
     '渠道通信由服务端发起，因此图床对外是 https 也不影响用内网地址连接。';
+
+const OBJECT_PREFIX_TIP =
+    '对象前缀决定文件在存储桶 / 网盘里的目录层级，支持占位符：' +
+    '{y} 年（4 位）、{m} 月（2 位）、{d} 日（2 位）。' +
+    '例如填 {y}/{m}/ 会存成 2026/10/xxx.png；' +
+    '留空等价于 {y}/{m}（即默认按「年份/月份」归档）。末尾斜杠会自动补齐，重复斜杠会自动合并。';
+
+const CUSTOM_NAME_TIP =
+    '自定义文件命名，支持占位符：' +
+    '{filename} 原文件名（不含扩展名）、{uuid} 随机 UUID、{md5} 文件 MD5、' +
+    '{timestamp} 13 位毫秒时间戳、{ext} 扩展名（不含点）。' +
+    '例如 {filename}-{timestamp} 会生成 photo-1730112000000.png。' +
+    '留空则使用默认「文件名-时间戳」；模板里没写 {ext} 时会自动补上原扩展名。';
 
 /** 外链域名（publicDomain）类字段的提示 —— 与上传通道区分开 */
 const PUBLIC_DOMAIN_TIP =
@@ -150,7 +163,8 @@ export const CHANNEL_FIELDS = {
         f('secretId', 'SecretId', { type: 'password', required: true, secret: true }),
         f('secretKey', 'SecretKey', { type: 'password', required: true, secret: true }),
         f('pathStyle', 'Path-Style 寻址', { type: 'switch', def: false }),
-        f('keyPrefix', '指定存储路径（可选）', { placeholder: 'zblog/' }),
+        f('objectPrefix', '对象前缀（可选）', { placeholder: '{y}/{m}/', tip: OBJECT_PREFIX_TIP }),
+        f('customName', '自定义文件命名（可选）', { placeholder: '{filename}-{timestamp}', tip: CUSTOM_NAME_TIP }),
         f('suffix', '外链后缀（可选）', {
             placeholder: '?imageMogr2/thumbnail/800x',
             tip: '拼接在外链末尾的图片处理参数（对齐 PHP 案例的 tencent_suffix），如 COS 数据万象的 ?imageMogr2。'
@@ -172,7 +186,8 @@ export const CHANNEL_FIELDS = {
             tip: 'MinIO 需将桶设为公开读；这里填写可直接访问的前缀地址（host 或 host/bucket）。' + PUBLIC_DOMAIN_TIP
         }),
         f('pathStyle', 'Path-Style 寻址', { type: 'switch', def: true, tip: 'MinIO 必须开启 Path-Style。' }),
-        f('keyPrefix', '对象前缀（可选）', { placeholder: 'img/' })
+        f('objectPrefix', '对象前缀（可选）', { placeholder: '{y}/{m}/', tip: OBJECT_PREFIX_TIP }),
+        f('customName', '自定义文件命名（可选）', { placeholder: '{filename}-{timestamp}', tip: CUSTOM_NAME_TIP })
     ],
     r2: () => [
         f('endpoint', '账户 ID 或 Endpoint', {
@@ -190,7 +205,8 @@ export const CHANNEL_FIELDS = {
             placeholder: 'https://pub-xxxx.r2.dev',
             tip: 'R2 直链需要开启公开访问（r2.dev 子域或绑定的自定义域名）。' + PUBLIC_DOMAIN_TIP
         }),
-        f('keyPrefix', '对象前缀（可选）', { placeholder: 'img/' })
+        f('objectPrefix', '对象前缀（可选）', { placeholder: '{y}/{m}/', tip: OBJECT_PREFIX_TIP }),
+        f('customName', '自定义文件命名（可选）', { placeholder: '{filename}-{timestamp}', tip: CUSTOM_NAME_TIP })
     ],
     s3: () => [
         f('endpoint', 'Endpoint', {
@@ -207,7 +223,8 @@ export const CHANNEL_FIELDS = {
             placeholder: 'https://cdn.example.com',
             tip: '留空则按 endpoint + bucket 自动拼接外链。' + PUBLIC_DOMAIN_TIP
         }),
-        f('keyPrefix', '对象前缀（可选）', { placeholder: 'img/' }),
+        f('objectPrefix', '对象前缀（可选）', { placeholder: '{y}/{m}/', tip: OBJECT_PREFIX_TIP }),
+        f('customName', '自定义文件命名（可选）', { placeholder: '{filename}-{timestamp}', tip: CUSTOM_NAME_TIP }),
         f('userAgent', '自定义 User-Agent（可选）', {
             placeholder: 'CloudFlare-ImgBed',
             tip: '部分 S3 兼容服务商把访问密钥与特定 UA 绑定，配置后请求头将直接替换为该值（只能包含可打印 ASCII 字符）。'
@@ -235,7 +252,8 @@ export const CHANNEL_FIELDS = {
             def: false,
             tip: '默认走 bucket.域名/key（虚拟主机风格）。若使用内网端点或代理网关不支持子域名，可开启后改用 域名/bucket/key。'
         }),
-        f('keyPrefix', '指定存储路径（可选）', { placeholder: 'imgbed/' }),
+        f('objectPrefix', '对象前缀（可选）', { placeholder: '{y}/{m}/', tip: OBJECT_PREFIX_TIP }),
+        f('customName', '自定义文件命名（可选）', { placeholder: '{filename}-{timestamp}', tip: CUSTOM_NAME_TIP }),
         f('suffix', '外链后缀（可选）', {
             placeholder: '?x-oss-process=image/resize,w_800',
             tip: '拼接在外链末尾的图片处理参数（OSS 图片处理为 x-oss-process），如 ?x-oss-process=image/resize,w_800/quality,q_80。'
@@ -296,7 +314,9 @@ export const CHANNEL_FIELDS = {
         }),
         f('username', '用户名', { placeholder: 'user' }),
         f('password', '密码 / 应用密码', { type: 'password', secret: true }),
-        f('directory', '存储目录（可选）', { placeholder: 'imgbed' }),
+        f('directory', '存储目录（可选）', { placeholder: 'imgbed', tip: '相对 WebDAV 根地址的固定目录，例如填 imgbed 就存到 <WebDAV 地址>/imgbed/ 下。留空则直接存到根地址。' }),
+        f('objectPrefix', '对象前缀（可选）', { placeholder: '{y}/{m}/', tip: OBJECT_PREFIX_TIP }),
+        f('customName', '自定义文件命名（可选）', { placeholder: '{filename}-{timestamp}', tip: CUSTOM_NAME_TIP }),
         f('publicDomain', '公开访问域名（可选）', {
             placeholder: 'https://img.example.com',
             tip: '若网盘提供公网直链域名可填写；留空则外链回落到 WebDAV 自身地址。' + PUBLIC_DOMAIN_TIP
@@ -365,7 +385,7 @@ export const CHANNEL_FIELDS = {
             placeholder: '{"Authorization":"Bearer xxx","X-Custom":"1"}',
             tip: '对齐 PHP 案例的 custom_headers：任意请求头 JSON 对象（键与值都用双引号）。需要鉴权就写在这里。'
         }),
-        f('body', '附加表单字段 (JSON)', {
+        f('body', '自定义Body (JSON)', {
             type: 'textarea',
             placeholder: '{"album":"default","strategy_id":"1"}',
             tip: '对齐 PHP 案例的 custom_body：随文件一起 POST 的额外表单字段，JSON 对象。'

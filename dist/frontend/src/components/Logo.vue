@@ -67,8 +67,15 @@ export default {
   computed: {
     ...mapGetters(['userConfig']),
     logoUrl() {
-      // 优先级：customSrc > 用户配置 > 默认图片
-      return this.customSrc || 
+      /*
+       * 优先级（v202610221824）：
+       *   customSrc（组件显式传入）> 当前登录用户头像 > 网页设置里的自定义 logo > 内置 logo。
+       * 头像优先是需求要求：用户设置过头像后，左上角 logo 直接变成自己的头像，
+       * 一眼能看出当前登录的是谁；没设置头像的账户完全不受影响。
+       */
+      const avatar = this.$store?.state?.sessionAvatar || ''
+      return this.customSrc ||
+             avatar ||
              this.userConfig?.logoUrl || 
              defaultLogo
     },
@@ -84,7 +91,9 @@ export default {
         'logo': true,
         [`logo--${this.position}`]: true,
         [`logo--${this.size}`]: true,
-        'logo--hover-enabled': this.enableHover
+        'logo--hover-enabled': this.enableHover,
+        // 用头像时不显示方图边框，裁成圆形（头像是 1:1 的）
+        'logo--avatar': !!this.$store?.state?.sessionAvatar && !this.customSrc
       }
     }
   }
@@ -102,6 +111,12 @@ export default {
   --logo-hover-brightness: 1.08;
   transition: transform 0.3s ease, filter 0.3s ease, opacity 0.3s ease;
   border-radius: 8px;
+}
+
+/* 用当前用户头像当 logo 时裁成圆形 */
+.logo--avatar {
+  border-radius: 50%;
+  object-fit: cover;
 }
 
 /* 位置样式 */

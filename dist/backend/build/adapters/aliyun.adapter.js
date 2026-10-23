@@ -105,7 +105,7 @@ class AliyunOssAdapter {
         }
     }
     async upload(file, key, channel) {
-        const fullKey = (channel.config.keyPrefix || '') + key;
+        const fullKey = key;
         try {
             await this.request('PUT', fullKey, { body: file.buffer, mime: file.mime });
             return { remoteKey: fullKey };

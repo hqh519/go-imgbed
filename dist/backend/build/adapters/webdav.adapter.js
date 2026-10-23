@@ -22,8 +22,10 @@ class WebdavAdapter {
         const url = this.fullPath(key, channel);
         const base = this.baseOf(channel);
         const dir = (channel.config.directory || '').replace(/^\/+|\/+$/g, '');
-        if (dir) {
-            const parts = dir.split('/');
+        const keyDir = key.includes('/') ? key.slice(0, key.lastIndexOf('/')) : '';
+        const fullDir = [dir, keyDir].filter(Boolean).join('/');
+        if (fullDir) {
+            const parts = fullDir.split('/').filter(Boolean);
             for (let i = 1; i <= parts.length; i++) {
                 const p = `${base}/${parts.slice(0, i).join('/')}`;
                 try {

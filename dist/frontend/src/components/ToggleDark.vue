@@ -1,5 +1,6 @@
 <template>
     <div
+      v-if="!forced"
       id="themeToggle"
       @click="handleToggleClick"
     >
@@ -65,6 +66,15 @@ export default {
       isDark: this.$store.getters.useDarkMode,
       isAuto: !this.$store.getters.cusDarkMode,
     };
+  },
+  computed: {
+    /**
+     * 网页设置开启了「夜间/白天强制切换」时，右上角按钮隐藏且不可用：
+     * 主题完全按 19:00—07:00 由系统决定，不允许用户覆盖。
+     */
+    forced() {
+      return this.$store.getters.userConfig?.autoDarkMode === true;
+    },
   },
   methods: {
     handleToggleClick() {

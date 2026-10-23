@@ -43,9 +43,17 @@ datasource db {
 model User {
   id              String   @id @default(cuid())
   username        String   @unique
-  passwordHash    String // 用户密码（登录文件管理页用）scrypt 格式 salt:hash
-  uploadPassword  String   @default("") // 上传密码（前端上传页校验用），空则与 passwordHash 相同
+  passwordHash    String // 用户密码（唯一登录凭据）scrypt 格式 salt:hash
+  // 历史字段：v202610221824 起「上传密码」功能已下线，登录只认自身的用户名 + 密码。
+  // 列保留是为了 db push 不做破坏性变更（避免删列），代码不再读写。
+  uploadPassword  String   @default("")
   nickname        String   @default("") // 展示名
+  // 邮箱（v202610221824）：可由用户自行维护，仅用于账户标识与通知，不做登录凭据
+  email           String   @default("")
+  // 头像（v202610221824）：列里存「版本戳」（毫秒时间戳），图片本体固定落在
+  // uploads/avatars/<userId>.webp —— 每次修改覆盖同一文件，保证每个用户仅留存一张。
+  // 前端用 /api/avatar/<username>?v=<avatar> 访问，版本戳变化即刷新缓存。
+  avatar          String   @default("")
   role            String   @default("admin") // admin | user
   enabled         Boolean  @default(true) // 禁用后无法登录/上传
   canEdit         Boolean  @default(true) // 允许编辑自身文件（重命名/元数据/标签）
@@ -56,6 +64,17 @@ model User {
   enforceLimits   Boolean  @default(true) // 类型和大小限制：开启时受「允许上传格式 + 单文件大小上限」约束，关闭则跳过
   mainChannelId   String   @default("") // 该账户上传时优先使用的主渠道 ID（空 = 用全局）
   backupChannelId String   @default("") // 该账户上传时优先使用的备份渠道 ID（空 = 用全局）
+  // ---- 两步验证（TOTP，v202610221824）----
+  // totpSecret 为 AES-GCM 加密后的 Base32 密钥；启用后进后台需再输入 6 位验证码
+  totpSecret      String   @default("")
+  totpEnabled     Boolean  @default(false)
+  // 后端（管理端）最近一次通过 2FA 的时间；超过 backSessionDays 即视为过期，需重新验证
+  backVerifiedAt  DateTime?
+  // ---- 会话有效期（天，v202610221824）----
+  // 空 = 未设置 → 按 7 天处理。0 = 永久（不下发过期）。
+  // frontSessionDays 管「前端上传页/画廊」登录态；backSessionDays 管「后台管理页」的 2FA 验证态。
+  frontSessionDays Int?
+  backSessionDays  Int?
   metas           String   @default("{}")
   createdAt       DateTime @default(now())
 
@@ -82,6 +101,13 @@ model Channel {
   enabled   Boolean  @default(true)
   isMain    Boolean  @default(false) // 主渠道（可多条，上传走 enable 的第一条主渠道）
   isBackup  Boolean  @default(false) // 备份渠道
+  // 备用库池（v202610221824）：「更多 → 设为备用库」打标，可同时勾选多条。
+  // 前端上传主渠道全部失败后，按 code 升序在这些备用库之间轮流尝试。
+  backupPool Boolean @default(false)
+  // 用户授权（v202610221824）：JSON 数组，存被授权的用户名（["alice","bob"]）。
+  // 空数组 = 未授权任何人（仅管理员可用）；管理员账户恒可用，不受此限制。
+  // 非管理员调用 /api/channels 时只返回 local + 自己获授权的渠道。
+  authorizedUsers String @default("[]")
   config    String   @default("{}") // JSON：各渠道配置，敏感字段加密存储
   // 渠道类型编号（排序用，与渠道 code 无关）：
   //   easyimages 100 / lsky 110 / immich 120 / minio 130 / r2 140 / s3 150

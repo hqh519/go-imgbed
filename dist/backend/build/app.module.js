@@ -36,6 +36,7 @@ exports.AppModule = AppModule = __decorate([
             files_controller_1.ManageController,
             files_controller_1.UserConfigController,
             users_controller_1.UsersController,
+            users_controller_1.AvatarController,
             token_api_controller_1.TokenApiController,
             webdav_controller_1.WebDavController,
             compat_controller_1.PublicCompatController,

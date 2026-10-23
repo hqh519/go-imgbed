@@ -62,8 +62,7 @@ class S3Adapter {
         }, { name: 'channelUserAgentMiddleware', relation: 'after', toMiddleware: 'getUserAgentMiddleware' });
     }
     async upload(file, key, channel) {
-        const cfg = channel.config;
-        const fullKey = (cfg.keyPrefix || '') + key;
+        const fullKey = key;
         try {
             await this.client.send(new client_s3_1.PutObjectCommand({
                 Bucket: this.bucket,

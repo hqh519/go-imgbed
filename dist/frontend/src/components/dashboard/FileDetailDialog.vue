@@ -76,6 +76,13 @@
             <el-tab-pane label="S3 CDN URL" v-if="file?.metadata?.S3CdnFileUrl" name="s3CdnFileUrl">
                 <el-input v-model="urls.S3CdnFileUrl" readonly @click="handleUrlClick"></el-input>
             </el-tab-pane>
+            <!-- 二维码（v202610221824）：放在最后一个签发外链之后，纯浏览器渲染不落文件 -->
+            <el-tab-pane :label="$t('fileDetail.qrCode')" name="qrcode">
+                <div class="qr-pane">
+                    <QRCodeBox :value="qrValue" :size="200" :empty-text="$t('fileDetail.qrEmpty')" />
+                    <p class="qr-hint">{{ $t('fileDetail.qrHint') }}</p>
+                </div>
+            </el-tab-pane>
         </el-tabs>
         <!-- 文件预览区域 -->
         <div class="preview-section">
@@ -337,9 +344,11 @@ import fetchWithAuth from '@/utils/fetchWithAuth';
 import { validateFileId } from '@/utils/fileIdValidator';
 import { copyText } from '@/utils/clipboard';
 import { fileLink } from '@/utils/fileLink';
+import QRCodeBox from '@/components/common/QRCodeBox.vue';
 
 export default {
     name: 'FileDetailDialog',
+    components: { QRCodeBox },
     props: {
         modelValue: { type: Boolean, default: false },
         file: { type: Object, default: null },
@@ -409,6 +418,10 @@ export default {
         }
     },
     computed: {
+        /** 二维码内容：优先用签发外链（原始链接），没有则退回当前文件链接 */
+        qrValue() {
+            return String(this.urls?.originUrl || this.fileLink || '').trim();
+        },
         visible: {
             get() { return this.modelValue; },
             set(val) { this.$emit('update:modelValue', val); }
@@ -730,11 +743,23 @@ export default {
             const ok = await copyText(input.value);
             ElMessage[ok ? 'success' : 'warning'](this.$t(ok ? 'fileDetail.linkCopied' : 'dashboard.copyFailed'));
         },
-        /** 复制某个渠道下该文件的真实直链 */
+        /**
+         * 复制某个渠道下该文件的真实直链。
+         * 这是「文件源链接」（对象存储 / WebDAV 里的原始地址），不是本站签发的外链：
+         * 直接对外公布会绕过本站的访问控制、限时与统计，所以复制时明确提示一次。
+         */
         async copyChannelUrl(url) {
             if (!url) return;
             const ok = await copyText(String(url));
-            ElMessage[ok ? 'success' : 'warning'](this.$t(ok ? 'fileDetail.linkCopied' : 'dashboard.copyFailed'));
+            if (ok) {
+                ElMessage.warning({
+                    message: this.$t('fileDetail.sourceLinkWarning'),
+                    duration: 6000,
+                    showClose: true,
+                });
+            } else {
+                ElMessage.warning(this.$t('dashboard.copyFailed'));
+            }
         },
         openImageLink() {
             if (this.fileLink) {
@@ -972,6 +997,21 @@ export default {
 </script>
 
 <style scoped>
+/* 二维码标签页 */
+.qr-pane {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 0 4px;
+}
+.qr-hint {
+    margin: 0;
+    font-size: 12px;
+    color: var(--el-text-color-secondary);
+    text-align: center;
+    line-height: 1.5;
+}
 /* 详情内容容器：值超长时整体字号降一号 */
 .detail-body.detail-compact .detail-action,
 .detail-body.detail-compact :deep(.el-descriptions__label),

@@ -57,6 +57,7 @@ const adapter_factory_1 = require("../adapters/adapter.factory");
 const local_adapter_1 = require("../adapters/local.adapter");
 const file_view_1 = require("../common/file-view");
 const app_log_1 = require("../common/app-log");
+const path_template_1 = require("../common/path-template");
 let UploadService = class UploadService {
     static { UploadService_1 = this; }
     settings;
@@ -75,6 +76,7 @@ let UploadService = class UploadService {
         this.storageChannel = storageChannel;
     }
     activeUploads = 0;
+    poolCursor = 0;
     lowPriorityChain = Promise.resolve();
     enqueueLowPriority(task) {
         const run = this.lowPriorityChain.then(async () => {
@@ -475,14 +477,41 @@ let UploadService = class UploadService {
         const sw = await this.settings.get('backupEnabled', 'true');
         return sw === 'true';
     }
-    makeKey(originalName, nameType, _folder) {
-        const ext = originalName.includes('.') ? '.' + originalName.split('.').pop() : '';
+    makeKeyFor(channel, originalName, nameType, md5) {
+        const dot = originalName.lastIndexOf('.');
+        const ext = dot > 0 ? originalName.slice(dot + 1).toLowerCase() : '';
+        const stem = dot > 0 ? originalName.slice(0, dot) : originalName;
+        if ((0, path_template_1.supportsPrefix)(channel.type)) {
+            let cfg = {};
+            try {
+                cfg = this.channels.decryptConfig(channel.type, channel.config);
+            }
+            catch {
+                cfg = {};
+            }
+            let fileName;
+            const customName = String(cfg.customName || '').trim();
+            if (customName) {
+                fileName = (0, path_template_1.renderFileName)(customName, { originalName, stem, ext, md5, timestamp: Date.now() });
+            }
+            else if (nameType === 'original') {
+                fileName = ext ? `${stem}.${ext}` : stem;
+            }
+            else if (nameType === 'index') {
+                fileName = `${Date.now()}.${ext || 'bin'}`;
+            }
+            else {
+                fileName = (0, path_template_1.renderFileName)('', { originalName, stem, ext, md5, timestamp: Date.now() });
+            }
+            const prefix = (0, path_template_1.renderObjectPrefix)(cfg.objectPrefix || cfg.keyPrefix);
+            return (0, path_template_1.joinObjectKey)(prefix, fileName);
+        }
         const date = new Date();
         const datePath = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}`;
         let name;
         switch (nameType) {
             case 'original':
-                name = originalName.replace(/\.[^.]+$/, '');
+                name = stem;
                 break;
             case 'index':
                 name = datePath + String(date.getTime());
@@ -490,7 +519,7 @@ let UploadService = class UploadService {
             default:
                 name = crypto_service_1.CryptoService.shortId();
         }
-        return `${datePath}/${name}${ext}`;
+        return `${datePath}/${name}${ext ? '.' + ext : ''}`;
     }
     async resolveFolder(input) {
         const clean = (input || '').replace(/^\/+|\/+$/g, '');
@@ -660,14 +689,27 @@ let UploadService = class UploadService {
             }
         }
         const folder = await this.resolveFolder(opts.uploadFolder);
-        const key = this.makeKey(originalName, opts.uploadNameType, folder);
+        const key = this.makeKeyFor(main, originalName, opts.uploadNameType, md5);
         const chain = [main];
         if (opts.autoRetry) {
-            const others = await prisma_1.prisma.channel.findMany({
-                where: { enabled: true, NOT: { id: main.id } },
+            const pool = await prisma_1.prisma.channel.findMany({
+                where: { enabled: true, backupPool: true, NOT: { id: main.id } },
                 orderBy: { code: 'asc' },
             });
-            chain.push(...others);
+            if (pool.length) {
+                const start = this.poolCursor++ % pool.length;
+                const rotated = [...pool.slice(start), ...pool.slice(0, start)];
+                for (const c of rotated) {
+                    chain.push({ id: c.id, code: c.code, name: c.name, type: c.type, config: c.config });
+                }
+            }
+            else {
+                const others = await prisma_1.prisma.channel.findMany({
+                    where: { enabled: true, NOT: { id: main.id } },
+                    orderBy: { code: 'asc' },
+                });
+                chain.push(...others);
+            }
         }
         const startedAt = Date.now();
         let result;

@@ -15,6 +15,8 @@ export default createStore({
     // 统一账户体系：当前登录账户信息（role: admin | user | super）
     sessionRole: null,
     sessionUser: null,
+    /** 当前登录用户的头像 URL（未设置时为空，前端回落系统 logo） */
+    sessionAvatar: '',
     isSuper: false,
     canEdit: true,
     canDelete: true,
@@ -105,6 +107,7 @@ export default createStore({
       const info = payload || {};
       state.sessionRole = info.role || null;
       state.sessionUser = info.username || null;
+      if (info.avatarUrl !== undefined) state.sessionAvatar = info.avatarUrl || '';
       state.isSuper = !!info.isSuper || info.role === 'super';
       state.canEdit = info.canEdit !== false;
       state.canDelete = info.canDelete !== false;
@@ -115,6 +118,7 @@ export default createStore({
     clearSession(state) {
       state.sessionRole = null;
       state.sessionUser = null;
+      state.sessionAvatar = '';
       state.isSuper = false;
       state.canEdit = true;
       state.canDelete = true;

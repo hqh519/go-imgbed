@@ -117,8 +117,14 @@ export class HttpPostAdapter implements StorageAdapter {
     // apiUrl 支持内网 IP / Docker 容器名（如 lsky:8080、192.168.1.10:8080）：
     // 缺协议时按地址类型补（内网 http、公网 https），请求由服务端发起，
     // 因此图床对外是 https 不影响用内网地址上传。
-    const rawApiUrl = ensureProtocol(this.fill(cfg.apiUrl || '', file));
+    let rawApiUrl = ensureProtocol(this.fill(cfg.apiUrl || '', file));
     if (!rawApiUrl) throw new AdapterError('缺少 apiUrl 配置', channel.type);
+    /*
+     * 兰空（Lsky Pro）上传接口固定为 <站点>/api/v1/upload。
+     * 用户填写时可能带尾斜杠、也可能已经写了 /upload，这里统一归一化，
+     * 避免「少写一段路径就 404」这类配置错误（v202610221824）。
+     */
+    if (channel.type === 'lsky') rawApiUrl = normalizeLskyUrl(rawApiUrl);
 
     // 附加字段按「优先级从低到高」合并后一次性写入，避免同名字段重复提交。
     // extraFields（旧）< body（对齐 PHP custom_body）< tokenField/tokenValue（认证字段，最高）
@@ -287,6 +293,20 @@ function responseMessage(json: unknown, fallback: string): string {
  *   3. 绝对路径 /file/xxx → 用 publicDomain 或上传接口的源补全
  *   4. 裸路径 file/xxx → 同上，带斜杠拼接
  */
+/**
+ * 兰空（Lsky Pro）接口地址归一化：
+ *   https://lsky.hqh555.top/api/v1          → .../api/v1/upload
+ *   https://lsky.hqh555.top/api/v1/         → .../api/v1/upload
+ *   https://lsky.hqh555.top/api/v1/upload   → 原样
+ * 只补 /upload 这一段，不动用户填的域名与版本前缀（兼容 v1 / v2 部署）。
+ */
+function normalizeLskyUrl(url: string): string {
+  const u = String(url || '').trim().replace(/\/+$/, '');
+  if (!u) return u;
+  if (/\/upload$/i.test(u)) return u;
+  return `${u}/upload`;
+}
+
 function normalizeUrl(url: string, publicDomain?: string, apiUrl?: string): string {
   let val = String(url).trim();
   if (!val) return val;

@@ -35,29 +35,40 @@ for (const [key, component] of Object.entries(ElementPlusIconsVue)) {
     app.component(key, component)
 }
 
-// 根据 useDarkMode 的值添加或移除 dark 类
+/**
+ * 主题初始化（v202610221824 改写）。
+ *
+ * 网页设置里的开关语义变了：从「自动切换」改为「强制切换」——
+ *   autoDarkMode = true  → 按时间强制：19:00—07:00 夜间、07:00—19:00 白天；
+ *                          此时右上角按钮隐藏且失效（不允许用户覆盖）；
+ *   autoDarkMode = false → 以右上角按钮为准（亮 / 暗 / 自动三态），
+ *                          其中「自动」态也按 19:00—07:00 + 系统深色偏好判断。
+ * 默认值为 false（首次安装不强制）。
+ */
+const NIGHT_START_HOUR = 19;
+const NIGHT_END_HOUR = 7;
+
+/** 按 19:00—07:00 判断当前是否属于夜间 */
+const isNightNow = () => {
+    const hour = new Date().getHours();
+    return hour >= NIGHT_START_HOUR || hour < NIGHT_END_HOUR;
+};
+
 const initDarkModeClass = () => {
     const htmlElement = document.documentElement;
+    const forced = store.getters.userConfig?.autoDarkMode === true;
     let isDarkMode;
 
-    // 判断用户是否是自定义模式
-    if (store.state.cusDarkMode && store.state.useDarkMode !== null) {
-        // 用户手动设置了暗色模式
+    if (forced) {
+        // 强制模式：只按时间，忽略系统偏好与用户手动选择
+        isDarkMode = isNightNow();
+        store.commit('setUseDarkMode', isDarkMode);
+    } else if (store.state.cusDarkMode && store.state.useDarkMode !== null) {
+        // 用户手动设置了亮色 / 暗色
         isDarkMode = store.state.useDarkMode;
-    } else if (store.getters.userConfig?.autoDarkMode === false) {
-        // 网页设置 → 全局设置里关闭了「夜间/白天自动切换」：
-        // 固定使用白天样式（仍可通过右上角按钮手动切换）
-        isDarkMode = false;
-        store.commit('setUseDarkMode', false);
     } else {
-        // 跟随系统模式或时间
-        isDarkMode = window.matchMedia('(prefers-color-scheme: dark)').matches;
-        if (!isDarkMode) {
-            const now = new Date();
-            const hour = now.getHours();
-            isDarkMode = hour >= 22 || hour < 6;
-        }
-        // 更新 useDarkMode 的值
+        // 自动态：跟随系统深色偏好，系统为亮色时再按 19:00—07:00 判断
+        isDarkMode = window.matchMedia('(prefers-color-scheme: dark)').matches || isNightNow();
         store.commit('setUseDarkMode', isDarkMode);
     }
 
@@ -136,6 +147,19 @@ store.dispatch('fetchUserConfig').then(() => {
             // 同时更新网站图标
             presetSiteIcon(store.state.useDarkMode, store.getters.userConfig);
         }
+    });
+
+    /*
+     * 跨过 19:00 / 07:00 这个时间点时页面不会自己重载，所以定时（每分钟）
+     * 以及「标签页重新可见」时各重算一次主题 —— 长时间挂着的页面也能自动切换。
+     */
+    const refreshThemeByTime = () => {
+        const forced = store.getters.userConfig?.autoDarkMode === true;
+        if (forced || !store.state.cusDarkMode) initDarkModeClass();
+    };
+    setInterval(refreshThemeByTime, 60 * 1000);
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) refreshThemeByTime();
     });
 
     app.use(store).use(router).use(ElementPlus).use(i18n).mount('#app');

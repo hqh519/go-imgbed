@@ -45,7 +45,7 @@ var __param = (this && this.__param) || function (paramIndex, decorator) {
     return function (target, key) { decorator(target, key, paramIndex); }
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.ChannelManageController = exports.StorageSettingsController = exports.ChannelsController = exports.ChannelsService = exports.CHANNEL_ORDER_BY = exports.CHANNEL_TYPE_CODE = exports.LEGACY_LOCAL_CHANNEL_CODE = exports.LOCAL_CHANNEL_CODE = exports.BUILTIN_CHANNEL_TYPES = exports.CHANNEL_TYPES = void 0;
+exports.ChannelManageController = exports.StorageSettingsController = exports.ChannelsController = exports.parseAuthorizedUsers = exports.channelVisibleTo = exports.ChannelsService = exports.CHANNEL_ORDER_BY = exports.CHANNEL_TYPE_CODE = exports.LEGACY_LOCAL_CHANNEL_CODE = exports.LOCAL_CHANNEL_CODE = exports.BUILTIN_CHANNEL_TYPES = exports.CHANNEL_TYPES = void 0;
 exports.channelTypeCode = channelTypeCode;
 const common_1 = require("@nestjs/common");
 const prisma_1 = require("../common/prisma");
@@ -209,18 +209,26 @@ exports.ChannelsService = ChannelsService = __decorate([
     (0, common_1.Injectable)(),
     __metadata("design:paramtypes", [settings_service_1.SettingsService])
 ], ChannelsService);
+const channel_access_1 = require("../common/channel-access");
+Object.defineProperty(exports, "channelVisibleTo", { enumerable: true, get: function () { return channel_access_1.channelVisibleTo; } });
+Object.defineProperty(exports, "parseAuthorizedUsers", { enumerable: true, get: function () { return channel_access_1.parseAuthorizedUsers; } });
 let ChannelsController = class ChannelsController {
     svc;
     constructor(svc) {
         this.svc = svc;
     }
-    async list(includeDisabled) {
+    async list(req, includeDisabled) {
+        const session = (0, auth_guard_1.currentSession)(req);
+        const admin = (0, auth_guard_1.isAdminRole)(session?.role);
+        const username = session?.user || '';
         const channels = await prisma_1.prisma.channel.findMany({
-            where: includeDisabled === 'true' ? {} : { enabled: true },
+            where: includeDisabled === 'true' && admin ? {} : { enabled: true },
             orderBy: exports.CHANNEL_ORDER_BY,
         });
         const grouped = {};
         for (const c of channels) {
+            if (!(0, channel_access_1.channelVisibleTo)(c.authorizedUsers, c.type, username, admin))
+                continue;
             if (!grouped[c.type])
                 grouped[c.type] = [];
             grouped[c.type].push({
@@ -232,6 +240,7 @@ let ChannelsController = class ChannelsController {
                 enabled: c.enabled,
                 isMain: c.isMain,
                 isBackup: c.isBackup,
+                backupPool: c.backupPool,
                 config: this.svc.maskConfig(c.type, c.config),
             });
         }
@@ -241,9 +250,10 @@ let ChannelsController = class ChannelsController {
 exports.ChannelsController = ChannelsController;
 __decorate([
     (0, common_1.Get)(),
-    __param(0, (0, common_1.Query)('includeDisabled')),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Query)('includeDisabled')),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String]),
+    __metadata("design:paramtypes", [Object, String]),
     __metadata("design:returntype", Promise)
 ], ChannelsController.prototype, "list", null);
 exports.ChannelsController = ChannelsController = __decorate([
@@ -366,6 +376,8 @@ let ChannelManageController = class ChannelManageController {
                 enabled: c.enabled,
                 isMain: c.isMain,
                 isBackup: c.isBackup,
+                backupPool: c.backupPool,
+                authorizedUsers: (0, channel_access_1.parseAuthorizedUsers)(c.authorizedUsers),
                 sortOrder: c.sortOrder,
                 config,
                 quota: {
@@ -545,6 +557,74 @@ let ChannelManageController = class ChannelManageController {
             return { success: false, message: err.message, data: { elapsedMs: Date.now() - started } };
         }
     }
+    async setPool(id, body) {
+        const ch = await prisma_1.prisma.channel.findUnique({ where: { id } });
+        if (!ch)
+            return { success: false, message: '渠道不存在' };
+        const enabled = body.enabled !== false;
+        await prisma_1.prisma.channel.update({ where: { id }, data: { backupPool: enabled } });
+        const count = await prisma_1.prisma.channel.count({ where: { backupPool: true } });
+        return { success: true, data: { backupPool: enabled, count } };
+    }
+    async getAuthorize(id) {
+        const ch = await prisma_1.prisma.channel.findUnique({ where: { id } });
+        if (!ch)
+            return { success: false, message: '渠道不存在' };
+        const users = await prisma_1.prisma.user.findMany({
+            orderBy: { createdAt: 'asc' },
+            select: { username: true, nickname: true, role: true, avatar: true },
+        });
+        return {
+            success: true,
+            data: {
+                authorizedUsers: (0, channel_access_1.parseAuthorizedUsers)(ch.authorizedUsers),
+                users: users.map((u) => ({
+                    username: u.username,
+                    nickname: u.nickname || u.username,
+                    role: u.role,
+                    avatar: u.avatar || '',
+                })),
+            },
+        };
+    }
+    async setAuthorize(id, body) {
+        const ch = await prisma_1.prisma.channel.findUnique({ where: { id } });
+        if (!ch)
+            return { success: false, message: '渠道不存在' };
+        const wanted = Array.isArray(body.usernames) ? body.usernames.map((x) => String(x || '').trim()).filter(Boolean) : [];
+        const exists = await prisma_1.prisma.user.findMany({
+            where: { username: { in: wanted } },
+            select: { username: true },
+        });
+        const valid = exists.map((u) => u.username);
+        await prisma_1.prisma.channel.update({ where: { id }, data: { authorizedUsers: JSON.stringify(valid) } });
+        return { success: true, data: { authorizedUsers: valid } };
+    }
+    async allowed(req, username) {
+        const session = (0, auth_guard_1.currentSession)(req);
+        const admin = (0, auth_guard_1.isAdminRole)(session?.role);
+        const target = String(username || session?.user || '').trim();
+        if (!admin && target && target !== session?.user) {
+            return { success: false, message: '只能查看自己的渠道' };
+        }
+        const channels = await prisma_1.prisma.channel.findMany({
+            where: { enabled: true },
+            orderBy: exports.CHANNEL_ORDER_BY,
+        });
+        const list = channels
+            .filter((c) => (admin && !target ? true : (0, channel_access_1.channelVisibleTo)(c.authorizedUsers, c.type, target, admin)))
+            .map((c) => ({
+            id: c.id,
+            code: c.code,
+            name: c.name,
+            type: c.type,
+            typeCode: c.typeCode,
+            isMain: c.isMain,
+            isBackup: c.isBackup,
+            backupPool: c.backupPool,
+        }));
+        return { success: true, data: list };
+    }
     async remove(id) {
         const target = await prisma_1.prisma.channel.findUnique({ where: { id } });
         if (target && exports.BUILTIN_CHANNEL_TYPES.includes(target.type)) {
@@ -594,6 +674,37 @@ __decorate([
     __metadata("design:paramtypes", [Object]),
     __metadata("design:returntype", Promise)
 ], ChannelManageController.prototype, "test", null);
+__decorate([
+    (0, common_1.Post)(':id/pool'),
+    __param(0, (0, common_1.Param)('id')),
+    __param(1, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, Object]),
+    __metadata("design:returntype", Promise)
+], ChannelManageController.prototype, "setPool", null);
+__decorate([
+    (0, common_1.Get)(':id/authorize'),
+    __param(0, (0, common_1.Param)('id')),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String]),
+    __metadata("design:returntype", Promise)
+], ChannelManageController.prototype, "getAuthorize", null);
+__decorate([
+    (0, common_1.Post)(':id/authorize'),
+    __param(0, (0, common_1.Param)('id')),
+    __param(1, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, Object]),
+    __metadata("design:returntype", Promise)
+], ChannelManageController.prototype, "setAuthorize", null);
+__decorate([
+    (0, common_1.Get)('allowed/list'),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Query)('username')),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, String]),
+    __metadata("design:returntype", Promise)
+], ChannelManageController.prototype, "allowed", null);
 __decorate([
     (0, common_1.Delete)(':id'),
     __param(0, (0, common_1.Param)('id')),

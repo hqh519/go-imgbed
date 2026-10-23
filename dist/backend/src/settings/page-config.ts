@@ -77,12 +77,12 @@ export const PAGE_CONFIG_DEFAULTS: any = {
     },
     {
       "id": "autoDarkMode",
-      "label": "夜间/白天自动切换",
-      "label_en": "Auto Day/Night Theme",
+      "label": "夜间/白天强制切换",
+      "label_en": "Force Day/Night Theme",
       "type": "boolean",
-      "default": true,
-      "tooltip": "开启时按系统深色模式 + 时间（22:00-06:00）自动切换夜间/白天样式；关闭后固定使用白天样式，仍可通过右上角按钮手动切换",
-      "tooltip_en": "When on, theme follows system dark mode and time (22:00-06:00). When off, the light theme is always used; you can still switch manually",
+      "default": false,
+      "tooltip": "开启后按时间强制切换：19:00—07:00 为夜间、07:00—19:00 为白天，同时隐藏右上角主题按钮（用户无法覆盖）。关闭后以右上角按钮为准，按钮的「自动」模式同样按 19:00—07:00 切换",
+      "tooltip_en": "When on, the theme is forced by time: night 19:00-07:00, day 07:00-19:00, and the top-right toggle is hidden. When off, the toggle decides; its auto mode also uses 19:00-07:00",
       "category": "全局设置",
       "category_en": "Global Settings"
     },

@@ -3,8 +3,12 @@ import { Request, Response } from 'express';
 import { prisma } from '../common/prisma';
 import { CryptoService } from '../common/crypto.service';
 import { hashSecret, isHashedSecret, matchSecret, safeEqual } from '../common/secret';
-import { SESSION_COOKIE, Role, currentSession, makeSession, parseSession } from './auth.guard';
+import { SESSION_COOKIE, Role, currentSession, frontValid, makeSession, parseSession, totpValid } from './auth.guard';
 import { SysConfigService } from '../settings/sysconfig.service';
+import { verifyTotp } from '../common/totp';
+
+/** 会话有效期默认值（天）—— 账户未设置时生效（v202610221824） */
+const DEFAULT_SESSION_DAYS = 7;
 
 /**
  * 认证接口 —— 统一账户体系。
@@ -40,11 +44,6 @@ export class AuthController {
     }
   }
 
-  /** 环境变量兜底的用户认证码（兼容两种历史键名） */
-  private envAuthCode(): string {
-    return process.env.AUTH_CODE || process.env.AUTH_MIKF || '';
-  }
-
   /** 管理端账号是否已配置（安全设置 / 用户表 / 环境变量任一存在） */
   private async isAdminConfigured(auth: any): Promise<boolean> {
     if (String(auth?.admin?.adminPassword || '')) return true;
@@ -56,11 +55,8 @@ export class AuthController {
     }
   }
 
-  /** 是否存在可登录账户 → 上传页 / 后台是否需要登录 */
-  private async isUserConfigured(auth: any): Promise<boolean> {
-    if (String(auth?.admin?.adminPassword || '')) return true;
-    if (String(auth?.user?.authCode || '')) return true;
-    if (process.env.ADMIN_USER || process.env.ADMIN_PASSWORD) return true;
+  /** 是否存在可登录账户 → 上传页 / 后台是否需要登录（v202610221824 起只看 users 表） */
+  private async isUserConfigured(_auth?: any): Promise<boolean> {
     try {
       return (await prisma.user.count()) > 0;
     } catch {
@@ -69,97 +65,109 @@ export class AuthController {
   }
 
   /**
-   * 统一账户校验：超管 → users 表 → 安全设置管理员 → 环境变量初始账号。
+   * 统一账户校验：超管 → users 表 → 历史环境变量兜底。
    * 返回账户信息或 null。
+   *
+   * v202610221824 起账户体系收敛：
+   *   - 「上传密码」通道彻底下线，登录只认账户自身的用户名 + 密码；
+   *   - 安全设置里的「管理端认证」不再参与登录（管理员就是 users 表里 role='admin' 的那条记录），
+   *     仅当 users 表里一条管理员都没有时才作为历史兜底，避免老部署升级后直接锁死；
+   *   - 用户名 / 密码的管理统一收到「用户管理」里。
    */
   private async verifyAccount(
     username: string,
     password: string,
-  ): Promise<{ user: string; role: Role; enabled: boolean; canEdit: boolean; canDelete: boolean } | null> {
+  ): Promise<{
+    user: string;
+    role: Role;
+    enabled: boolean;
+    canEdit: boolean;
+    canDelete: boolean;
+    totpEnabled: boolean;
+    frontDays: number;
+    backDays: number;
+  } | null> {
     if (!username || !password) return null;
 
     // 1) 超级管理员（仅 .env 配置）
     const suUser = (process.env.SUPER_ADMIN_USERNAME || '').trim();
     const suPass = process.env.SUPER_ADMIN_PASSWORD || '';
     if (suUser && suPass && safeEqual(username, suUser) && matchSecret(password, suPass)) {
-      return { user: suUser, role: 'super', enabled: true, canEdit: true, canDelete: true };
+      return {
+        user: suUser,
+        role: 'super',
+        enabled: true,
+        canEdit: true,
+        canDelete: true,
+        totpEnabled: false,
+        frontDays: 7,
+        backDays: 7,
+      };
     }
 
-    // 2) users 表
+    // 2) users 表（管理员与普通用户都在这里）
     const u = await prisma.user.findUnique({ where: { username } });
     if (u) {
       if (!u.enabled) return null;
-      const info = {
+      if (!CryptoService.verifyPassword(password, u.passwordHash)) return null;
+      return {
         user: u.username,
-        // users 表里 role='admin' 的账户也归为普通用户体系，
-        // 系统管理员唯一（见 verifyAccount 第 3 步 / 安全设置「管理端认证」）。
         role: (u.role === 'admin' ? 'admin' : 'user') as Role,
         enabled: u.enabled,
         canEdit: u.canEdit,
         canDelete: u.canDelete,
+        totpEnabled: u.totpEnabled,
+        frontDays: u.frontSessionDays ?? DEFAULT_SESSION_DAYS,
+        backDays: u.backSessionDays ?? DEFAULT_SESSION_DAYS,
       };
-      if (CryptoService.verifyPassword(password, u.passwordHash)) return info;
-      /*
-       * 普通用户登入密码的双通道：
-       *   ① 用户管理里为该账户设置的自身密码（上面已验）
-       *   ② 安全设置「用户端认证」里配置的密码
-       * 两者任一匹配即可登入。密码②只对「普通用户账户」开放 ——
-       * 管理员账户不认用户端认证，避免普通用户端口令越权登入管理端。
-       *
-       * 注意：对外 WebDAV 的 Basic 鉴权走 WebDavController.authenticate，
-       * 那里**只认账户自身的用户名 + 密码**，不接受用户端认证口令。
-       */
-      if (info.role === 'user' && (await this.matchUserAuthCode(password))) {
-        return info;
-      }
-      return null;
     }
 
-    // 3) 安全设置里的管理员账号
-    const auth = await this.authConfig();
-    const cfgPass = String(auth?.admin?.adminPassword || '');
-    if (cfgPass) {
-      const cfgUser = String(auth?.admin?.adminUsername || '').trim() || 'admin';
-      if (safeEqual(username, cfgUser) && matchSecret(password, cfgPass)) {
-        this.upgradeAdminSecret(cfgPass).catch(() => undefined);
-        return { user: cfgUser, role: 'admin', enabled: true, canEdit: true, canDelete: true };
+    // 3) 历史兜底：users 表里没有任何管理员时，才认安全设置里的管理端账号
+    const hasAdmin = (await prisma.user.count({ where: { role: 'admin' } })) > 0;
+    if (!hasAdmin) {
+      const auth = await this.authConfig();
+      const cfgPass = String(auth?.admin?.adminPassword || '');
+      if (cfgPass) {
+        const cfgUser = String(auth?.admin?.adminUsername || '').trim() || 'admin';
+        if (safeEqual(username, cfgUser) && matchSecret(password, cfgPass)) {
+          this.upgradeAdminSecret(cfgPass).catch(() => undefined);
+          return {
+            user: cfgUser,
+            role: 'admin',
+            enabled: true,
+            canEdit: true,
+            canDelete: true,
+            totpEnabled: false,
+            frontDays: DEFAULT_SESSION_DAYS,
+            backDays: DEFAULT_SESSION_DAYS,
+          };
+        }
+        return null;
       }
-      return null;
-    }
-
-    // 4) 环境变量初始账号
-    const envUser = process.env.ADMIN_USER || 'admin';
-    const envPass = process.env.ADMIN_PASSWORD || 'go-imgbed';
-    if (safeEqual(username, envUser) && safeEqual(password, envPass)) {
-      return { user: envUser, role: 'admin', enabled: true, canEdit: true, canDelete: true };
+      // 4) 环境变量初始账号（同上，仅全新空库时生效）
+      const envUser = process.env.ADMIN_USER || 'admin';
+      const envPass = process.env.ADMIN_PASSWORD || 'go-imgbed';
+      if (safeEqual(username, envUser) && safeEqual(password, envPass)) {
+        return {
+          user: envUser,
+          role: 'admin',
+          enabled: true,
+          canEdit: true,
+          canDelete: true,
+          totpEnabled: false,
+          frontDays: DEFAULT_SESSION_DAYS,
+          backDays: DEFAULT_SESSION_DAYS,
+        };
+      }
     }
     return null;
   }
 
-  /**
-   * 「安全设置 → 用户端认证」口令校验（不含用户名）。
-   *
-   * 用途：普通用户登入的第二种密码通道 —— 普通用户既可用「用户管理」里
-   * 自己账户的密码登入，也可以用这里配置的用户端认证口令登入。
-   * 取值优先级：安全设置 auth.user.authCode > 环境变量 AUTH_CODE / AUTH_MIKF。
+  /*
+   * 「用户端认证 / 上传密码」通道已于 v202610221824 下线：
+   * 用户登录只认自身账户的用户名 + 密码，不再接受安全设置里配置的公共上传口令。
+   * 相关的 matchUserAuthCode / verifyAuthCode / upgradeUserSecret 一并删除。
    */
-  private async matchUserAuthCode(input: string): Promise<boolean> {
-    if (!input) return false;
-    const auth = await this.authConfig();
-    const cfg = String(auth?.user?.authCode || '');
-    if (cfg) {
-      if (!matchSecret(input, cfg)) return false;
-      this.upgradeUserSecret(cfg).catch(() => undefined);
-      return true;
-    }
-    const env = this.envAuthCode();
-    return !!env && safeEqual(input, env);
-  }
-
-  /** 用户认证码校验（兼容旧上传页 authCode 登录） */
-  private async verifyAuthCode(authCode: string): Promise<boolean> {
-    return this.matchUserAuthCode(authCode);
-  }
 
   /** 把历史明文管理端口令原地升级为散列 */
   private async upgradeAdminSecret(stored: string): Promise<void> {
@@ -171,42 +179,19 @@ export class AuthController {
     await this.sysConfig.writeSecurityRaw(raw);
   }
 
-  /** 把历史明文用户认证码原地升级为散列 */
-  private async upgradeUserSecret(stored: string): Promise<void> {
-    if (isHashedSecret(stored)) return;
-    const raw = await this.sysConfig.readSecurityRaw();
-    const cur = String(raw?.auth?.user?.authCode || '');
-    if (!cur || isHashedSecret(cur)) return;
-    raw.auth.user.authCode = hashSecret(cur);
-    await this.sysConfig.writeSecurityRaw(raw);
-  }
-
-  /** 会话有效期（天）：读取「安全设置 → 会话有效期（天）」，0 表示永久 */
-  private async sessionDays(role: Role): Promise<number> {
-    try {
-      const security: any = await this.sysConfig.get('security');
-      const days = Number(
-        role === 'user'
-          ? security?.access?.userSessionMaxAge ?? 14
-          : security?.access?.adminSessionMaxAge ?? 14,
-      );
-      if (!Number.isFinite(days) || days < 0) return 14;
-      return Math.floor(days);
-    } catch {
-      return 14;
-    }
-  }
-
   /**
-   * 会话有效期：读取「安全设置 → 会话有效期（天）」。
-   * 配置 N 天 → Cookie maxAge 与服务端 exp 均按 N 天签发，
-   * 保证「设置 365 天就 365 天不掉线」（除非清 Cookie / 手动退出）。
-   * 0（永久）→ 下发 10 年长度的持久 Cookie，服务端不做过期校验。
+   * 会话有效期（天）——
+   * v202610221824 起从「安全设置 → 会话安全策略」迁移到「用户管理 → 每个账户」：
+   *   frontSessionDays 管前端页（上传页/画廊/历史记录），到期需重新登录；
+   *   backSessionDays  管后台页（系统管理/用户管理/文件管理），到期只需重新做两步验证。
+   * 账户未设置（null）时按 DEFAULT_SESSION_DAYS（7 天）处理，0 表示永久。
    */
-  private async sessionMaxAge(role: Role): Promise<number | undefined> {
-    const days = await this.sessionDays(role);
-    if (days <= 0) return 10 * 365 * 24 * 3600 * 1000;
-    return Math.round(days * 24 * 3600 * 1000);
+  private sessionDaysOf(days: number | null | undefined): number {
+    const n = Number(days);
+    if (!Number.isFinite(n)) return DEFAULT_SESSION_DAYS;
+    if (n === 0) return 0;
+    if (n < 0) return DEFAULT_SESSION_DAYS;
+    return Math.floor(n);
   }
 
   /**
@@ -233,45 +218,59 @@ export class AuthController {
     return proto === 'https';
   }
 
-  private async setSession(res: Response, user: string, role: Role, req?: Request) {
-    // 服务端 exp 与 Cookie maxAge 使用同一份「会话有效期」配置，
-    // 避免出现「Cookie 还在、服务端会话已过期」的提前掉线
-    const days = await this.sessionDays(role);
-    const { payload, sig } = makeSession(user, role, days);
-    const maxAge = await this.sessionMaxAge(role);
+  /**
+   * 下发会话 Cookie。
+   * @param verified 本次是否已通过两步验证（未启用 2FA 的账户恒 true）
+   */
+  private async setSession(
+    res: Response,
+    account: { user: string; role: Role; totpEnabled?: boolean; frontDays?: number; backDays?: number },
+    req?: Request,
+    verified = false,
+  ) {
+    const { payload, sig, maxAge } = makeSession(account.user, account.role, {
+      frontDays: this.sessionDaysOf(account.frontDays),
+      backDays: this.sessionDaysOf(account.backDays),
+      totpEnabled: !!account.totpEnabled,
+      verified: account.totpEnabled ? verified : true,
+    });
     const opts: Record<string, unknown> = { httpOnly: true, sameSite: 'lax', path: '/' };
-    if (maxAge !== undefined) opts.maxAge = maxAge;
+    if (maxAge > 0) opts.maxAge = maxAge;
     if ((await this.sessionSecureEnabled()) && this.isHttps(req)) opts.secure = true;
     res.cookie(SESSION_COOKIE, `${payload}.${sig}`, opts);
   }
 
-  /** 统一登录：用户名 + 密码 */
+  /**
+   * 统一登录：用户名 + 密码。
+   *
+   * 启用两步验证的账户登录成功后 `needTotp: true` —— 此时会话已建立但 `tv=false`，
+   * 只能访问前端页面；进后台会被 guard 拦下要求输入动态码（POST /api/auth/totp/verify）。
+   */
   @Post('login')
   @HttpCode(200)
   async login(
-    @Body() body: { username?: string; password?: string; authCode?: string },
+    @Body() body: { username?: string; password?: string; code?: string },
     @Res() res: Response,
     @Req() req?: Request,
   ) {
-    // 兼容旧上传页：只传 authCode
-    if (!body.username && body.authCode) {
-      if (!(await this.verifyAuthCode(body.authCode))) {
-        return res.status(401).json({ success: false, message: '认证码错误' });
-      }
-      await this.setSession(res, 'user', 'user', req);
-      return res.json({ success: true, data: { type: 'user', role: 'user', username: 'user' } });
-    }
-
     const username = (body.username || '').trim();
     const account = await this.verifyAccount(username, body.password || '');
     if (!account) return res.status(401).json({ success: false, message: '用户名或密码错误' });
-    await this.setSession(res, account.user, account.role, req);
+
+    // 登录时一并提交了动态码 → 直接完成两步验证（减少一次交互）
+    let verified = false;
+    if (account.totpEnabled && body.code) {
+      verified = await this.checkTotp(account.user, String(body.code));
+    }
+    await this.setSession(res, account, req, verified);
     return res.json({
       success: true,
       data: {
         type: account.role === 'user' ? 'user' : 'admin',
         role: account.role,
         username: account.user,
+        // 启用了 2FA 且本次未带/未通过动态码 → 前端弹输入框
+        needTotp: account.totpEnabled && !verified,
       },
     });
   }
@@ -280,11 +279,79 @@ export class AuthController {
   @Post('adminLogin')
   @HttpCode(200)
   async adminLogin(
-    @Body() body: { username?: string; password?: string },
+    @Body() body: { username?: string; password?: string; code?: string },
     @Res() res: Response,
     @Req() req?: Request,
   ) {
     return this.login(body, res, req);
+  }
+
+  /** 校验某账户的动态码（内部：读取加密存储的 TOTP 密钥） */
+  private async checkTotp(username: string, code: string): Promise<boolean> {
+    const u = await prisma.user.findUnique({ where: { username } });
+    if (!u || !u.totpEnabled || !u.totpSecret) return false;
+    let secret = '';
+    try {
+      secret = CryptoService.decrypt(u.totpSecret);
+    } catch {
+      return false;
+    }
+    const ok = verifyTotp(secret, code);
+    if (ok) {
+      await prisma.user.update({ where: { id: u.id }, data: { backVerifiedAt: new Date() } });
+    }
+    return ok;
+  }
+
+  /**
+   * 两步验证（后台门禁）：当前会话已登录但未通过 2FA / 2FA 状态过期时调用。
+   * 校验通过后重新签发会话（tva 刷新），不需要重新输入密码。
+   */
+  @Post('totp/verify')
+  @HttpCode(200)
+  async totpVerify(@Body() body: { code?: string }, @Req() req: Request, @Res() res: Response) {
+    const session = parseSession(req.cookies?.[SESSION_COOKIE]);
+    if (!session) return res.status(401).json({ success: false, message: '未登录或会话已过期' });
+    const u = await prisma.user.findUnique({ where: { username: session.user } });
+    if (!u) return res.status(401).json({ success: false, message: '账户不存在' });
+    if (!u.totpEnabled) {
+      // 没启用 2FA：直接刷新会话即可（避免前端卡在验证框）
+      await this.setSession(res, { user: u.username, role: session.role, totpEnabled: false }, req, true);
+      return res.json({ success: true, data: { verified: true } });
+    }
+    const ok = await this.checkTotp(u.username, String(body.code || ''));
+    if (!ok) return res.status(400).json({ success: false, message: '验证码错误或已过期' });
+    await this.setSession(
+      res,
+      {
+        user: u.username,
+        role: session.role,
+        totpEnabled: true,
+        frontDays: u.frontSessionDays ?? DEFAULT_SESSION_DAYS,
+        backDays: u.backSessionDays ?? DEFAULT_SESSION_DAYS,
+      },
+      req,
+      true,
+    );
+    return res.json({ success: true, data: { verified: true } });
+  }
+
+  /** 当前会话的两步验证状态（前端弹框前先问一次，避免无谓弹窗） */
+  @Get('totp/status')
+  async totpStatus(@Req() req: Request) {
+    const session = parseSession(req.cookies?.[SESSION_COOKIE]);
+    if (!session) return { success: true, data: { loggedIn: false, enabled: false, required: false } };
+    const u = await prisma.user.findUnique({ where: { username: session.user } });
+    const enabled = !!u?.totpEnabled;
+    return {
+      success: true,
+      data: {
+        loggedIn: true,
+        enabled,
+        // required = 已启用 2FA 但本次会话没通过验证 / 验证状态已过后端会话窗
+        required: enabled && !totpValid(session),
+      },
+    };
   }
 
   /**
@@ -298,16 +365,34 @@ export class AuthController {
     const userRequired = await this.isUserConfigured(auth);
 
     const session = parseSession(req.cookies?.[SESSION_COOKIE]);
-    const valid = !!session;
+    // 前端会话到期（fexp）即视为未登录 —— 需要重新输入用户名密码
+    const valid = !!session && frontValid(session);
     const role: Role | null = session ? session.role : null;
 
-    // 权限：普通用户取账户配置；管理员/超管默认全权
+    // 权限 / 资料：普通用户取账户配置；管理员/超管默认全权
     let canEdit = true;
     let canDelete = true;
-    if (session && session.role === 'user') {
+    let totpEnabled = !!session?.t2;
+    let totpRequired = false;
+    let profile: Record<string, unknown> = {};
+    if (session) {
       const u = await prisma.user.findUnique({ where: { username: session.user } });
-      canEdit = u?.canEdit ?? true;
-      canDelete = u?.canDelete ?? true;
+      if (u) {
+        canEdit = u.canEdit ?? true;
+        canDelete = u.canDelete ?? true;
+        totpEnabled = u.totpEnabled;
+        totpRequired = u.totpEnabled && !totpValid(session);
+        profile = {
+          username: u.username,
+          nickname: u.nickname || u.username,
+          email: u.email || '',
+          role: u.role,
+          avatar: u.avatar || '',
+          avatarUrl: u.avatar ? `/api/avatar/${encodeURIComponent(u.username)}?v=${encodeURIComponent(u.avatar)}` : '',
+          frontSessionDays: u.frontSessionDays ?? DEFAULT_SESSION_DAYS,
+          backSessionDays: u.backSessionDays ?? DEFAULT_SESSION_DAYS,
+        };
+      }
     }
 
     return {
@@ -320,6 +405,10 @@ export class AuthController {
       username: session?.user ?? null,
       canEdit,
       canDelete,
+      // 已启用 2FA 且当前会话未通过验证 → 前端进后台前弹动态码输入框
+      totpEnabled,
+      totpRequired,
+      profile,
       data: {
         isLoggedIn: valid,
         isAdmin: role === 'admin' || role === 'super',
@@ -332,6 +421,9 @@ export class AuthController {
         userRequired,
         valid,
         authType: role,
+        totpEnabled,
+        totpRequired,
+        profile,
       },
     };
   }

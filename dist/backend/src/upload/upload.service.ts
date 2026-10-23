@@ -12,6 +12,7 @@ import { localFileAbs } from '../adapters/local.adapter';
 import { ChannelInfo } from '../adapters/adapter.interface';
 import { normalizeUploadSource, fileTypeOf, channelShort } from '../common/file-view';
 import { appLog } from '../common/app-log';
+import { joinObjectKey, renderFileName, renderObjectPrefix, supportsPrefix } from '../common/path-template';
 
 interface UploadOptions {
   /** 渠道类型过滤（cos/minio/r2…）：仅用于「按类型挑一条可用渠道」 */
@@ -117,6 +118,13 @@ export class UploadService {
    * 备份（低优先级）任务据此让路：主渠道上传期间备份不抢带宽，保证上传速度优先。
    */
   private activeUploads = 0;
+
+  /**
+   * 备用库轮转游标（v202610221824）。
+   * 每次主渠道失败需要切换时取模决定从备用库池的哪一条开始，
+   * 让多次上传均摊到各备用库，而不是永远先试同一条。
+   */
+  private poolCursor = 0;
 
   /**
    * 低优先级（备份）任务串行链。
@@ -635,15 +643,62 @@ export class UploadService {
     return sw === 'true';
   }
 
-  /** 按命名策略生成存储 key（folder 仅作逻辑分类，不参与远端路径，避免与日期前缀重复嵌套） */
-  private makeKey(originalName: string, nameType: string | undefined, _folder?: string): string {
-    const ext = originalName.includes('.') ? '.' + originalName.split('.').pop() : '';
+  /**
+   * 按命名策略生成存储 key。
+   *
+   * 两类渠道分开处理（v202610221824）：
+   *   A. 支持「对象前缀 / 自定义文件命名」的渠道（minio / cos / aliyun / r2 / s3 / webdav）：
+   *      前缀取渠道配置 objectPrefix，占位符 {y}{m}{d}；为空时默认 `年/月`（2026/10）。
+   *      文件名取渠道配置 customName，占位符 {filename}{uuid}{md5}{timestamp}{ext}；
+   *      为空时默认 `文件名-时间戳`。
+   *   B. 其它渠道（local / easyimages / lsky / immich / custom）：沿用历史 `YYYYMM/随机名`，
+   *      本地存储据此识别「首段 6 位数字」再叠加用户目录，不能随意改格式。
+   */
+  private makeKeyFor(
+    channel: StorageChannelInfo,
+    originalName: string,
+    nameType: string | undefined,
+    md5: string,
+  ): string {
+    const dot = originalName.lastIndexOf('.');
+    const ext = dot > 0 ? originalName.slice(dot + 1).toLowerCase() : '';
+    const stem = dot > 0 ? originalName.slice(0, dot) : originalName;
+
+    if (supportsPrefix(channel.type)) {
+      let cfg: Record<string, string> = {};
+      try {
+        cfg = this.channels.decryptConfig(channel.type, channel.config);
+      } catch {
+        cfg = {};
+      }
+      // 上传设置的「命名策略」（default/index/original）仅在渠道未自定义命名时生效
+      let fileName: string;
+      const customName = String(cfg.customName || '').trim();
+      if (customName) {
+        fileName = renderFileName(customName, { originalName, stem, ext, md5, timestamp: Date.now() });
+      } else if (nameType === 'original') {
+        fileName = ext ? `${stem}.${ext}` : stem;
+      } else if (nameType === 'index') {
+        fileName = `${Date.now()}.${ext || 'bin'}`;
+      } else {
+        // 默认：文件名-时间戳（需求规定的兜底格式）
+        fileName = renderFileName('', { originalName, stem, ext, md5, timestamp: Date.now() });
+      }
+      // 前缀模板：优先新字段 objectPrefix，兼容历史字段 keyPrefix（cos/aliyun 旧称「指定存储路径」）。
+      // 两者都为空 → renderObjectPrefix 内部兜底为 `年/月`。
+      // 注意：前缀由这里统一渲染进 key，适配器不再二次拼接 keyPrefix，
+      // 否则「对象前缀」会被重复叠加（img/2026/10/img/2026/10/x.png）。
+      const prefix = renderObjectPrefix(cfg.objectPrefix || cfg.keyPrefix);
+      return joinObjectKey(prefix, fileName);
+    }
+
+    // B 类：历史格式保持不变
     const date = new Date();
     const datePath = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}`;
     let name: string;
     switch (nameType) {
       case 'original':
-        name = originalName.replace(/\.[^.]+$/, '');
+        name = stem;
         break;
       case 'index':
         name = datePath + String(date.getTime());
@@ -651,7 +706,7 @@ export class UploadService {
       default: // default：随机短 ID
         name = CryptoService.shortId();
     }
-    return `${datePath}/${name}${ext}`;
+    return `${datePath}/${name}${ext ? '.' + ext : ''}`;
   }
 
   /**
@@ -892,16 +947,34 @@ export class UploadService {
     }
 
     const folder = await this.resolveFolder(opts.uploadFolder);
-    const key = this.makeKey(originalName, opts.uploadNameType, folder);
+    const key = this.makeKeyFor(main, originalName, opts.uploadNameType, md5);
 
-    // 主渠道上传；开启「自动切换」时主渠道失败则按渠道 ID 顺序尝试其它渠道
+    /*
+     * 主渠道上传失败后的切换链：
+     *   1) 「更多 → 设为备用库」标记的渠道（backupPool=true）组成备用库池，
+     *      按轮转游标依次尝试 —— 每次上传把起点后移一位，避免总压在同一个备用库上；
+     *   2) 池为空且调用方允许自动切换时，退回历史行为（全部启用渠道按 code 升序）。
+     * 备份渠道（isBackup）不参与切换：备份失败只记日志，绝不反复重传。
+     */
     const chain: StorageChannelInfo[] = [main];
     if (opts.autoRetry) {
-      const others = await prisma.channel.findMany({
-        where: { enabled: true, NOT: { id: main.id } },
+      const pool = await prisma.channel.findMany({
+        where: { enabled: true, backupPool: true, NOT: { id: main.id } },
         orderBy: { code: 'asc' },
       });
-      chain.push(...others);
+      if (pool.length) {
+        const start = this.poolCursor++ % pool.length;
+        const rotated = [...pool.slice(start), ...pool.slice(0, start)];
+        for (const c of rotated) {
+          chain.push({ id: c.id, code: c.code, name: c.name, type: c.type, config: c.config });
+        }
+      } else {
+        const others = await prisma.channel.findMany({
+          where: { enabled: true, NOT: { id: main.id } },
+          orderBy: { code: 'asc' },
+        });
+        chain.push(...others);
+      }
     }
 
     const startedAt = Date.now();

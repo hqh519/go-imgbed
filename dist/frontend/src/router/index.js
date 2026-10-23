@@ -1,9 +1,44 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import store from '../store'
 import axios from '@/utils/axios'
 import i18n from '@/locales'
 import { OverlayScrollbars } from 'overlayscrollbars'
+
+/**
+ * 两步验证门禁（v202610221824）。
+ *
+ * 触发时机：账户启用了 2FA，但本次会话尚未验证、或「后端会话有效期」已过。
+ * 此时登录态仍然有效（前端页可正常用），只是进后台需要补一次动态码。
+ * 验证通过后后端会重签会话（刷新 tva），这里同步清掉探测缓存。
+ */
+const promptTotp = async () => {
+  try {
+    const { value } = await ElMessageBox.prompt(
+      i18n.global.t('login.totpPrompt'),
+      i18n.global.t('login.totpTitle'),
+      {
+        confirmButtonText: i18n.global.t('common.confirm'),
+        cancelButtonText: i18n.global.t('common.cancel'),
+        inputPattern: /^\d{6}$/,
+        inputErrorMessage: i18n.global.t('login.totpInvalid'),
+        closeOnClickModal: false,
+      },
+    )
+    await axios.post('/api/auth/totp/verify', { code: value }, { withCredentials: true })
+    sessionProbeCache.at = 0
+    sessionProbeCache.data = null
+    return true
+  } catch (e) {
+    return false
+  }
+}
+
+/** 若需要 2FA，则弹框；返回是否放行 */
+const ensureTotp = async (data) => {
+  if (!data?.valid || !data?.totpRequired) return true
+  return promptTotp()
+}
 
 /**
  * 统一的会话探测（所有守卫共用）：
@@ -79,7 +114,10 @@ function applySession(data) {
     canDelete: data.canDelete !== false,
     valid: !!data.valid,
     adminRequired: !!data.adminRequired,
-    userRequired: !!data.userRequired
+    userRequired: !!data.userRequired,
+    // 当前用户头像（前端左上角 logo 优先用它）
+    avatarUrl: data.profile?.avatarUrl || '',
+    totpRequired: !!data.totpRequired,
   }
   store.commit('setSession', info)
   return info
@@ -131,7 +169,11 @@ const manageAuthGuard = (to, from, next) => {
     const data = res.data || {}
     const info = applySession(data)
 
-    if (info.valid) return next()
+    if (info.valid) {
+      // 后台页需要 2FA：先补动态码，通过后再放行
+      ensureTotp(data).then(ok => (ok ? next() : next({ name: 'login' })))
+      return
+    }
 
     if (to.name !== 'login') {
       if (store.state.userLoggedIn) ElMessage.error(i18n.global.t('login.authRequired'))
@@ -164,7 +206,10 @@ const adminAuthGuard = (to, from, next) => {
     const info = applySession(data)
 
     if (info.role === 'super') return next({ name: 'superAdmin' })
-    if (info.role === 'admin') return next()
+    if (info.role === 'admin') {
+      ensureTotp(data).then(ok => (ok ? next() : next({ name: 'login' })))
+      return
+    }
 
     if (info.valid) {
       ElMessage.error(i18n.global.t('login.adminRequired'))
@@ -216,7 +261,10 @@ const userManageGuard = (to, from, next) => {
 
     // 超级管理员专用页优先
     if (info.role === 'super') return next({ name: 'superAdmin' })
-    if (info.valid) return next()
+    if (info.valid) {
+      ensureTotp(data).then(ok => (ok ? next() : next({ name: 'login' })))
+      return
+    }
 
     if (store.state.userLoggedIn) ElMessage.error(i18n.global.t('login.authRequired'))
     next({ name: 'login' })
@@ -247,6 +295,14 @@ const routes = [
     path: '/customerConfig',
     name: 'customerConfig',
     component: () => import('../views/CustomerConfig.vue'),
+    beforeEnter: userManageGuard
+  },
+  {
+    // 用户编辑独立页（v202610221824）：从「用户管理 → 编辑」跳转，
+    // 承载头像裁剪 / 邮箱 / 两步验证 / 会话有效期 / 渠道授权 / 用户公告等设置项。
+    path: '/customerConfig/edit/:id',
+    name: 'userEdit',
+    component: () => import('../views/UserEditPage.vue'),
     beforeEnter: userManageGuard
   },
   {

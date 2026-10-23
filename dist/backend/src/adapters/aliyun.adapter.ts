@@ -174,7 +174,9 @@ export class AliyunOssAdapter implements StorageAdapter {
     key: string,
     channel: ChannelInfo,
   ): Promise<UploadResult> {
-    const fullKey = (channel.config.keyPrefix || '') + key;
+    // key 已由 UploadService.makeKeyFor 拼好「对象前缀 + 文件名」（含 {y}/{m}/{d} 渲染），
+    // 这里**不要**再拼 config.keyPrefix，否则前缀会重复叠加。
+    const fullKey = key;
     try {
       await this.request('PUT', fullKey, { body: file.buffer, mime: file.mime });
       return { remoteKey: fullKey };

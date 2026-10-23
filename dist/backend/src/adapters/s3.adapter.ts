@@ -104,8 +104,9 @@ export class S3Adapter implements StorageAdapter {
   }
 
   async upload(file: { buffer: Buffer; mime: string; originalName: string }, key: string, channel: ChannelInfo): Promise<UploadResult> {
-    const cfg = channel.config;
-    const fullKey = (cfg.keyPrefix || '') + key;
+    // key 已由 UploadService.makeKeyFor 拼好「对象前缀 + 文件名」（含 {y}/{m}/{d} 渲染），
+    // 这里**不要**再拼 config.keyPrefix，否则前缀会重复叠加。
+    const fullKey = key;
     try {
       await this.client.send(
         new PutObjectCommand({

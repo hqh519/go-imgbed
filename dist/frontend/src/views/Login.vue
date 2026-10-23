@@ -104,10 +104,14 @@ export default {
                         valid: true
                     });
                     this.$store.dispatch('fetchUserConfig');
+                    /*
+                     * v202610221824：登录成功后统一回前端页（上传页），不再把管理员
+                     * 直接丢进后台。后台入口由导航进入；启用了两步验证的账户在
+                     * 打开后台页面时才会弹动态码输入框（见全局 2FA 门禁）。
+                     * 超级管理员是「找回管理员」的专用入口，仍直达其页面。
+                     */
                     if (info.role === 'super') {
                         this.$router.push('/superAdmin');
-                    } else if (info.role === 'admin') {
-                        this.$router.push('/dashboard');
                     } else {
                         this.$router.push('/');
                     }

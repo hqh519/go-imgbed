@@ -127,6 +127,41 @@
                         </template>
                     </el-table-column>
                 </el-table>
+
+                <!-- ============================================================
+                     用户公告（v202610221824）
+                     管理员：多行文本框（10 行）可直接编辑发布，支持 HTML；
+                     普通用户：只读渲染在列表下方，用于接收管理员通知。
+                     ============================================================ -->
+                <div class="notice-block">
+                    <template v-if="isAdminRole">
+                        <div class="notice-head">
+                            <span class="notice-title">{{ $t('userManage.noticeTitle') }}</span>
+                            <span class="notice-hint">{{ $t('userEdit.noticeHint') }}</span>
+                        </div>
+                        <el-input
+                            v-model="noticeText"
+                            type="textarea"
+                            :rows="10"
+                            :placeholder="$t('userEdit.noticePlaceholder')"
+                            class="notice-textarea"
+                        />
+                        <div class="notice-footer">
+                            <el-button type="primary" plain size="small" :loading="noticeSaving" @click="saveNotice">
+                                {{ $t('userEdit.noticeSave') }}
+                            </el-button>
+                            <span class="notice-hint">{{ $t('userEdit.noticeSupportHtml') }}</span>
+                        </div>
+                    </template>
+                    <template v-else>
+                        <div class="notice-head">
+                            <span class="notice-title">{{ $t('userManage.noticeTitle') }}</span>
+                        </div>
+                        <!-- eslint-disable-next-line vue/no-v-html -->
+                        <div v-if="noticeText" class="notice-body" v-html="noticeText"></div>
+                        <div v-else class="notice-empty">{{ $t('userManage.noticeEmpty') }}</div>
+                    </template>
+                </div>
             </template>
 
             <!-- ============================================================
@@ -403,6 +438,7 @@ import AdminHeader from '@/components/dashboard/AdminHeader.vue';
 import ChannelSelect from '@/components/config/ChannelSelect.vue';
 import FileDetailDialog from '@/components/dashboard/FileDetailDialog.vue';
 import backgroundManager from '@/mixins/backgroundManager';
+import pageActivation from '@/mixins/pageActivation';
 import { fileLink } from '@/utils/fileLink';
 
 const CHANNEL_TYPE_LABELS = {
@@ -422,7 +458,7 @@ const CHANNEL_TYPE_LABELS = {
  */
 export default {
     name: 'CustomerConfig',
-    mixins: [backgroundManager],
+    mixins: [backgroundManager, pageActivation],
     data() {
         return {
             // 'accounts'（用户账户管理） | 'collect'（归集统计）
@@ -449,6 +485,9 @@ export default {
             showProfileDialog: false,
             profileTarget: null,
             profileNickname: '',
+            // 用户公告（管理员可编辑，普通用户只读）
+            noticeText: '',
+            noticeSaving: false,
 
             // —— 归集统计视图 ——
             collectMode: 'user',
@@ -611,23 +650,14 @@ export default {
                 this.$refs.usernameInput?.focus?.();
             });
         },
+        /*
+         * 编辑账户 → 独立页面（v202610221824）。
+         * 原来用弹窗，但设置项已经多到弹窗装不下（头像/邮箱/2FA/会话/渠道/备注/公告），
+         * 改成 /customerConfig/edit/:id，层级更清楚，也不受弹窗高度限制。
+         */
         openEditDialog(row) {
-            this.editingUser = row;
-            this.userForm = {
-                username: row.username,
-                nickname: row.nickname || '',
-                adminNote: row.adminNote || '',
-                password: '',
-                mainChannelId: row.mainChannelId || '',
-                backupChannelId: row.backupChannelId || '',
-                canEdit: row.canEdit !== false,
-                canDelete: row.canDelete !== false,
-                linkEnabled: row.linkEnabled !== false,
-                enabled: row.enabled !== false,
-                enforceLimits: row.enforceLimits !== false
-            };
-            this.showUserDialog = true;
-            this.$nextTick(() => this.$refs.userFormRef?.clearValidate?.());
+            if (!row?.id) return;
+            this.$router.push({ name: 'userEdit', params: { id: row.id } });
         },
         async submitUser() {
             // 非编辑态：走表单校验，错误直接显示在用户名 / 密码输入框下方
@@ -723,10 +753,10 @@ export default {
          * 后端 PUT /api/manage/users/:id 对非管理员会话只接受 password / nickname，
          * 其余字段（启用 / 权限 / 主备渠道）一律忽略，所以这里只提交 nickname。
          */
+        /** 普通用户改自己的资料：同样进独立页（可改用户名/密码/邮箱/头像/2FA/会话） */
         openProfileDialog(row) {
-            this.profileTarget = row;
-            this.profileNickname = row.nickname || '';
-            this.showProfileDialog = true;
+            if (!row?.id) return;
+            this.$router.push({ name: 'userEdit', params: { id: row.id } });
         },
         async submitProfile() {
             this.savingUser = true;
@@ -876,11 +906,41 @@ export default {
                 .finally(() => { this.loading = false; });
         },
         handleResize() { this.viewportWidth = window.innerWidth; },
+
+        /** 页面重新可见时自动刷新（避免长时间挂着回来看到空列表） */
+        onPageActivate() {
+            this.loadUsers();
+            this.loadNotice();
+            if (this.activeModule === 'collect' && this.collectMode === 'ip') this.loadIpList();
+        },
+
+        /* ---------------- 用户公告 ---------------- */
+        async loadNotice() {
+            try {
+                const res = await axios.get('/api/manage/users/notice', { withCredentials: true });
+                this.noticeText = res.data?.success ? (res.data.data?.content || '') : '';
+            } catch {
+                this.noticeText = '';
+            }
+        },
+        async saveNotice() {
+            this.noticeSaving = true;
+            try {
+                const res = await axios.post('/api/manage/users/notice', { content: this.noticeText }, { withCredentials: true });
+                if (res.data?.success) this.$message.success(this.$t('common.success'));
+                else this.$message.error(res.data?.message || this.$t('common.failed'));
+            } catch (e) {
+                this.$message.error(e?.response?.data?.message || this.$t('common.failed'));
+            } finally {
+                this.noticeSaving = false;
+            }
+        },
     },
     mounted() {
         window.addEventListener('resize', this.handleResize);
         this.initializeBackground('adminBkImg', '.container', false, true);
         this.loadUsers();
+        this.loadNotice();
     },
     beforeUnmount() {
         window.removeEventListener('resize', this.handleResize);
@@ -895,6 +955,49 @@ export default {
     font-weight: 400;
     color: var(--el-text-color-secondary);
     margin-left: 6px;
+}
+/* 用户公告区块（列表下方） */
+.notice-block {
+    width: 95%;
+    max-width: 1400px;
+    margin: 16px auto 24px;
+    padding: 16px 18px;
+    border-radius: 16px;
+    border: 1px solid var(--glass-border);
+    background: var(--glass-bg);
+    backdrop-filter: blur(20px) saturate(1.4);
+    -webkit-backdrop-filter: blur(20px) saturate(1.4);
+    box-shadow: var(--glass-shadow);
+}
+.notice-head {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-bottom: 10px;
+}
+.notice-title { font-size: 14px; font-weight: 600; }
+.notice-hint {
+    font-size: 12px;
+    color: var(--el-text-color-secondary);
+    font-weight: 400;
+    line-height: 1.5;
+}
+.notice-textarea { width: 100%; }
+.notice-footer {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 10px;
+}
+.notice-body {
+    font-size: 14px;
+    line-height: 1.75;
+    word-break: break-word;
+}
+.notice-empty {
+    font-size: 13px;
+    color: var(--el-text-color-secondary);
 }
 .main-table {
     width: 95%;

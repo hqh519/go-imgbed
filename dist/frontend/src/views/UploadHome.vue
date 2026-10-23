@@ -154,7 +154,8 @@
                 </el-button>
             </el-tooltip>
         </div>
-        <Logo :useConfigLink="true" />
+        <!-- 左上角 logo：优先显示当前用户头像；点击进入「用户管理」页 -->
+        <Logo href="/customerConfig" target="_self" :useConfigLink="false" />
         <div class="header">
             <h1 class="title">
                 <span class="title-crayon-text" aria-hidden="true">{{ ownerName }}</span>
@@ -303,6 +304,7 @@ import UploadSettingsDialog from '@/components/upload/UploadSettingsDialog.vue'
 import DirectoryTreePicker from '@/components/DirectoryTreePicker.vue'
 import DirectorySuggestionInput from '@/components/DirectorySuggestionInput.vue'
 import backgroundManager from '@/mixins/backgroundManager'
+import pageActivation from '@/mixins/pageActivation'
 import axios from '@/utils/axios'
 import { ref } from 'vue'
 import { mapGetters } from 'vuex'
@@ -311,7 +313,7 @@ import { getLinkPrefix } from '@/utils/fileLink'
 
 export default {
     name: 'UploadHome',
-    mixins: [backgroundManager],
+    mixins: [backgroundManager, pageActivation],
     data() {
         return {
             selectedUrlForm: ref(''),
@@ -517,6 +519,14 @@ export default {
         DirectorySuggestionInput
     },
     methods: {
+        /**
+         * 页面重新可见 / bfcache 恢复时自动激活：
+         * 重新拉用户配置（渠道授权、上传设置、主题等都可能在此期间被管理员改过）。
+         * 上传中的文件不打断，只刷新配置。
+         */
+        onPageActivate() {
+            this.$store.dispatch('fetchUserConfig').catch(() => {});
+        },
         // 验证上传文件夹路径的合法性
         validateUploadFolder(path, strict = true) {
             // 自动补全前导 /

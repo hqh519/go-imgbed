@@ -181,9 +181,16 @@
                                                     v-for="format in alternativeCopyFormats"
                                                     :key="format.value"
                                                     :command="format.value"
+                                                    :class="{ 'copy-format-active': format.value === selectedUrlForm }"
                                                 >
                                                     <font-awesome-icon :icon="format.icon" class="copy-format-icon" aria-hidden="true" />
                                                     {{ format.label }}
+                                                    <font-awesome-icon
+                                                        v-if="format.value === selectedUrlForm"
+                                                        icon="check"
+                                                        class="copy-format-check"
+                                                        aria-hidden="true"
+                                                    />
                                                 </el-dropdown-item>
                                             </el-dropdown-menu>
                                         </template>
@@ -268,7 +275,7 @@ import { copyText } from '@/utils/clipboard'
 import { fileLink, getLinkPrefix } from '@/utils/fileLink'
 
 const COPY_FORMATS = [
-    { value: 'url', label: 'URL', initial: 'U', icon: 'link' },
+    { value: 'url', label: 'URL', initial: 'Url', icon: 'link' },
     { value: 'md', label: 'Markdown', initial: 'M', icon: 'code' },
     { value: 'html', label: 'HTML', initial: 'H', icon: 'code-branch' },
     { value: 'ubb', label: 'BBCode', initial: 'B', icon: 'quote-right' }
@@ -530,7 +537,12 @@ computed: {
         return COPY_FORMATS.find(format => format.value === this.selectedUrlForm) || COPY_FORMATS[0]
     },
     alternativeCopyFormats() {
-        return COPY_FORMATS.filter(format => format.value !== this.defaultCopyFormat.value)
+        /*
+         * v202610221824：下拉里列出「全部」格式（含当前默认格式）。
+         * 原先把当前格式从下拉里过滤掉，导致用户在下拉里看不到 URL 这一项，
+         * 只能靠按钮右下角那个小小的 "u" 猜当前是什么格式。
+         */
+        return COPY_FORMATS
     },
     uploadSuccessCount() {
         return this.fileList.filter(item => item.status === 'done' || item.status === 'success').length
@@ -3180,6 +3192,15 @@ html.dark .el-upload__text :deep(em) {
     font-weight: 700;
     line-height: 10px;
     pointer-events: none;
+}
+/* 下拉里标记「当前默认格式」 */
+.copy-format-active {
+    font-weight: 600;
+}
+.copy-format-check {
+    margin-left: 6px;
+    font-size: 11px;
+    color: var(--el-color-primary, #409eff);
 }
 
 .modern-action-btn-retry {

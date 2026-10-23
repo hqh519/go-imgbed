@@ -4,52 +4,15 @@
         <div class="first-settings">
             <h3 class="first-title">{{ $t('sysSecurity.authManagement') }}</h3>
 
-            <h4 class="second-title">{{ $t('sysSecurity.userAuth') }}</h4>
-            <el-form 
-                :model="authSettings.user" 
-                :disabled="saving"
-                :rules = "userPassRules"
-                ref = "userPassForm"
-                label-width="120px"
-            >
-                <el-form-item :label="$t('sysSecurity.uploadPassword')" prop="authCode">
-                    <div style="display: flex; gap: 8px; width: 100%;">
-                        <el-input v-model="authSettings.user.authCode" type="password" show-password @input="handleUserPassInput" autocomplete="new-password" :placeholder="authSettings.user._hasPassword ? $t('sysSecurity.passwordUnchanged') : ''" :disabled="clearUserPassword"/>
-                        <el-checkbox v-if="authSettings.user._hasPassword" v-model="clearUserPassword" @change="handleClearUserPassword">{{ $t('sysSecurity.clearPassword') }}</el-checkbox>
-                    </div>
-                </el-form-item>
-
-                <transition name="fade-slide" mode="out-in">
-                    <el-form-item :label="$t('sysSecurity.confirmPassword')" prop="confirmNewUserPassword" v-if="showUserPassConfirm" key="user-confirm">
-                        <el-input v-model="authSettings.user.confirmNewUserPassword" type="password" show-password autocomplete="new-password"/>
-                    </el-form-item>
-                </transition>
-            </el-form>
-            
-            <h4 class="second-title">{{ $t('sysSecurity.adminAuth') }}</h4>
-            <el-form 
-                :model="authSettings.admin"
-                :disabled="saving"
-                :rules = "adminPassRules"
-                ref = "adminPassForm"
-                label-width="120px"
-            >
-                <el-form-item :label="$t('sysSecurity.adminUsername')" prop="adminUsername">
-                    <el-input v-model="authSettings.admin.adminUsername" autocomplete="new-password" :disabled="clearAdminPassword"/>
-                </el-form-item>
-                <el-form-item :label="$t('sysSecurity.adminPassword')" prop="adminPassword">
-                    <div style="display: flex; gap: 8px; width: 100%;">
-                        <el-input v-model="authSettings.admin.adminPassword" type="password" show-password @input="handleAdminPassInput" autocomplete="new-password" :placeholder="authSettings.admin._hasPassword ? $t('sysSecurity.passwordUnchanged') : ''" :disabled="clearAdminPassword"/>
-                        <el-checkbox v-if="authSettings.admin._hasPassword" v-model="clearAdminPassword" @change="handleClearAdminPassword">{{ $t('sysSecurity.clearPassword') }}</el-checkbox>
-                    </div>
-                </el-form-item>
-
-                <transition name="fade-slide" mode="out-in">
-                    <el-form-item :label="$t('sysSecurity.confirmPassword')" prop="confirmNewAdminPassword" v-if="showAdminPassConfirm" key="admin-confirm">
-                        <el-input v-model="authSettings.admin.confirmNewAdminPassword" type="password" show-password autocomplete="new-password"/>
-                    </el-form-item>
-                </transition>
-            </el-form>
+            <!-- v202610221824：用户端上传密码 / 管理端账号密码 已下线，
+                 用户名与密码统一在「用户管理 → 编辑用户」里维护。 -->
+            <el-alert
+                class="auth-migrated-tip"
+                type="info"
+                :closable="false"
+                show-icon
+                :title="$t('sysSecurity.authMigratedTip')"
+            />
 
             <h4 class="second-title token-title">{{ $t('sysSecurity.apiTokenManagement') }}
                 <a class="token-actions">
@@ -366,28 +329,6 @@
                         </el-tooltip>
                     </template>
                     <el-switch v-model="accessSettings.sessionSecure"/>
-                </el-form-item>
-                <el-form-item :label="$t('sysSecurity.userSessionMaxAge')" prop="userSessionMaxAge">
-                    <el-input-number
-                        v-model="accessSettings.userSessionMaxAge"
-                        :min="1"
-                        :max="3650"
-                        :step="1"
-                        :precision="0"
-                        controls-position="right"
-                    />
-                    <span class="form-item-hint">{{ $t('sysSecurity.sessionMaxAgeUnit') }}</span>
-                </el-form-item>
-                <el-form-item :label="$t('sysSecurity.adminSessionMaxAge')" prop="adminSessionMaxAge">
-                    <el-input-number
-                        v-model="accessSettings.adminSessionMaxAge"
-                        :min="1"
-                        :max="3650"
-                        :step="1"
-                        :precision="0"
-                        controls-position="right"
-                    />
-                    <span class="form-item-hint">{{ $t('sysSecurity.sessionMaxAgeUnit') }}</span>
                 </el-form-item>
             </el-form>
         </div>
@@ -1276,36 +1217,12 @@ methods: {
                 return;
             }
 
-            // 验证会话有效期为 1-3650 的正整数
-            if (this.accessSettings.userSessionMaxAge < 1 ||
-                !Number.isInteger(this.accessSettings.userSessionMaxAge) ||
-                this.accessSettings.userSessionMaxAge > 3650 ||
-                this.accessSettings.adminSessionMaxAge < 1 ||
-                !Number.isInteger(this.accessSettings.adminSessionMaxAge) ||
-                this.accessSettings.adminSessionMaxAge > 3650) {
-                this.$message.error(this.$t('sysSecurity.sessionMaxAgeInvalid'));
-                return;
-            }
-
+            // v202610221824：认证字段（上传密码 / 管理员账号密码）已下线，
+            // 这里不再提交 auth 段 —— 不传后端就保持原值，避免误清历史口令。
             const settings = JSON.parse(JSON.stringify({
-                auth: this.authSettings,
                 upload: this.uploadSettings,
                 access: this.accessSettings
             }));
-            // 不保存确认密码相关字段
-            delete settings.auth.user.confirmNewUserPassword;
-            delete settings.auth.admin.confirmNewAdminPassword;
-
-            // 标记清除密码
-            if (this.clearUserPassword) {
-                settings.auth.user._clear = true;
-                settings.auth.user.authCode = '';
-            }
-            if (this.clearAdminPassword) {
-                settings.auth.admin._clear = true;
-                settings.auth.admin.adminPassword = '';
-            }
-
             return fetchWithAuth('/api/manage/sysConfig/security', {
                 method: 'POST',
                 headers: {

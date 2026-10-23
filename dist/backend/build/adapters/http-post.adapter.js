@@ -73,9 +73,11 @@ class HttpPostAdapter {
     }
     async upload(file, key, channel) {
         const cfg = channel.config;
-        const rawApiUrl = (0, endpoint_1.ensureProtocol)(this.fill(cfg.apiUrl || '', file));
+        let rawApiUrl = (0, endpoint_1.ensureProtocol)(this.fill(cfg.apiUrl || '', file));
         if (!rawApiUrl)
             throw new adapter_interface_1.AdapterError('缺少 apiUrl 配置', channel.type);
+        if (channel.type === 'lsky')
+            rawApiUrl = normalizeLskyUrl(rawApiUrl);
         const fileField = cfg.fileField || 'file';
         const extra = {};
         for (const raw of [cfg.extraFields, cfg.body]) {
@@ -215,6 +217,14 @@ function responseMessage(json, fallback) {
             return v;
     }
     return fallback.slice(0, 200);
+}
+function normalizeLskyUrl(url) {
+    const u = String(url || '').trim().replace(/\/+$/, '');
+    if (!u)
+        return u;
+    if (/\/upload$/i.test(u))
+        return u;
+    return `${u}/upload`;
 }
 function normalizeUrl(url, publicDomain, apiUrl) {
     let val = String(url).trim();

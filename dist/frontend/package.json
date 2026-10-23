@@ -1,6 +1,6 @@
 {
   "name": "go-imgbed-frontend",
-  "version": "2.1.0",
+  "version": "202610221824",
   "private": true,
   "type": "module",
   "description": "go-imgbed 前端（基于 Sanyue-ImgHub 改造，Vite 构建）",
@@ -26,6 +26,7 @@
     "overlayscrollbars": "^2.13.0",
     "overlayscrollbars-vue": "^0.5.9",
     "plyr": "^3.8.3",
+    "qrcode-generator": "^2.0.4",
     "vue": "^3.5.13",
     "vue-chartjs": "^5.3.2",
     "vue-cookies": "^1.8.4",

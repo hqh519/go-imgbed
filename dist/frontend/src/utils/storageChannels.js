@@ -48,13 +48,18 @@ export function channelTypeCode(type) {
 
 /**
  * 拉取渠道列表并归一化为 `[{ id, code, name, type, typeCode }]`。
- * 后端 `/api/manage/channels` 返回的是「按类型分组」的对象，这里展平。
+ *
+ * 数据源用**公开接口** `/api/channels`（返回按类型分组）：
+ * 它对管理员返回全部渠道，对普通用户只返回「本地存储 + 被授权的渠道」，
+ * 因此上传设置里的渠道下拉天然只列出用户有权使用的渠道（v202610221824）。
+ * （旧实现打的是 `/api/manage/channels`，普通用户会 403，下拉永远是空的。）
+ *
  * 拉取失败时返回空数组（不抛错，避免阻塞设置页渲染）。
  */
 export async function fetchStorageChannels(force = false) {
     if (channelCache && !force) return channelCache;
     if (inflight && !force) return inflight;
-    inflight = fetchWithAuth('/api/manage/channels')
+    inflight = fetchWithAuth('/api/channels')
         .then((resp) => (resp && resp.ok ? resp.json() : null))
         .then((grouped) => {
             const list = [];

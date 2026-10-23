@@ -13,6 +13,7 @@ exports.StorageChannelService = exports.NO_BACKUP_VALUES = void 0;
 const common_1 = require("@nestjs/common");
 const prisma_1 = require("../common/prisma");
 const sysconfig_service_1 = require("../settings/sysconfig.service");
+const channel_access_1 = require("../common/channel-access");
 exports.NO_BACKUP_VALUES = ['none', '__none__', 'false', '0'];
 let StorageChannelService = class StorageChannelService {
     sysConfig;
@@ -43,13 +44,43 @@ let StorageChannelService = class StorageChannelService {
             null;
         if (!c || !c.enabled)
             return null;
-        return { id: c.id, code: c.code, name: c.name, type: c.type, config: c.config };
+        return {
+            id: c.id,
+            code: c.code,
+            name: c.name,
+            type: c.type,
+            config: c.config,
+            authorizedUsers: c.authorizedUsers,
+        };
+    }
+    async uploaderRole(uploader) {
+        const name = String(uploader || '').trim();
+        if (!name)
+            return null;
+        try {
+            const u = await prisma_1.prisma.user.findUnique({ where: { username: name }, select: { role: true } });
+            if (!u)
+                return null;
+            return u.role === 'admin' ? 'admin' : 'user';
+        }
+        catch {
+            return null;
+        }
     }
     async getStorageChannelCandidates(kind, q = {}) {
         const out = [];
         const seen = new Set();
+        const role = await this.uploaderRole(q.uploader);
+        const restrictToUser = role === 'user';
+        const allow = (c) => {
+            if (!c)
+                return false;
+            if (!restrictToUser)
+                return true;
+            return (0, channel_access_1.channelVisibleTo)(c.authorizedUsers, c.type, String(q.uploader || ''), false);
+        };
         const push = (c) => {
-            if (c && !seen.has(c.id)) {
+            if (c && allow(c) && !seen.has(c.id)) {
                 seen.add(c.id);
                 out.push(c);
             }
@@ -84,14 +115,14 @@ let StorageChannelService = class StorageChannelService {
             orderBy: { sortOrder: 'asc' },
         });
         for (const g of globals)
-            push({ id: g.id, code: g.code, name: g.name, type: g.type, config: g.config });
+            push({ id: g.id, code: g.code, name: g.name, type: g.type, config: g.config, authorizedUsers: g.authorizedUsers });
         if (out.length === 0 && q.channelType) {
             const byType = await prisma_1.prisma.channel.findMany({
                 where: { type: q.channelType, enabled: true },
                 orderBy: [{ isMain: 'desc' }, { sortOrder: 'asc' }],
             });
             for (const c of byType)
-                push({ id: c.id, code: c.code, name: c.name, type: c.type, config: c.config });
+                push({ id: c.id, code: c.code, name: c.name, type: c.type, config: c.config, authorizedUsers: c.authorizedUsers });
         }
         return out;
     }
