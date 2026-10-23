@@ -257,6 +257,9 @@ export function buildMetadata(
 
   const meta: Record<string, unknown> = {
     FileName: rec.originalName,
+    // 重命名历史（v2.3.0）：详情页重命名对话框用它们提供「恢复初始名 / 恢复上一次」
+    FileFirstName: (rec as unknown as { firstName?: string }).firstName || rec.name,
+    FilePrevName: (rec as unknown as { prevName?: string }).prevName || '',
     FileType: fileTypeOf(rec.mime),
     FileExt: fileExtOf(rec.originalName, rec.mime),
     FileSize: formatSize(size),

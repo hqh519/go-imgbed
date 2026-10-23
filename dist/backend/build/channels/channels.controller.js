@@ -45,7 +45,7 @@ var __param = (this && this.__param) || function (paramIndex, decorator) {
     return function (target, key) { decorator(target, key, paramIndex); }
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.ChannelManageController = exports.StorageSettingsController = exports.ChannelsController = exports.parseAuthorizedUsers = exports.channelVisibleTo = exports.ChannelsService = exports.CHANNEL_ORDER_BY = exports.CHANNEL_TYPE_CODE = exports.LEGACY_LOCAL_CHANNEL_CODE = exports.LOCAL_CHANNEL_CODE = exports.BUILTIN_CHANNEL_TYPES = exports.CHANNEL_TYPES = void 0;
+exports.ChannelAllowedController = exports.ChannelManageController = exports.StorageSettingsController = exports.ChannelsController = exports.parseAuthorizedUsers = exports.channelVisibleTo = exports.ChannelsService = exports.CHANNEL_ORDER_BY = exports.CHANNEL_TYPE_CODE = exports.LEGACY_LOCAL_CHANNEL_CODE = exports.LOCAL_CHANNEL_CODE = exports.BUILTIN_CHANNEL_TYPES = exports.CHANNEL_TYPES = void 0;
 exports.channelTypeCode = channelTypeCode;
 const common_1 = require("@nestjs/common");
 const prisma_1 = require("../common/prisma");
@@ -54,6 +54,7 @@ const auth_guard_1 = require("../auth/auth.guard");
 const settings_service_1 = require("../settings/settings.service");
 const adapter_factory_1 = require("../adapters/adapter.factory");
 const storage_channel_service_1 = require("../storage/storage-channel.service");
+const app_log_1 = require("../common/app-log");
 const SECRET_FIELDS = {
     local: [],
     cos: ['secretId', 'secretKey'],
@@ -600,31 +601,6 @@ let ChannelManageController = class ChannelManageController {
         await prisma_1.prisma.channel.update({ where: { id }, data: { authorizedUsers: JSON.stringify(valid) } });
         return { success: true, data: { authorizedUsers: valid } };
     }
-    async allowed(req, username) {
-        const session = (0, auth_guard_1.currentSession)(req);
-        const admin = (0, auth_guard_1.isAdminRole)(session?.role);
-        const target = String(username || session?.user || '').trim();
-        if (!admin && target && target !== session?.user) {
-            return { success: false, message: '只能查看自己的渠道' };
-        }
-        const channels = await prisma_1.prisma.channel.findMany({
-            where: { enabled: true },
-            orderBy: exports.CHANNEL_ORDER_BY,
-        });
-        const list = channels
-            .filter((c) => (admin && !target ? true : (0, channel_access_1.channelVisibleTo)(c.authorizedUsers, c.type, target, admin)))
-            .map((c) => ({
-            id: c.id,
-            code: c.code,
-            name: c.name,
-            type: c.type,
-            typeCode: c.typeCode,
-            isMain: c.isMain,
-            isBackup: c.isBackup,
-            backupPool: c.backupPool,
-        }));
-        return { success: true, data: list };
-    }
     async remove(id) {
         const target = await prisma_1.prisma.channel.findUnique({ where: { id } });
         if (target && exports.BUILTIN_CHANNEL_TYPES.includes(target.type)) {
@@ -698,14 +674,6 @@ __decorate([
     __metadata("design:returntype", Promise)
 ], ChannelManageController.prototype, "setAuthorize", null);
 __decorate([
-    (0, common_1.Get)('allowed/list'),
-    __param(0, (0, common_1.Req)()),
-    __param(1, (0, common_1.Query)('username')),
-    __metadata("design:type", Function),
-    __metadata("design:paramtypes", [Object, String]),
-    __metadata("design:returntype", Promise)
-], ChannelManageController.prototype, "allowed", null);
-__decorate([
     (0, common_1.Delete)(':id'),
     __param(0, (0, common_1.Param)('id')),
     __metadata("design:type", Function),
@@ -717,3 +685,44 @@ exports.ChannelManageController = ChannelManageController = __decorate([
     (0, common_1.UseGuards)(auth_guard_1.AdminGuard),
     __metadata("design:paramtypes", [ChannelsService])
 ], ChannelManageController);
+let ChannelAllowedController = class ChannelAllowedController {
+    async allowed(req, username) {
+        const session = (0, auth_guard_1.currentSession)(req);
+        const admin = (0, auth_guard_1.isAdminRole)(session?.role);
+        const target = String(username || session?.user || '').trim();
+        if (!admin && target && target !== session?.user) {
+            return { success: false, message: '只能查看自己的渠道' };
+        }
+        const channels = await prisma_1.prisma.channel.findMany({
+            where: { enabled: true },
+            orderBy: exports.CHANNEL_ORDER_BY,
+        });
+        const list = channels
+            .filter((c) => (admin && !target ? true : (0, channel_access_1.channelVisibleTo)(c.authorizedUsers, c.type, target, admin)))
+            .map((c) => ({
+            id: c.id,
+            code: c.code,
+            name: c.name,
+            type: c.type,
+            typeCode: c.typeCode,
+            isMain: c.isMain,
+            isBackup: c.isBackup,
+            backupPool: c.backupPool,
+        }));
+        app_log_1.appLog.info('channel', `渠道下拉（allowed/list）：${session?.user || '-'}${target && target !== session?.user ? ` → ${target}` : ''}，共 ${list.length} 个`);
+        return { success: true, data: list };
+    }
+};
+exports.ChannelAllowedController = ChannelAllowedController;
+__decorate([
+    (0, common_1.Get)('allowed/list'),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Query)('username')),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, String]),
+    __metadata("design:returntype", Promise)
+], ChannelAllowedController.prototype, "allowed", null);
+exports.ChannelAllowedController = ChannelAllowedController = __decorate([
+    (0, common_1.Controller)('api/manage/channels'),
+    (0, common_1.UseGuards)(auth_guard_1.ManageAuthGuard)
+], ChannelAllowedController);

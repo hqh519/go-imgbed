@@ -13,6 +13,7 @@ const path_1 = require("path");
 const fs_1 = require("fs");
 const app_module_1 = require("./app.module");
 const channels_controller_1 = require("./channels/channels.controller");
+const access_service_1 = require("./access/access.service");
 const prisma_1 = require("./common/prisma");
 const auth_guard_1 = require("./auth/auth.guard");
 const rate_limit_1 = require("./common/rate-limit");
@@ -21,6 +22,7 @@ const crypto_service_1 = require("./common/crypto.service");
 const project_paths_1 = require("./common/project-paths");
 app_log_1.appLog.patchConsole();
 let listCache = { at: 0, white: [], block: [], enabled: false };
+let accessSvc = null;
 async function loadLists() {
     if (Date.now() - listCache.at < 5000)
         return listCache;
@@ -183,6 +185,36 @@ async function bootstrap() {
         });
         next();
     });
+    server.use((req, res, next) => {
+        const isFile = req.path.startsWith('/file/') || req.path === '/random';
+        if (!isFile || (req.method !== 'GET' && req.method !== 'HEAD'))
+            return next();
+        if (req.query.from === 'admin')
+            return next();
+        res.on('finish', () => {
+            try {
+                if (!accessSvc)
+                    return;
+                const ip = clientIp(req);
+                if (!ip || ip === '127.0.0.1' || ip === '::1')
+                    return;
+                const session = (0, auth_guard_1.parseSession)(req.cookies?.[auth_guard_1.SESSION_COOKIE]);
+                void accessSvc.record({
+                    ip,
+                    path: req.path,
+                    referer: String(req.headers.referer || ''),
+                    username: session?.user || '',
+                    ua: String(req.headers['user-agent'] || ''),
+                    method: req.method,
+                    status: res.statusCode,
+                    kind: 'file',
+                });
+            }
+            catch {
+            }
+        });
+        next();
+    });
     const publicDir = (0, project_paths_1.backendSub)('public');
     if ((0, fs_1.existsSync)(publicDir))
         server.use('/dev', express_1.default.static(publicDir));
@@ -194,6 +226,16 @@ async function bootstrap() {
     }
     catch (err) {
         console.warn(`[local-channel] 内置本地存储渠道初始化失败：${err.message}`);
+    }
+    try {
+        const svc = app.get(access_service_1.AccessService);
+        accessSvc = svc;
+        void svc.cleanup();
+        const timer = setInterval(() => void svc.cleanup(), 6 * 3600 * 1000);
+        timer.unref?.();
+    }
+    catch (err) {
+        console.warn(`[access] 访问记录服务初始化失败：${err.message}`);
     }
     try {
         await ensureInitialAdmin();

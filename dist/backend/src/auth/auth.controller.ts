@@ -6,6 +6,9 @@ import { hashSecret, isHashedSecret, matchSecret, safeEqual } from '../common/se
 import { SESSION_COOKIE, Role, currentSession, frontValid, makeSession, parseSession, totpValid } from './auth.guard';
 import { SysConfigService } from '../settings/sysconfig.service';
 import { verifyTotp } from '../common/totp';
+import { consumeRecoveryCode, countRecoveryCodes } from '../common/recovery';
+import { MailService } from '../mail/mail.service';
+import { appLog } from '../common/app-log';
 
 /** 会话有效期默认值（天）—— 账户未设置时生效（v202610221824） */
 const DEFAULT_SESSION_DAYS = 7;
@@ -31,7 +34,7 @@ const DEFAULT_SESSION_DAYS = 7;
  */
 @Controller('api/auth')
 export class AuthController {
-  constructor(private sysConfig: SysConfigService) {}
+  constructor(private sysConfig: SysConfigService, private mail: MailService) {}
 
   /** 读取「安全设置」中的账号配置（原始值，含散列/历史明文） */
   private async authConfig(): Promise<any> {
@@ -258,9 +261,11 @@ export class AuthController {
     if (!account) return res.status(401).json({ success: false, message: '用户名或密码错误' });
 
     // 登录时一并提交了动态码 → 直接完成两步验证（减少一次交互）
+    // v2.3.0 起这里同样接受「恢复码 / 邮箱验证码」，不只是 6 位 TOTP。
     let verified = false;
     if (account.totpEnabled && body.code) {
-      verified = await this.checkTotp(account.user, String(body.code));
+      const u = await prisma.user.findUnique({ where: { username: account.user } });
+      if (u) verified = (await this.verifySecondFactor(u, String(body.code))).ok;
     }
     await this.setSession(res, account, req, verified);
     return res.json({
@@ -290,37 +295,109 @@ export class AuthController {
   private async checkTotp(username: string, code: string): Promise<boolean> {
     const u = await prisma.user.findUnique({ where: { username } });
     if (!u || !u.totpEnabled || !u.totpSecret) return false;
-    let secret = '';
-    try {
-      secret = CryptoService.decrypt(u.totpSecret);
-    } catch {
-      return false;
-    }
-    const ok = verifyTotp(secret, code);
+    const ok = this.checkTotpSecret(u.totpSecret, code);
     if (ok) {
       await prisma.user.update({ where: { id: u.id }, data: { backVerifiedAt: new Date() } });
     }
     return ok;
   }
 
+  /** 纯函数式校验 TOTP 密钥（不查库、不落库），供多因子复核复用 */
+  private checkTotpSecret(encSecret: string, code: string): boolean {
+    let secret = '';
+    try {
+      secret = CryptoService.decrypt(encSecret);
+    } catch {
+      return false;
+    }
+    if (!secret) return false;
+    return verifyTotp(secret, code);
+  }
+
+  /**
+   * 第二因子校验（v2.3.0）—— 一次输入框同时接受三种凭据：
+   *
+   *   1) 6 位数字 → 先按「验证器动态码（TOTP）」校验；
+   *      不通过再按「邮箱验证码」校验（同一输入框，用户不必先选类型）。
+   *   2) 其它形态（含 `-`，如 ABCD-EFGHJ） → 按「恢复码」校验，用掉即作废。
+   *
+   * 三者都过不了才返回失败；日志里记录实际命中的方式，便于排查「为什么进不去」。
+   */
+  private async verifySecondFactor(
+    u: { id: string; username: string; totpSecret: string; totpEnabled: boolean; email: string; emailVerified: boolean; recoveryHashes: string },
+    code: string,
+  ): Promise<{ ok: boolean; method: 'totp' | 'recovery' | 'email' | ''; message?: string }> {
+    const raw = String(code || '').trim();
+    if (!raw) return { ok: false, method: '', message: '请输入验证码' };
+
+    // —— 恢复码（非纯 6 位数字都当恢复码试一次）——
+    if (!/^\d{6}$/.test(raw)) {
+      const hit = consumeRecoveryCode(u.recoveryHashes, raw);
+      if (!hit) return { ok: false, method: '', message: '恢复码无效或已被使用' };
+      await prisma.user.update({
+        where: { id: u.id },
+        data: { recoveryHashes: JSON.stringify(hit.rest), backVerifiedAt: new Date() },
+      });
+      appLog.warn('auth', `账户「${u.username}」使用恢复码通过两步验证（剩余 ${hit.rest.length} 个）`);
+      return { ok: true, method: 'recovery' };
+    }
+
+    // —— 6 位数字：先 TOTP ——
+    if (u.totpEnabled && u.totpSecret && this.checkTotpSecret(u.totpSecret, raw)) {
+      await prisma.user.update({ where: { id: u.id }, data: { backVerifiedAt: new Date() } });
+      return { ok: true, method: 'totp' };
+    }
+
+    // —— 再试邮箱验证码（只在确实发过码时才算一次尝试）——
+    if (u.email && u.emailVerified) {
+      const res = this.mail.consumeCode(u.email, 'login', raw);
+      if (res.ok) {
+        await prisma.user.update({ where: { id: u.id }, data: { backVerifiedAt: new Date() } });
+        appLog.info('auth', `账户「${u.username}」使用邮箱验证码通过两步验证`);
+        return { ok: true, method: 'email' };
+      }
+      // 邮箱码存在但输错 → 把它更具体的提示带出去
+      if (!/请先获取验证码/.test(res.message)) {
+        return { ok: false, method: '', message: res.message };
+      }
+    }
+
+    return { ok: false, method: '', message: '验证码不正确或已过期' };
+  }
+
   /**
    * 两步验证（后台门禁）：当前会话已登录但未通过 2FA / 2FA 状态过期时调用。
    * 校验通过后重新签发会话（tva 刷新），不需要重新输入密码。
+   * 支持 TOTP 动态码 / 恢复码 / 邮箱验证码三种凭据（v2.3.0）。
    */
   @Post('totp/verify')
   @HttpCode(200)
   async totpVerify(@Body() body: { code?: string }, @Req() req: Request, @Res() res: Response) {
+    return this.verifyAndRefresh(body?.code, req, res);
+  }
+
+  /** 兼容别名：前端新代码用 /api/auth/verify */
+  @Post('verify')
+  @HttpCode(200)
+  async verifySecond(@Body() body: { code?: string }, @Req() req: Request, @Res() res: Response) {
+    return this.verifyAndRefresh(body?.code, req, res);
+  }
+
+  private async verifyAndRefresh(code: string | undefined, req: Request, res: Response) {
     const session = parseSession(req.cookies?.[SESSION_COOKIE]);
-    if (!session) return res.status(401).json({ success: false, message: '未登录或会话已过期' });
+    if (!session) return res.status(401).json({ success: false, message: '未登录或会话已过期', code: 'NOT_LOGGED_IN' });
     const u = await prisma.user.findUnique({ where: { username: session.user } });
-    if (!u) return res.status(401).json({ success: false, message: '账户不存在' });
+    if (!u) return res.status(401).json({ success: false, message: '账户不存在', code: 'NOT_LOGGED_IN' });
     if (!u.totpEnabled) {
       // 没启用 2FA：直接刷新会话即可（避免前端卡在验证框）
       await this.setSession(res, { user: u.username, role: session.role, totpEnabled: false }, req, true);
       return res.json({ success: true, data: { verified: true } });
     }
-    const ok = await this.checkTotp(u.username, String(body.code || ''));
-    if (!ok) return res.status(400).json({ success: false, message: '验证码错误或已过期' });
+    const hit = await this.verifySecondFactor(u, String(code || ''));
+    if (!hit.ok) {
+      // 注意：这里**不能**清 Cookie / 跳登录页 —— 前端要继续停在验证框上让用户重试
+      return res.status(400).json({ success: false, message: hit.message || '验证失败', code: 'VERIFY_FAILED' });
+    }
     await this.setSession(
       res,
       {
@@ -333,7 +410,90 @@ export class AuthController {
       req,
       true,
     );
-    return res.json({ success: true, data: { verified: true } });
+    return res.json({ success: true, data: { verified: true, method: hit.method } });
+  }
+
+  /**
+   * 发送「进入管理中心」用的邮箱验证码（v2.3.0）。
+   *
+   *   body: { username? }  —— 未登录时用来定位账户；已登录时忽略，直接用会话账户。
+   *
+   * 安全约束：
+   *   · 仅对「已启用两步验证 + 邮箱已验证 + 邮箱服务已配置」的账户发码；
+   *   · 无论账户是否存在，接口都返回同一句话，避免成为账户探测接口；
+   *   · 单邮箱 60 秒内只允许发一次（MailService 内部限流）。
+   */
+  @Post('email/send')
+  @HttpCode(200)
+  async sendLoginCode(@Body() body: { username?: string }, @Req() req: Request) {
+    const session = parseSession(req.cookies?.[SESSION_COOKIE]);
+    const username = (session?.user || String(body?.username || '').trim() || '').trim();
+    const generic = { success: true, message: '如果该账户已绑定并验证邮箱，验证码已发出，请查收' };
+    if (!username) return generic;
+    const u = await prisma.user.findUnique({ where: { username } });
+    if (!u || !u.enabled || !u.totpEnabled || !u.email || !u.emailVerified) return generic;
+    if (!(await this.mail.configured())) {
+      return { success: false, message: '管理员尚未配置发信邮箱，请改用验证器动态码或恢复码' };
+    }
+    const r = await this.mail.sendCode(u.email, 'login', u.nickname || u.username);
+    if (!r.ok) return { success: false, message: r.message };
+    return { success: true, message: `验证码已发送至 ${maskEmail(u.email)}` };
+  }
+
+  /**
+   * 「遗忘验证器」自助关闭两步验证（v2.3.0）。
+   * 必须同时提供「邮箱验证码」与「一枚恢复码」两个凭据，缺一不可。
+   */
+  @Post('totp/disable-fallback')
+  @HttpCode(200)
+  async disableTotpFallback(
+    @Body() body: { emailCode?: string; recoveryCode?: string },
+    @Req() req: Request,
+    @Res() res: Response,
+  ) {
+    const session = parseSession(req.cookies?.[SESSION_COOKIE]);
+    if (!session) return res.status(401).json({ success: false, message: '未登录或会话已过期' });
+    const result = await this.disableTotpWithProof(session.user, body?.emailCode, body?.recoveryCode);
+    if (!result.ok) return res.status(400).json({ success: false, message: result.message });
+    // 关闭 2FA 后重新签发会话（tv 已无意义）
+    await this.setSession(res, { user: session.user, role: session.role, totpEnabled: false }, req, true);
+    return res.json({ success: true, message: result.message });
+  }
+
+  /**
+   * 用「邮箱验证码 + 恢复码」关闭某账户的 2FA —— 登录态与管理员改他人账户共用。
+   * 恢复码用掉即作废；关闭后清空 secret 与剩余恢复码。
+   */
+  async disableTotpWithProof(
+    username: string,
+    emailCode?: string,
+    recoveryCode?: string,
+  ): Promise<{ ok: boolean; message: string }> {
+    const u = await prisma.user.findUnique({ where: { username } });
+    if (!u) return { ok: false, message: '账户不存在' };
+    if (!u.totpEnabled) return { ok: true, message: '该账户未启用两步验证' };
+    if (!u.email || !u.emailVerified) return { ok: false, message: '该账户邮箱未验证，无法通过邮箱验证码关闭两步验证' };
+    if (!String(emailCode || '').trim()) return { ok: false, message: '请输入邮箱验证码' };
+    if (!String(recoveryCode || '').trim()) return { ok: false, message: '请输入一枚恢复码' };
+
+    // 兼容两个入口签发的验证码：登录页「发送邮箱验证码」(login) 与
+    // 用户编辑页「发送关闭验证码」(disable-2fa)。
+    const mailRes = this.mail.consumeAnyCode(u.email, ['disable-2fa', 'login'], String(emailCode));
+    if (!mailRes.ok) return { ok: false, message: mailRes.message };
+    const hit = consumeRecoveryCode(u.recoveryHashes, String(recoveryCode));
+    if (!hit) return { ok: false, message: '恢复码无效或已被使用' };
+
+    await prisma.user.update({
+      where: { id: u.id },
+      data: {
+        totpEnabled: false,
+        totpSecret: '',
+        recoveryHashes: JSON.stringify(hit.rest),
+        backVerifiedAt: null,
+      },
+    });
+    appLog.warn('auth', `账户「${u.username}」通过「邮箱验证码 + 恢复码」关闭了两步验证`);
+    return { ok: true, message: '两步验证已关闭，请尽快重新绑定验证器' };
   }
 
   /** 当前会话的两步验证状态（前端弹框前先问一次，避免无谓弹窗） */
@@ -350,6 +510,11 @@ export class AuthController {
         enabled,
         // required = 已启用 2FA 但本次会话没通过验证 / 验证状态已过后端会话窗
         required: enabled && !totpValid(session),
+        // 三种验证方式各自是否可用（前端据此决定提示语与「发送邮箱验证码」按钮）
+        email: u?.email || '',
+        emailVerified: !!u?.emailVerified,
+        mailReady: await this.mail.configured(),
+        recoveryCount: u ? countRecoveryCodes(u.recoveryHashes) : 0,
       },
     };
   }
@@ -386,11 +551,13 @@ export class AuthController {
           username: u.username,
           nickname: u.nickname || u.username,
           email: u.email || '',
+          emailVerified: !!u.emailVerified,
           role: u.role,
           avatar: u.avatar || '',
           avatarUrl: u.avatar ? `/api/avatar/${encodeURIComponent(u.username)}?v=${encodeURIComponent(u.avatar)}` : '',
           frontSessionDays: u.frontSessionDays ?? DEFAULT_SESSION_DAYS,
           backSessionDays: u.backSessionDays ?? DEFAULT_SESSION_DAYS,
+          recoveryCount: countRecoveryCodes(u.recoveryHashes),
         };
       }
     }
@@ -474,4 +641,15 @@ export class AuthController {
     res.clearCookie(SESSION_COOKIE, { path: '/' });
     return res.json({ success: true });
   }
+}
+
+/** 邮箱脱敏：abcd@gmail.com → a***@gmail.com（用于「验证码已发送至 …」提示） */
+export function maskEmail(raw: string): string {
+  const s = String(raw || '').trim();
+  const at = s.indexOf('@');
+  if (at <= 0) return s;
+  const name = s.slice(0, at);
+  const domain = s.slice(at);
+  if (name.length <= 2) return `${name[0] || ''}***${domain}`;
+  return `${name[0]}***${name[name.length - 1]}${domain}`;
 }

@@ -7,6 +7,7 @@ import { SettingsService } from '../settings/settings.service';
 import { createAdapter } from '../adapters/adapter.factory';
 import { ChannelInfo } from '../adapters/adapter.interface';
 import { StorageChannelService, StorageChannelInfo } from '../storage/storage-channel.service';
+import { appLog } from '../common/app-log';
 
 /** 各渠道配置中的敏感字段名 —— 返回时脱敏、保存时加密（须与适配器读取的字段名一致） */
 const SECRET_FIELDS: Record<string, string[]> = {
@@ -657,11 +658,43 @@ export class ChannelManageController {
     return { success: true, data: { authorizedUsers: valid } };
   }
 
-  /**
-   * 某账户可用的渠道列表（下拉框数据源）。
-   *   管理员 → 可查任意账户（username 参数），不传则返回全部渠道；
-   *   普通用户 → 只能查自己，返回自己被授权的渠道 + 本地存储。
+  /*
+   * 【v2.4.0 迁移】GET allowed/list 已拆到下方 ChannelAllowedController：
+   * 本控制器整体挂 AdminGuard，普通用户登录自己的编辑页时调它会被 403 拦截，
+   * 导致「已授权渠道」下拉永远为空。allowed/list 接口内部本来就按会话角色过滤，
+   * 改挂 ManageAuthGuard 即可（普通用户只能查自己）。
    */
+
+  @Delete(':id')
+  async remove(@Param('id') id: string) {
+    // 内置渠道（本地存储）不允许删除：它是「零配置可用」的兜底落盘位置
+    const target = await prisma.channel.findUnique({ where: { id } });
+    if (target && (BUILTIN_CHANNEL_TYPES as readonly string[]).includes(target.type)) {
+      return { success: false, message: '本地存储是系统内置渠道，不能删除（可以禁用以停用）' };
+    }
+    const copies = await prisma.fileCopy.count({ where: { channelId: id } });
+    if (copies > 0) {
+      return { success: false, message: `该渠道仍有 ${copies} 个文件副本，请先迁移或清理` };
+    }
+    await prisma.channel.delete({ where: { id } });
+    return { success: true };
+  }
+}
+
+/**
+ * 某账户可用的渠道列表（下拉框数据源）—— v2.4.0 从 ChannelManageController 拆出。
+ *
+ * 为什么要单独一个控制器：原位置挂在整体 AdminGuard 的控制器里，
+ * 普通用户登录自己的「用户编辑页」时调它直接 403，导致主渠道 / 备份渠道
+ * 下拉永远加载不出管理员已授权的渠道。
+ *
+ * 守卫用 ManageAuthGuard（管理员与普通用户都可进入）：
+ *   管理员 → 可查任意账户（username 参数），不传则返回全部渠道；
+ *   普通用户 → 只能查自己，返回自己被授权的渠道 + 本地存储。
+ */
+@Controller('api/manage/channels')
+@UseGuards(ManageAuthGuard)
+export class ChannelAllowedController {
   @Get('allowed/list')
   async allowed(@Req() req: Request, @Query('username') username?: string) {
     const session = currentSession(req);
@@ -686,21 +719,7 @@ export class ChannelManageController {
         isBackup: c.isBackup,
         backupPool: c.backupPool,
       }));
+    appLog.info('channel', `渠道下拉（allowed/list）：${session?.user || '-'}${target && target !== session?.user ? ` → ${target}` : ''}，共 ${list.length} 个`);
     return { success: true, data: list };
-  }
-
-  @Delete(':id')
-  async remove(@Param('id') id: string) {
-    // 内置渠道（本地存储）不允许删除：它是「零配置可用」的兜底落盘位置
-    const target = await prisma.channel.findUnique({ where: { id } });
-    if (target && (BUILTIN_CHANNEL_TYPES as readonly string[]).includes(target.type)) {
-      return { success: false, message: '本地存储是系统内置渠道，不能删除（可以禁用以停用）' };
-    }
-    const copies = await prisma.fileCopy.count({ where: { channelId: id } });
-    if (copies > 0) {
-      return { success: false, message: `该渠道仍有 ${copies} 个文件副本，请先迁移或清理` };
-    }
-    await prisma.channel.delete({ where: { id } });
-    return { success: true };
   }
 }

@@ -1,6 +1,6 @@
 <template>
+    <!-- v2.4.0：「夜间/白天强制切换」已移除，切换按钮始终显示 -->
     <div
-      v-if="!forced"
       id="themeToggle"
       @click="handleToggleClick"
     >
@@ -68,13 +68,7 @@ export default {
     };
   },
   computed: {
-    /**
-     * 网页设置开启了「夜间/白天强制切换」时，右上角按钮隐藏且不可用：
-     * 主题完全按 19:00—07:00 由系统决定，不允许用户覆盖。
-     */
-    forced() {
-      return this.$store.getters.userConfig?.autoDarkMode === true;
-    },
+    // v2.4.0：「夜间/白天强制切换」已移除，按钮不再有隐藏态
   },
   methods: {
     handleToggleClick() {

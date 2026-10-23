@@ -902,7 +902,9 @@ export default {
 
 /* 移动端适配 */
 @media (max-width: 768px) {
+  /* v2.4.0：移动端顶部栏取消粘滞，跟随页面滚动 */
   .history-topbar {
+    position: static;
     padding: 10px 12px;
   }
 

@@ -22,6 +22,11 @@ import { normalizeUploadSource } from '../common/file-view';
 import { CryptoService } from '../common/crypto.service';
 import { backendSub } from '../common/project-paths';
 import { generateTotpSecret, totpUri, verifyTotp } from '../common/totp';
+import { consumeRecoveryCode, countRecoveryCodes, generateRecoveryCodes } from '../common/recovery';
+import { MailService } from '../mail/mail.service';
+import { maskEmail } from '../auth/auth.controller';
+import { parseAuthorizedUsers } from '../common/channel-access';
+import { appLog } from '../common/app-log';
 import { ManageAuthGuard, currentSession, isAdminRole } from '../auth/auth.guard';
 import { SysConfigService } from '../settings/sysconfig.service';
 import { SettingsService } from '../settings/settings.service';
@@ -50,6 +55,7 @@ export class UsersController {
   constructor(
     private sysConfig: SysConfigService,
     private settings: SettingsService,
+    private mail: MailService,
   ) {}
 
   /** 当前会话是否管理员（admin / super） */
@@ -103,6 +109,36 @@ export class UsersController {
     return (await this.settings.get(NOTICE_KEY, '')) || '';
   }
 
+  /**
+   * 某账户「可用渠道」的 ID 集合（含渠道 id 与 6 位 code 两种写法）。
+   *
+   * 规则与 /api/channels 的可见性一致：
+   *   · 内置「本地存储」渠道对所有账户开放；
+   *   · 管理员账户可用全部渠道；
+   *   · 普通用户只拿到 authorizedUsers 里点过名的渠道。
+   * 编辑页的主/备渠道下拉、保存时的越权校验都以此为准。
+   */
+  private async authorizedChannelIds(username: string): Promise<Set<string>> {
+    const out = new Set<string>();
+    const rows = await prisma.channel.findMany({
+      select: { id: true, code: true, type: true, authorizedUsers: true },
+    });
+    let isAdmin = false;
+    try {
+      const me = await prisma.user.findUnique({ where: { username }, select: { role: true } });
+      isAdmin = me?.role === 'admin';
+    } catch {
+      isAdmin = false;
+    }
+    for (const c of rows) {
+      const ok = isAdmin || c.type === 'local' || parseAuthorizedUsers(c.authorizedUsers).includes(username);
+      if (!ok) continue;
+      out.add(c.id);
+      if (c.code) out.add(c.code);
+    }
+    return out;
+  }
+
   /** 用户列表（管理员看全部 + 内建管理员行；普通用户只看自己） */
   @Get()
   async list(@Req() req: Request) {
@@ -125,6 +161,8 @@ export class UsersController {
       mainChannelName: cName.get(u.mainChannelId) || '',
       backupChannelName: cName.get(u.backupChannelId) || '',
       totpEnabled: u.totpEnabled,
+      emailVerified: u.emailVerified,
+      recoveryCount: countRecoveryCodes(u.recoveryHashes),
       frontSessionDays: u.frontSessionDays ?? DEFAULT_SESSION_DAYS,
       backSessionDays: u.backSessionDays ?? DEFAULT_SESSION_DAYS,
       // 管理备注：仅管理员可见，下面非管理员分支会剔除该字段
@@ -326,6 +364,11 @@ export class UsersController {
         mainChannelId: u.mainChannelId,
         backupChannelId: u.backupChannelId,
         totpEnabled: u.totpEnabled,
+        emailVerified: u.emailVerified,
+        recoveryCount: countRecoveryCodes(u.recoveryHashes),
+        recoveryAt: u.recoveryAt ? u.recoveryAt.getTime() : 0,
+        // 邮箱服务是否已可用（前端据此决定「验证邮箱」按钮是否可点）
+        mailReady: await this.mail.configured(),
         frontSessionDays: u.frontSessionDays ?? DEFAULT_SESSION_DAYS,
         backSessionDays: u.backSessionDays ?? DEFAULT_SESSION_DAYS,
         // 管理备注只回给管理员
@@ -454,7 +497,15 @@ export class UsersController {
     if (body.email !== undefined) {
       const email = String(body.email).trim().slice(0, 120);
       if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return { success: false, message: '邮箱格式不正确' };
-      data.email = email;
+      if (email !== (u.email || '')) {
+        // 已验证的邮箱不允许在这里直接改 —— 必须走「验证邮箱 → 收验证码 → 校验通过」流程，
+        // 否则等于绕开验证把已验证标记挪到一个没验证过的地址上。
+        if (u.emailVerified) {
+          return { success: false, message: '该邮箱已验证，更换邮箱请点击「更换邮箱」并重新接收验证码' };
+        }
+        data.email = email;
+        data.emailVerified = false;
+      }
     }
     // ---- 会话有效期（本人可改；null/留空 = 默认 7 天）----
     for (const key of ['frontSessionDays', 'backSessionDays'] as const) {
@@ -478,9 +529,22 @@ export class UsersController {
       if (body.canDelete !== undefined) data.canDelete = !!body.canDelete;
       if (body.linkEnabled !== undefined) data.linkEnabled = !!body.linkEnabled;
       if (body.enforceLimits !== undefined) data.enforceLimits = !!body.enforceLimits;
-      if (body.mainChannelId !== undefined) data.mainChannelId = String(body.mainChannelId);
-      if (body.backupChannelId !== undefined) data.backupChannelId = String(body.backupChannelId);
       if (body.adminNote !== undefined) data.adminNote = String(body.adminNote).slice(0, 4000);
+    }
+    // ---- 主/备渠道：本人也能改（v2.3.0）----
+    // 但只能从「该账户已获授权」的渠道里选；空 = 跟随全局，'none' = 明确不备份。
+    if (body.mainChannelId !== undefined || body.backupChannelId !== undefined) {
+      const allowed = await this.authorizedChannelIds(u.username);
+      if (body.mainChannelId !== undefined) {
+        const v = String(body.mainChannelId || '');
+        if (v && !allowed.has(v)) return { success: false, message: '该存储渠道未授权给此账户' };
+        data.mainChannelId = v;
+      }
+      if (body.backupChannelId !== undefined) {
+        const v = String(body.backupChannelId || '');
+        if (v && v !== 'none' && !allowed.has(v)) return { success: false, message: '该备份渠道未授权给此账户' };
+        data.backupChannelId = v;
+      }
     }
 
     if (Object.keys(data).length === 0) return { success: false, message: '没有可修改的内容' };
@@ -568,6 +632,74 @@ export class UsersController {
     return { success: true };
   }
 
+  /* ================= 邮箱验证（v2.3.0） ================= */
+
+  /**
+   * 发送邮箱验证码。
+   *   body.email 缺省 → 发到账户当前邮箱（首次验证 / 重新验证）
+   *   body.email 有值且与当前邮箱不同 → 发到新地址（「更换邮箱」流程）
+   * 只有校验通过（:id/email/verify）才会真正写库并置 emailVerified。
+   */
+  @Post(':id/email/send-code')
+  async sendEmailCode(@Req() req: Request, @Param('id') id: string, @Body() body: { email?: string }) {
+    const target = await this.emailTarget(req, id);
+    if (!target.u) return { success: false, message: target.err };
+    const email = String(body?.email || target.u.email || '').trim().toLowerCase();
+    if (!email) return { success: false, message: '请先填写邮箱地址' };
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return { success: false, message: '邮箱格式不正确' };
+    if (target.u.emailVerified && email === (target.u.email || '').toLowerCase()) {
+      return { success: false, message: '该邮箱已验证，无需重复验证' };
+    }
+    if (!(await this.mail.configured())) {
+      return { success: false, message: '管理员尚未配置发信邮箱（安全设置 → 邮箱配置）' };
+    }
+    const r = await this.mail.sendCode(email, 'verify-email', target.u.nickname || target.u.username);
+    if (!r.ok) return { success: false, message: r.message };
+    return { success: true, message: `验证码已发送至 ${maskEmail(email)}`, data: { email } };
+  }
+
+  /** 校验邮箱验证码：通过后写入 email 并置 emailVerified=true */
+  @Post(':id/email/verify')
+  async verifyEmail(@Req() req: Request, @Param('id') id: string, @Body() body: { email?: string; code?: string }) {
+    const target = await this.emailTarget(req, id);
+    if (!target.u) return { success: false, message: target.err };
+    const email = String(body?.email || target.u.email || '').trim().toLowerCase();
+    if (!email) return { success: false, message: '请先填写邮箱地址' };
+    const code = String(body?.code || '').trim();
+    if (!/^\d{6}$/.test(code)) return { success: false, message: '请输入 6 位验证码' };
+    const r = this.mail.consumeCode(email, 'verify-email', code);
+    if (!r.ok) return { success: false, message: r.message };
+
+    // 其他账户已占用该邮箱 → 拒绝，避免「邮箱验证码登录」时不知道该给谁发
+    const dup = await prisma.user.findFirst({
+      where: { email, emailVerified: true, NOT: { id: target.u.id } },
+      select: { username: true },
+    });
+    if (dup) return { success: false, message: '该邮箱已被其他账户验证使用' };
+
+    await prisma.user.update({ where: { id: target.u.id }, data: { email, emailVerified: true } });
+    appLog.info('user', `账户「${target.u.username}」邮箱验证通过（${maskEmail(email)}）`);
+    return { success: true, message: '邮箱验证成功', data: { email, emailVerified: true } };
+  }
+
+  /** 取消邮箱验证（管理员 / 本人）—— 用于换绑前清理状态 */
+  @Delete(':id/email/verified')
+  async resetEmailVerified(@Req() req: Request, @Param('id') id: string) {
+    const target = await this.emailTarget(req, id);
+    if (!target.u) return { success: false, message: target.err };
+    if (target.u.totpEnabled) return { success: false, message: '请先关闭两步验证，否则将无法接收验证码' };
+    await prisma.user.update({ where: { id: target.u.id }, data: { emailVerified: false } });
+    return { success: true, message: '已取消邮箱验证状态' };
+  }
+
+  /** 邮箱操作的权限校验：本人或管理员 */
+  private async emailTarget(req: Request, id: string) {
+    const u = await prisma.user.findUnique({ where: { id } });
+    if (!u) return { u: null, err: '用户不存在' };
+    if (!this.isAdmin(req) && u.username !== this.me(req)) return { u: null, err: '只能操作自己的账户' };
+    return { u, err: '' };
+  }
+
   /* ================= 两步验证（TOTP） ================= */
 
   /** 权限校验：本人或管理员 */
@@ -584,6 +716,11 @@ export class UsersController {
     const { u, err } = await this.totpTarget(req, id);
     if (!u) return { success: false, message: err };
     if (u.totpEnabled) return { success: false, message: '该账户已启用两步验证，请先关闭再重新绑定' };
+    // v2.3.0：启用 2FA 前必须先验证邮箱 —— 邮箱是「验证器丢失」时的唯一自助找回通道，
+    // 没有验证过的邮箱就开启 2FA，等于把自己锁在门外。
+    if (!u.email || !u.emailVerified) {
+      return { success: false, message: '请先完成邮箱验证，再启用两步验证' };
+    }
     const secret = generateTotpSecret();
     // 先加密存库：用户扫码后提交验证码时从这里取（避免中途刷新页面丢失）
     await prisma.user.update({
@@ -617,11 +754,107 @@ export class UsersController {
     if (!verifyTotp(secret, String(body.code || ''))) {
       return { success: false, message: '验证码错误或已过期' };
     }
+    // 生成一次性恢复码：明文只在这里返回一次，库里只留摘要（v2.3.0）
+    const { plain, hashes } = generateRecoveryCodes();
     await prisma.user.update({
       where: { id: u.id },
-      data: { totpEnabled: true, backVerifiedAt: new Date() },
+      data: {
+        totpEnabled: true,
+        backVerifiedAt: new Date(),
+        recoveryHashes: JSON.stringify(hashes),
+        recoveryAt: new Date(),
+      },
     });
-    return { success: true };
+    appLog.info('auth', `账户「${u.username}」启用了两步验证（已生成 ${plain.length} 个恢复码）`);
+    return {
+      success: true,
+      // 前端必须把 recoveryCodes 展示一次并要求用户抄下来；接口不会再次返回
+      data: { recoveryCodes: plain },
+      message: '两步验证已启用，请立即保存恢复码（仅显示这一次）',
+    };
+  }
+
+  /** 重新生成恢复码（需要当前动态码；旧恢复码全部作废） */
+  @Post(':id/totp/recovery')
+  async regenerateRecovery(@Req() req: Request, @Param('id') id: string, @Body() body: { code?: string }) {
+    const { u, err } = await this.totpTarget(req, id);
+    if (!u) return { success: false, message: err };
+    if (!u.totpEnabled) return { success: false, message: '该账户未启用两步验证' };
+    let secret = '';
+    try {
+      secret = CryptoService.decrypt(u.totpSecret || '');
+    } catch {
+      secret = '';
+    }
+    if (!secret || !verifyTotp(secret, String(body?.code || ''))) {
+      return { success: false, message: '动态码错误或已过期' };
+    }
+    const { plain, hashes } = generateRecoveryCodes();
+    await prisma.user.update({
+      where: { id: u.id },
+      data: { recoveryHashes: JSON.stringify(hashes), recoveryAt: new Date() },
+    });
+    appLog.warn('auth', `账户「${u.username}」重新生成了恢复码（旧恢复码已全部作废）`);
+    return { success: true, data: { recoveryCodes: plain }, message: '新的恢复码已生成，请立即保存（仅显示这一次）' };
+  }
+
+  /**
+   * 「验证器丢失」时关闭两步验证（v2.3.0）。
+   * 需要同时提交「邮箱验证码」+「一枚恢复码」两个凭据。
+   * 本人与管理员都可操作（管理员代操作时，需用户把两个码提供给管理员）。
+   */
+  @Post(':id/totp/disable-fallback')
+  async totpDisableFallback(
+    @Req() req: Request,
+    @Param('id') id: string,
+    @Body() body: { emailCode?: string; recoveryCode?: string },
+  ) {
+    const { u, err } = await this.totpTarget(req, id);
+    if (!u) return { success: false, message: err };
+    if (!u.totpEnabled) return { success: true, message: '该账户未启用两步验证' };
+    if (!u.email || !u.emailVerified) return { success: false, message: '该账户邮箱未验证，无法使用邮箱验证码关闭' };
+    const emailCode = String(body?.emailCode || '').trim();
+    const recoveryCode = String(body?.recoveryCode || '').trim();
+    if (!emailCode) return { success: false, message: '请输入邮箱验证码' };
+    if (!recoveryCode) return { success: false, message: '请输入一枚恢复码' };
+
+    const mailRes = this.mail.consumeAnyCode(u.email, ['disable-2fa', 'login'], emailCode);
+    if (!mailRes.ok) return { success: false, message: mailRes.message };
+    const hit = consumeRecoveryCode(u.recoveryHashes, recoveryCode);
+    if (!hit) return { success: false, message: '恢复码无效或已被使用' };
+
+    await prisma.user.update({
+      where: { id: u.id },
+      data: {
+        totpEnabled: false,
+        totpSecret: '',
+        recoveryHashes: JSON.stringify(hit.rest),
+        backVerifiedAt: null,
+      },
+    });
+    appLog.warn('auth', `账户「${u.username}」通过「邮箱验证码 + 恢复码」关闭了两步验证`);
+    return { success: true, message: '两步验证已关闭，请重新绑定验证器' };
+  }
+
+  /**
+   * 发送「关闭两步验证」用的邮箱验证码（v2.3.0）。
+   *
+   * 场景：验证器丢失 → 在用户编辑页点「忘记验证器」，需要邮箱验证码 + 一枚恢复码。
+   * 这里刻意与 `/email/send-code` 分开：后者用于「验证邮箱」（要求邮箱尚未验证），
+   * 本接口只对「已启用 2FA 且邮箱已验证」的账户发码，用途为 disable-2fa。
+   */
+  @Post(':id/totp/disable-code')
+  async sendDisableCode(@Req() req: Request, @Param('id') id: string) {
+    const { u, err } = await this.totpTarget(req, id);
+    if (!u) return { success: false, message: err };
+    if (!u.totpEnabled) return { success: false, message: '该账户未启用两步验证' };
+    if (!u.email || !u.emailVerified) return { success: false, message: '该账户邮箱未验证，无法通过邮箱验证码关闭' };
+    if (!(await this.mail.configured())) {
+      return { success: false, message: '管理员尚未配置发信邮箱（安全设置 → 邮箱配置）' };
+    }
+    const r = await this.mail.sendCode(u.email, 'disable-2fa', u.nickname || u.username);
+    if (!r.ok) return { success: false, message: r.message };
+    return { success: true, message: `验证码已发送至 ${maskEmail(u.email)}`, data: { email: maskEmail(u.email) } };
   }
 
   /** 关闭两步验证（需当前动态码；本机也会顺带清掉密钥） */
@@ -641,8 +874,9 @@ export class UsersController {
     }
     await prisma.user.update({
       where: { id: u.id },
-      data: { totpEnabled: false, totpSecret: '', backVerifiedAt: null },
+      data: { totpEnabled: false, totpSecret: '', recoveryHashes: '[]', backVerifiedAt: null },
     });
+    appLog.warn('auth', `账户「${u.username}」关闭了两步验证`);
     return { success: true };
   }
 }

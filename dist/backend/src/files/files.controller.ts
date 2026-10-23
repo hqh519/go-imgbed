@@ -134,15 +134,19 @@ export class LinkController {
   ) {}
 
   /**
-   * Referer 域名是否在允许清单内（参考原系统 isDomainAllowed）：
-   *   - 无 Referer（直链访问、curl、第三方 <img>）→ 放行
-   *   - 空清单 → 不启用域名限制
-   *   - 自身域名始终视为允许（后台预览、同站引用）
+   * Referer 域名是否在允许清单内（参考原系统 isDomainAllowed）。
    *
-   * 清单格式：**一行一个域名**（兼容历史数据里的逗号 / 分号分隔）。
-   * 匹配方式：**包含式** —— Referer 主机名里含清单条目即放行
-   *   （填 `hhh555.top` 时 `www.hhh555.top`、`a.hhh555.top` 都放行；
-   *     填 `555` 时 `hhh555.top` 也放行，便于一条覆盖多个子域 / 相似域）。
+   * 规则（v2.3.0 收紧）：
+   *   - **无 Referer**（浏览器直接打开 / curl / 客户端）→ 放行。
+   *     这是防盗链的通行做法：挡的是「别的站点嵌你的图」，不是「用户自己打开链接」。
+   *   - 清单为空 → 不启用域名限制（白名单模式下等同于放行全部）。
+   *   - 自身域名始终允许（后台预览、同站引用）。
+   *   - 匹配方式：
+   *       `*.example.com` → 任意子域（含 example.com 本身）
+   *       `example.com`   → 精确匹配 example.com 与其子域 a.example.com
+   *       不含点的短串（如 `555`）→ 仍按「包含」匹配（兼容历史配置）
+   *     旧实现一律 includes，会把 `notexample.com` 误判成 `example.com` 的放行项，
+   *     等于白名单形同虚设 —— 这里改成「精确 / 子域」匹配。
    */
   private domainAllowed(req: Request, allowedDomains?: string): boolean {
     const referer = req.headers.referer;
@@ -160,14 +164,84 @@ export class LinkController {
     // 空清单 = 不限制
     if (domains.length === 0) return true;
     const self = String(req.headers.host || '').split(':')[0].toLowerCase();
-    if (self) domains.push(self);
-    // 包含式匹配 + 兼容完全相等（两者等价，保留 includes 即可）
-    return domains.some((d) => host.includes(d));
+    if (self && !domains.includes(self)) domains.push(self);
+
+    return domains.some((raw) => {
+      if (raw.startsWith('*.')) {
+        const base = raw.slice(2);
+        return host === base || host.endsWith(`.${base}`);
+      }
+      if (raw.includes('.')) return host === raw || host.endsWith(`.${raw}`);
+      // 不含点的短串：保留「包含」语义（历史配置里常见只写域名的特征片段）
+      return host.includes(raw);
+    });
+  }
+
+  /**
+   * 失效文件替换（v2.3.0）。
+   *
+   * 安全设置 → 访问管理 → 「失效文件替换地址」：
+   *   fallbackType=image    → 直接下发该图片的字节（访问链接不变，内容换成替换图）
+   *   fallbackType=redirect → 302 跳过去
+   *
+   * 覆盖场景：
+   *   · 文件不存在 / 已进回收站
+   *   · 无权限（黑白名单拦截、链接权限关闭）
+   *   · 白名单模式下域名不在放行清单
+   *   · 限时链接已过期
+   * 未启用时保持原行为（原来的占位图 / 404 文案）。
+   */
+  private async readFallback(): Promise<{ enabled: boolean; type: 'image' | 'redirect'; url: string }> {
+    try {
+      const security: any = await this.sysConfig.get('security');
+      const a = security?.access || {};
+      return {
+        enabled: a.fallbackEnabled === true && !!String(a.fallbackUrl || '').trim(),
+        type: a.fallbackType === 'redirect' ? 'redirect' : 'image',
+        url: String(a.fallbackUrl || '').trim(),
+      };
+    } catch {
+      return { enabled: false, type: 'image', url: '' };
+    }
+  }
+
+  /**
+   * 「不能正常访问」时的统一出口：优先加载替换地址，否则执行传入的默认响应。
+   */
+  private async serveFallback(res: Response, isHead: boolean, fallback: () => unknown): Promise<void> {
+    const cfg = await this.readFallback();
+    if (!cfg.enabled) {
+      fallback();
+      return;
+    }
+    // 替换地址随时可能被管理员改掉，不能长缓存
+    res.setHeader('Cache-Control', 'no-cache, max-age=0');
+    if (cfg.type === 'redirect') {
+      res.redirect(302, cfg.url);
+      return;
+    }
+    try {
+      const resp = await fetch(cfg.url, { signal: AbortSignal.timeout(8000) });
+      if (!resp.ok || !resp.body) throw new Error(`HTTP ${resp.status}`);
+      const type = resp.headers.get('content-type') || 'image/png';
+      res.setHeader('Content-Type', type);
+      res.status(200);
+      if (isHead) {
+        res.end();
+        return;
+      }
+      Readable.fromWeb(resp.body as any).pipe(res);
+      return;
+    } catch (err) {
+      appLog.warn('file', `失效替换图片加载失败：${(err as Error).message}`, cfg.url);
+      if (!res.headersSent) res.status(404).send('Not Found');
+    }
   }
 
   /**
    * 被拦截时的响应（参考原系统 returnBlockImg / returnWhiteListImg）：
-   *   优先返回静态占位图（403 + image/png，<img> 标签仍能渲染出提示图），
+   *   若配置了「失效文件替换地址」→ 优先生效（v2.3.0）；
+   *   否则返回静态占位图（403 + image/png，<img> 标签仍能渲染出提示图），
    *   找不到静态图时回退为 302 跳到 /blockimg 或 /whiteliston 页面。
    */
   private renderBlocked(res: Response, kind: 'block' | 'white') {
@@ -213,15 +287,18 @@ export class LinkController {
       return true;
     }
 
+    const isHead = String(req.method).toUpperCase() === 'HEAD';
     if (listType === 'Block' || metas.Label === 'adult') {
-      this.renderBlocked(res, 'block');
+      // 命中屏蔽：有「失效文件替换地址」就换成替换内容（v2.3.0），否则还是原来的屏蔽图
+      await this.serveFallback(res, isHead, () => this.renderBlocked(res, 'block'));
       return false;
     }
 
     // 「链接权限」：用户管理里被关闭链接权限的账户，其文件外链一律不可访问
     // （后台预览带 from=admin，已在上面放行；这里只拦真正的对外访问）
     if (!(await this.linkAllowed(record.uploader))) {
-      this.renderBlocked(res, 'block');
+      appLog.info('file', `链接权限已关闭，拒绝访问：${String((record as any).name || '')}`);
+      await this.serveFallback(res, isHead, () => this.renderBlocked(res, 'block'));
       return false;
     }
 
@@ -230,7 +307,12 @@ export class LinkController {
     const security = (await this.sysConfig.get('security')) as { access?: Record<string, unknown> } | undefined;
     const access = security?.access || {};
     if (access.whiteListMode && !this.domainAllowed(req, access.allowedDomains as string)) {
-      this.renderBlocked(res, 'white');
+      // 白名单模式下域名不在放行清单：换成「失效文件替换地址」（防盗链）
+      appLog.info(
+        'file',
+        `白名单域名拒绝：referer=${String(req.headers.referer || '-')} path=${req.path}`,
+      );
+      await this.serveFallback(res, isHead, () => this.renderBlocked(res, 'white'));
       return false;
     }
     return true;
@@ -497,6 +579,8 @@ export class LinkController {
   @Get('file/*')
   async serve(@Req() req: Request, @Res() res: Response) {
     const name = wildcardParam(req);
+    /** HEAD 请求只回响应头（失效替换逻辑里要区分，避免把图片字节写进 HEAD 响应） */
+    const isHead = String(req.method).toUpperCase() === 'HEAD';
     // 兼容前端契约：src 可能带扩展名（/file/abc123.jpg）
     // 后端一律按「去掉最后一段扩展名」查库，因此带不带扩展名都能访问，
     // 扩展名只起「直观展示文件类型」的作用，不影响代理 / 302 / 访问源切换。
@@ -529,16 +613,22 @@ export class LinkController {
       where: { ...(adminPreview ? {} : { status: 'active' }), OR: nameCandidates.map((n) => ({ name: n })) },
       include: { copies: true },
     });
-    if (!record) return res.status(404).send('Not Found');
+    if (!record) {
+      // 文件不存在 → 换成「失效文件替换地址」（未配置时照旧 404）
+      await this.serveFallback(res, isHead, () => res.status(404).send('Not Found'));
+      return;
+    }
 
     /*
-     * 限时访问（v2.1.0）：设置了截止时间且已过期 → 410 Gone。
+     * 限时访问（v2.1.0）：设置了截止时间且已过期。
+     * v2.3.0 起改为加载「失效文件替换地址」（未配置时仍返回 410 Gone）。
      *   · 管理端预览（?from=admin）不受限，否则回收站 / 详情缩略图会失效；
-     *   · 用 no-store 避免 CDN / 浏览器缓存住 410 或过期前的 200。
+     *   · 用 no-store 避免 CDN / 浏览器缓存住过期前的 200。
      */
     if (record.linkExpiresAt && !adminPreview && !isAdminRole(currentSession(req)?.role) && Date.now() > record.linkExpiresAt.getTime()) {
       res.setHeader('Cache-Control', 'no-store');
-      return res.status(410).send('链接已过期');
+      await this.serveFallback(res, isHead, () => res.status(410).send('链接已过期'));
+      return;
     }
 
     // 访问控制：黑白名单 / 白名单模式 / 域名白名单（放行返回 true）
@@ -582,13 +672,19 @@ export class LinkController {
 
     const prefer = await this.settings.getAccessChannel();
     let active = record.copies.filter((c) => c.status === 'active' && (c.remoteKey || c.remoteUrl));
-    if (active.length === 0) return res.status(404).send('Not Found');
+    if (active.length === 0) {
+      await this.serveFallback(res, isHead, () => res.status(404).send('Not Found'));
+      return;
+    }
 
     // ?channel=<渠道ID>：强制走指定渠道的直链（文件详情里点「存储渠道 / 备份渠道」用）
     const forceChannel = String(req.query.channel || '').trim();
     if (forceChannel) {
       active = active.filter((c) => c.channelId === forceChannel);
-      if (active.length === 0) return res.status(404).send('Not Found');
+      if (active.length === 0) {
+        await this.serveFallback(res, isHead, () => res.status(404).send('Not Found'));
+        return;
+      }
     }
 
     // 按「当前访问渠道」排序候选：首选渠道在前，另一渠道作为降级候选
@@ -641,7 +737,10 @@ export class LinkController {
       const url = createAdapter(info).buildDirectUrl(toCopyInfo(copy), info);
       if (url) candidates.push({ url, label: ch.name });
     }
-    if (candidates.length === 0) return res.status(404).send('Not Found');
+    if (candidates.length === 0) {
+      await this.serveFallback(res, isHead, () => res.status(404).send('Not Found'));
+      return;
+    }
 
     const mode = await this.settings.getLinkMode();
     if (mode === 'redirect') {
@@ -1338,9 +1437,19 @@ export class ManageController {
     const dir = newId.includes('/') ? newId.split('/').slice(0, -1).join('/') : '';
     const updated = await prisma.fileRecord.update({
       where: { id: rec.id },
-      data: { name: newId, folder: dir },
+      data: {
+        name: newId,
+        folder: dir,
+        // 重命名历史（v2.3.0）：把「改之前叫什么」记到 prevName，
+        // firstName 只在第一次重命名时补写（老数据可能为空）。
+        // 这样改名改花了也能一键回到初始名 / 上一次的名字。
+        prevName: rec.name,
+        firstName: (rec as unknown as { firstName?: string }).firstName || rec.name,
+      },
       include: { copies: { include: { channel: true } }, tags: { include: { tag: true } } },
     });
+
+    appLog.info('file', `重命名：${rec.name} → ${newId}`);
 
     return {
       success: true,
@@ -1379,8 +1488,9 @@ export class ManageController {
       data: {
         metas: rec.metas,
         name: rec.name,
-        // 文件备注：只有作者本人能拿到（其它人连字段都不下发）
-        ...(this.isAuthor(req, rec) ? { note: rec.note, Note: rec.note } : {}),
+        // 文件备注：作者本人或管理员可见（v2.4.0 起管理员放开 ——
+        // 上传者账户被删/改名后，原「仅作者」规则会让备注对所有现存账户永久不可见）
+        ...(this.canUseNote(req, rec) ? { note: rec.note, Note: rec.note } : {}),
         metadata,
       },
     };
@@ -1396,6 +1506,11 @@ export class ManageController {
     const up = String(rec.uploader || '');
     if (up) return up === me;
     return this.admin(req);
+  }
+
+  /** 备注/Note 的可见与可写判定：作者本人，或管理员（v2.4.0） */
+  private canUseNote(req: Request, rec: { uploader?: string | null }): boolean {
+    return this.admin(req) || this.isAuthor(req, rec);
   }
 
   /**
@@ -1483,9 +1598,9 @@ export class ManageController {
     } else {
       const cur = safeParse(rec.metas);
       const b = (body || {}) as Record<string, unknown>;
-      // 文件备注（v2.1.0）：仅作者本人可写；存 note 列，不进 metas，避免被覆盖写回抹掉
+      // 文件备注（v2.1.0）：作者本人或管理员可写（v2.4.0 管理员放开）；存 note 列，不进 metas，避免被覆盖写回抹掉
       if (b.Note !== undefined || b.note !== undefined) {
-        if (!this.isAuthor(req, rec)) return { success: false, message: '只有上传者本人可以编辑备注' };
+        if (!this.canUseNote(req, rec)) return { success: false, message: '只有上传者本人或管理员可以编辑备注' };
         patch.note = String(b.Note ?? b.note ?? '').slice(0, 4000);
       }
       if (b.FileName !== undefined) {
@@ -1510,13 +1625,14 @@ export class ManageController {
       return { success: false, message: 'metas 不是合法 JSON' };
     }
     await prisma.fileRecord.update({ where: { id: rec.id }, data: { metas: metasRaw, ...patch } });
+    if (patch.note !== undefined) appLog.info('file', `文件备注已保存：${rec.name}`);
     const updated = await this.resolveFile(rec.name, owner);
     return {
       success: true,
       data: {
         metas: metasRaw,
         name: rec.name,
-        ...(this.isAuthor(req, rec) ? { note: patch.note !== undefined ? patch.note : rec.note } : {}),
+        ...(this.canUseNote(req, rec) ? { note: patch.note !== undefined ? patch.note : rec.note } : {}),
         metadata: updated
           ? serializeFile(updated, updated.copies, { tags: updated.tags.map((t) => t.tag.name), resolveDirectUrl: this.directUrlResolver() }).metadata
           : undefined,
@@ -2024,7 +2140,8 @@ export class UserConfigController {
       defaultUploadNameType: pv('defaultUploadNameType', 'default'),
       defaultUploadFolder: pv('defaultUploadFolder', ''),
       defaultConvertToWebp: pv('defaultConvertToWebp', false) === true,
-      defaultCustomerCompress: pv('defaultCustomerCompress', false) === true,
+      // v2.3.0：默认开启压缩（与后台「网页设置 → 默认开启压缩」的默认值保持一致）
+      defaultCustomerCompress: pv('defaultCustomerCompress', true) === true,
       defaultCompressBar: pv('defaultCompressBar', '0.8'),
       // 压缩期望：已改为「压缩百分比」（如 80 = 压到原体积 80%）
       defaultCompressQuality: pv('defaultCompressQuality', '80'),

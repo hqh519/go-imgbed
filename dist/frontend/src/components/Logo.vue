@@ -1,6 +1,8 @@
 <template>
-    <a 
-        :href="logoHref" 
+    <!-- v2.4.0：未登录状态不显示左上角 logo（例如登录页 / 匿名上传页） -->
+    <a
+        v-if="isLoggedIn"
+        :href="logoHref"
         :target="target"
         class="logo-link"
         rel="noopener noreferrer"
@@ -66,6 +68,10 @@ export default {
   },
   computed: {
     ...mapGetters(['userConfig']),
+    /** 是否已登录（会话里有账户才算；sessionCheck 探测完成前保持隐藏，避免闪现） */
+    isLoggedIn() {
+      return !!this.$store?.state?.sessionUser
+    },
     logoUrl() {
       /*
        * 优先级（v202610221824）：

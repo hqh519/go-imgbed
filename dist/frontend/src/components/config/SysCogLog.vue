@@ -468,6 +468,10 @@ html.dark .log-row:hover {
 }
 
 @media (max-width: 768px) {
+  /* v2.4.0：移动端顶部栏取消粘滞，跟随页面滚动 */
+  .log-header {
+    position: static;
+  }
   .log-row {
     grid-template-columns: 1fr;
     gap: 4px;

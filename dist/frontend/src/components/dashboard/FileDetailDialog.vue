@@ -54,51 +54,70 @@
                 {{ $t('fileDetail.cancel') }}
             </el-button>
         </div>
-        <el-tabs v-model="activeTab" @tab-click="handleTabClick" style="margin-bottom: 10px;">
-            <el-tab-pane :label="$t('fileDetail.originUrl')" name="originUrl">
-                <el-input v-model="urls.originUrl" readonly @click="handleUrlClick"></el-input>
-            </el-tab-pane>
-            <el-tab-pane label="Markdown" name="mdUrl">
-                <el-input v-model="urls.mdUrl" readonly @click="handleUrlClick"></el-input>
-            </el-tab-pane>
-            <el-tab-pane label="HTML" name="htmlUrl">
-                <el-input v-model="urls.htmlUrl" readonly @click="handleUrlClick"></el-input>
-            </el-tab-pane>
-            <el-tab-pane label="BBCode" name="bbUrl">
-                <el-input v-model="urls.bbUrl" readonly @click="handleUrlClick"></el-input>
-            </el-tab-pane>
-            <el-tab-pane label="TG File ID" v-if="file?.metadata?.TgFileId" name="tgId">
-                <el-input v-model="urls.tgId" readonly @click="handleUrlClick"></el-input>
-            </el-tab-pane>
-            <el-tab-pane label="S3 Location" v-if="file?.metadata?.S3Location" name="s3Location">
-                <el-input v-model="urls.S3Location" readonly @click="handleUrlClick"></el-input>
-            </el-tab-pane>
-            <el-tab-pane label="S3 CDN URL" v-if="file?.metadata?.S3CdnFileUrl" name="s3CdnFileUrl">
-                <el-input v-model="urls.S3CdnFileUrl" readonly @click="handleUrlClick"></el-input>
-            </el-tab-pane>
-            <!-- 二维码（v202610221824）：放在最后一个签发外链之后，纯浏览器渲染不落文件 -->
-            <el-tab-pane :label="$t('fileDetail.qrCode')" name="qrcode">
-                <div class="qr-pane">
-                    <QRCodeBox :value="qrValue" :size="200" :empty-text="$t('fileDetail.qrEmpty')" />
-                    <p class="qr-hint">{{ $t('fileDetail.qrHint') }}</p>
-                </div>
-            </el-tab-pane>
-        </el-tabs>
+        <!--
+            签发外链（v2.3.0）：从「嵌在页面里的一排标签」改成独立模块 ——
+            外层有边框与底色，内部可左右滑动（窄屏也能一行看完所有格式）。
+        -->
+        <div class="link-block">
+            <el-tabs v-model="activeTab" @tab-click="handleTabClick">
+                <el-tab-pane :label="$t('fileDetail.originUrl')" name="originUrl">
+                    <el-input v-model="urls.originUrl" readonly @click="handleUrlClick"></el-input>
+                </el-tab-pane>
+                <el-tab-pane label="Markdown" name="mdUrl">
+                    <el-input v-model="urls.mdUrl" readonly @click="handleUrlClick"></el-input>
+                </el-tab-pane>
+                <el-tab-pane label="HTML" name="htmlUrl">
+                    <el-input v-model="urls.htmlUrl" readonly @click="handleUrlClick"></el-input>
+                </el-tab-pane>
+                <el-tab-pane label="BBCode" name="bbUrl">
+                    <el-input v-model="urls.bbUrl" readonly @click="handleUrlClick"></el-input>
+                </el-tab-pane>
+                <el-tab-pane label="TG File ID" v-if="file?.metadata?.TgFileId" name="tgId">
+                    <el-input v-model="urls.tgId" readonly @click="handleUrlClick"></el-input>
+                </el-tab-pane>
+                <el-tab-pane label="S3 Location" v-if="file?.metadata?.S3Location" name="s3Location">
+                    <el-input v-model="urls.S3Location" readonly @click="handleUrlClick"></el-input>
+                </el-tab-pane>
+                <el-tab-pane label="S3 CDN URL" v-if="file?.metadata?.S3CdnFileUrl" name="s3CdnFileUrl">
+                    <el-input v-model="urls.S3CdnFileUrl" readonly @click="handleUrlClick"></el-input>
+                </el-tab-pane>
+            </el-tabs>
+        </div>
         <!-- 文件预览区域 -->
         <div class="preview-section">
-            <div class="preview-content">
-                <video v-if="isVideo" :src="fileLink" autoplay muted loop class="video-preview" @click="openImageLink"></video>
-                <audio v-else-if="isAudio" :src="fileLink" controls autoplay class="audio-preview"></audio>
-                <el-image
-                    v-else-if="isImage"
-                    :src="fileLink"
-                    fit="contain"
-                    lazy
-                    class="image-preview"
-                    title="在新标签页打开"
-                    @click="openImageLink"
-                ></el-image>
-                <font-awesome-icon v-else icon="file" class="file-icon-detail"></font-awesome-icon>
+            <!-- 二维码不再单开标签页：直接在这个「文件加载区域」里替换文件显示（v2.3.0） -->
+            <div class="preview-toolbar">
+                <el-button
+                    size="small"
+                    :type="showQr ? 'primary' : 'default'"
+                    plain
+                    @click="toggleQr"
+                >
+                    <font-awesome-icon icon="qrcode" class="preview-toolbar-icon" />{{ $t('fileDetail.qrCode') }}
+                </el-button>
+                <span class="preview-toolbar-hint">{{ showQr ? $t('fileDetail.qrHint') : '' }}</span>
+            </div>
+            <div class="preview-content" :class="{ 'is-qr': showQr }">
+                <!-- v2.4.0：二维码改为真实 <img> 渲染（见 QRCodeBox），
+                     移动端长按 = 浏览器原生菜单（识别/保存），PC 右键 = 浏览器原生菜单，
+                     不再挂任何自定义右键/长按菜单 -->
+                <template v-if="showQr">
+                    <QRCodeBox :value="qrValue" :size="qrSize" :empty-text="$t('fileDetail.qrEmpty')" />
+                </template>
+                <template v-else>
+                    <video v-if="isVideo" :src="fileLink" autoplay muted loop class="video-preview" @click="openImageLink"></video>
+                    <audio v-else-if="isAudio" :src="fileLink" controls autoplay class="audio-preview"></audio>
+                    <el-image
+                        v-else-if="isImage"
+                        :src="fileLink"
+                        fit="contain"
+                        lazy
+                        class="image-preview"
+                        title="在新标签页打开"
+                        @click="openImageLink"
+                    ></el-image>
+                    <font-awesome-icon v-else icon="file" class="file-icon-detail"></font-awesome-icon>
+                </template>
             </div>
         </div>
         <!-- 详细信息 -->
@@ -111,7 +130,16 @@
                 <el-input v-if="isEditing" v-model="editForm.FileType" size="small" :placeholder="$t('fileDetail.fileTypePlaceholder')"></el-input>
                 <span v-else>{{ fileTypeDisplay }}</span>
             </el-descriptions-item>
-            <el-descriptions-item :label="$t('fileDetail.fileSizeLabel')">{{ fileSizeDisplay }}</el-descriptions-item>
+            <el-descriptions-item :label="$t('fileDetail.fileSizeLabel')">
+                <!-- 悬停看「原文件大小 / 压缩后大小」详情 -->
+                <el-tooltip v-if="fileSizeTooltip" placement="top" raw-content>
+                    <template #content>
+                        <div class="size-tooltip">{{ fileSizeTooltip }}</div>
+                    </template>
+                    <span class="size-value">{{ fileSizeDisplay }}</span>
+                </el-tooltip>
+                <span v-else>{{ fileSizeDisplay }}</span>
+            </el-descriptions-item>
             <el-descriptions-item :label="$t('fileDetail.imageDimensions')">
                 <div v-if="imageDimensions" style="display: flex; align-items: center; gap: 6px;">
                     <span>{{ file?.metadata?.Width }} × {{ file?.metadata?.Height }}</span>
@@ -271,6 +299,32 @@
             append-to-body
         >
             <el-form @submit.prevent="submitRename">
+                <!-- 历史名称（v2.3.0）：改过的 File Name 很容易「改不回去」，
+                     这里常显「原始名称 / 上一次名称」，并支持一键回填。 -->
+                <div class="rename-history">
+                    <div class="rename-history-row">
+                        <span class="rename-history-label">{{ $t('fileDetail.renameFirstName') }}</span>
+                        <code class="rename-history-value">{{ file?.metadata?.FileFirstName || file?.name || '-' }}</code>
+                        <el-button
+                            v-if="file?.metadata?.FileFirstName && file?.metadata?.FileFirstName !== file?.name"
+                            link
+                            type="primary"
+                            size="small"
+                            @click="fillRename(file.metadata.FileFirstName)"
+                        >{{ $t('fileDetail.renameUseThis') }}</el-button>
+                    </div>
+                    <div class="rename-history-row">
+                        <span class="rename-history-label">{{ $t('fileDetail.renamePrevName') }}</span>
+                        <code class="rename-history-value">{{ file?.metadata?.FilePrevName || $t('fileDetail.renamePrevNone') }}</code>
+                        <el-button
+                            v-if="file?.metadata?.FilePrevName"
+                            link
+                            type="primary"
+                            size="small"
+                            @click="fillRename(file.metadata.FilePrevName)"
+                        >{{ $t('fileDetail.renameUseThis') }}</el-button>
+                    </div>
+                </div>
                 <el-form-item :label="$t('fileDetail.renameLabel')" :error="renameValidation.error">
                     <el-input
                         v-model="renameForm.newFileId"
@@ -401,6 +455,8 @@ export default {
                 error: ''
             },
             renameSaving: false,
+            // 二维码：直接替换「文件加载区域」里的文件（v2.3.0；v2.4.0 移除自定义长按菜单）
+            showQr: false,
             // 重定向
             showRedirectDialog: false,
             redirectForm: { url: '' },
@@ -428,6 +484,14 @@ export default {
         },
         dialogWidth() {
             return window.innerWidth < 768 ? '95%' : '900px';
+        },
+        /** 二维码渲染尺寸：窄屏按容器宽度收一点，避免撑破弹窗 */
+        qrSize() {
+            if (typeof window === 'undefined') return 200;
+            const w = window.innerWidth;
+            if (w <= 420) return 180;
+            if (w <= 768) return 200;
+            return 240;
         },
         /**
          * 详情表列数：窄屏 1 列、宽屏 2 列。
@@ -623,6 +687,22 @@ export default {
             }
             const sizeText = this.file?.metadata?.FileSize;
             return sizeText || this.$t('fileDetail.unknown');
+        },
+        /**
+         * 文件大小的悬停提示（v2.3.0）：
+         * 「原文件大小：X / 压缩后大小：Y」—— 未压缩时两个值相同，明确告知而不是留空。
+         */
+        fileSizeTooltip() {
+            const sizeBytes = Number(this.file?.metadata?.FileSizeBytes) || 0;
+            const originalBytes = Number(this.file?.metadata?.FileSizeOriginalBytes) || sizeBytes;
+            if (!sizeBytes) return '';
+            const original = this.formatBytes(originalBytes);
+            const current = this.formatBytes(sizeBytes);
+            const compressed = originalBytes > sizeBytes;
+            return [
+                `${this.$t('fileDetail.originalSize')}：${original}`,
+                `${compressed ? this.$t('fileDetail.compressedSize') : this.$t('fileDetail.currentSize')}：${current}`,
+            ].join('\n');
         }
     },
     methods: {
@@ -766,6 +846,11 @@ export default {
                 window.open(this.fileLink, '_blank');
             }
         },
+
+        /* ---------------- 二维码（v2.4.0：只保留切换显示，长按/右键交给浏览器原生菜单） ---------------- */
+        toggleQr() {
+            this.showQr = !this.showQr;
+        },
         /**
          * 生成「指定渠道下这个文件的真实直链」。
          *   1) 优先用后端算好的渠道内真实地址（S3 对象 URL / WebDAV 真实路径 / 自定义原始外链）
@@ -903,6 +988,12 @@ export default {
             this.renameForm.newFileId = this.file?.name || '';
             this.renameValidation = { valid: true, error: '' };
             this.showRenameDialog = true;
+        },
+        /** 把「原始名称 / 上一次名称」一键回填到输入框，并立刻校验 */
+        fillRename(name) {
+            if (!name) return;
+            this.renameForm.newFileId = String(name);
+            this.validateRenameInput();
         },
         /** 打开重定向弹窗，回显当前重定向地址 */
         openRedirectDialog() {
@@ -1066,7 +1157,8 @@ export default {
 }
 .preview-section {
     display: flex;
-    justify-content: center;
+    flex-direction: column;
+    gap: 8px;
     margin-bottom: 15px;
     padding: 12px;
     background: var(--el-fill-color-light);
@@ -1074,11 +1166,66 @@ export default {
     border-radius: 8px;
     min-height: 60px;
 }
+/* 预览区顶部：二维码切换（v2.3.0，二维码直接替换文件显示） */
+.preview-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+.preview-toolbar-icon {
+    margin-right: 4px;
+}
+.preview-toolbar-hint {
+    font-size: 12px;
+    color: var(--el-text-color-secondary);
+    line-height: 1.5;
+}
 .preview-content {
     display: flex;
     justify-content: center;
     align-items: center;
     width: 100%;
+}
+/* 二维码态：给个白色底座，避免深色主题下扫不出来 */
+.preview-content.is-qr {
+    padding: 10px 0;
+    cursor: context-menu;
+}
+/* 「文件大小」悬停提示：两行文本 */
+.size-tooltip {
+    white-space: pre-line;
+    line-height: 1.6;
+}
+.size-value {
+    cursor: help;
+}
+/* 重命名弹窗里的历史名称 */
+.rename-history {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 14px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    background: var(--el-fill-color-light);
+    border: 1px dashed var(--el-border-color-lighter);
+}
+.rename-history-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    font-size: 12px;
+}
+.rename-history-label {
+    color: var(--el-text-color-secondary);
+    flex-shrink: 0;
+}
+.rename-history-value {
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    word-break: break-all;
+    opacity: 0.9;
 }
 :deep(.el-descriptions__content) {
     word-break: break-all;
@@ -1224,34 +1371,46 @@ export default {
     margin-bottom: 8px;
 }
 
+/* 签发外链：独立模块（v2.3.0）—— 外框 + 内可左右滑动 */
+.link-block {
+    margin-bottom: 10px;
+    padding: 10px 12px 0;
+    border-radius: 10px;
+    border: 1px solid var(--glass-border);
+    background: color-mix(in srgb, var(--el-text-color-primary) 4%, transparent);
+}
+.link-block :deep(.el-tabs__header) {
+    margin-bottom: 8px;
+}
+.link-block :deep(.el-tabs__nav-wrap) {
+    overflow: visible;
+}
+/* 标签行独立横向滚动：手机 / 窄窗口都能一行滑完所有格式 */
+.link-block :deep(.el-tabs__nav-scroll) {
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+}
+.link-block :deep(.el-tabs__nav-scroll)::-webkit-scrollbar {
+    display: none;
+}
+.link-block :deep(.el-tabs__nav) {
+    flex-wrap: nowrap;
+    transform: none !important;
+}
+.link-block :deep(.el-tabs__item) {
+    flex: 0 0 auto;
+    padding: 0 12px;
+    white-space: nowrap;
+}
+
 @media (max-width: 768px) {
     .detail-actions {
         justify-content: center;
     }
-    /* 链接格式那一行（原始 / Markdown / HTML / BBCode / …）改成可左右滑动 */
-    :deep(.el-tabs__header) {
-        margin-bottom: 8px;
-    }
-    :deep(.el-tabs__nav-wrap) {
-        overflow: visible;
-    }
-    :deep(.el-tabs__nav-scroll) {
-        overflow-x: auto;
-        overflow-y: hidden;
-        -webkit-overflow-scrolling: touch;
-        scrollbar-width: none;
-    }
-    :deep(.el-tabs__nav-scroll)::-webkit-scrollbar {
-        display: none;
-    }
-    :deep(.el-tabs__nav) {
-        flex-wrap: nowrap;
-        transform: none !important;
-    }
-    :deep(.el-tabs__item) {
-        flex: 0 0 auto;
-        padding: 0 12px;
-        white-space: nowrap;
+    .link-block {
+        padding: 8px 8px 0;
     }
 }
 </style>

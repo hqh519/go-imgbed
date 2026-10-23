@@ -174,6 +174,8 @@ function buildMetadata(rec, copies, opts = {}) {
     const originalSize = rawOriginalSize > 0 ? rawOriginalSize : size;
     const meta = {
         FileName: rec.originalName,
+        FileFirstName: rec.firstName || rec.name,
+        FilePrevName: rec.prevName || '',
         FileType: fileTypeOf(rec.mime),
         FileExt: fileExtOf(rec.originalName, rec.mime),
         FileSize: formatSize(size),

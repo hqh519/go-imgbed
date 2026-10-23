@@ -13,6 +13,14 @@ import { ChannelInfo } from '../adapters/adapter.interface';
 import { normalizeUploadSource, fileTypeOf, channelShort } from '../common/file-view';
 import { appLog } from '../common/app-log';
 import { joinObjectKey, renderFileName, renderObjectPrefix, supportsPrefix } from '../common/path-template';
+import { compressMedia, readDimensions } from '../common/compress';
+
+/**
+ * 压缩上限（字节）：超过就不压。
+ * sharp 与 ffmpeg 都需要把内容读进内存，几百 MB 的视频在 2C2G 的容器里会把进程拖垮；
+ * 这一步的收益也远小于风险（图床的主场景是图片与短视频）。
+ */
+const COMPRESS_MAX_BYTES = 512 * 1024 * 1024;
 
 interface UploadOptions {
   /** 渠道类型过滤（cos/minio/r2…）：仅用于「按类型挑一条可用渠道」 */
@@ -813,23 +821,28 @@ export class UploadService {
   }
 
   /**
-   * 服务端压缩（sharp → WebP）。
-   * percent 为「压缩后体积占原文件的百分比」（如 80 = 压到原体积 80%）。
-   * 通过迭代下调 quality 逼近目标体积，避免固定质量导致「压缩后反而更大」或压缩失败。
+   * 服务端压缩（v2.3.0 起统一委托给 common/compress.ts）。
+   * 保留这个薄封装是为了兼容历史调用点（内部已不再直接使用 sharp）。
    */
   private async compress(buffer: Buffer, mime: string, percent: number): Promise<{ buffer: Buffer; mime: string; ext: string }> {
-    const sharp = (await import('sharp')).default;
-    sharp.cache({ memory: 32 });
-    sharp.concurrency(2);
-    const ratio = Math.min(1, Math.max(0.1, (percent || 80) / 100));
-    const target = Math.max(1024, Math.round(buffer.length * ratio));
-    let quality = 82;
-    let out = await sharp(buffer, { limitInputPixels: 25_000_000 }).rotate().webp({ quality }).toBuffer();
-    for (let i = 0; i < 4 && out.length > target && quality > 20; i++) {
-      quality = Math.max(20, Math.round(quality * Math.sqrt(target / out.length)));
-      out = await sharp(buffer, { limitInputPixels: 25_000_000 }).rotate().webp({ quality }).toBuffer();
+    const ext = mime.split('/')[1] || '';
+    const r = await compressMedia(buffer, mime, ext, percent);
+    if (r.compressed) return { buffer: r.buffer, mime: r.mime || mime, ext: r.ext || `.${ext}` };
+    return { buffer, mime, ext: ext ? `.${ext}` : '' };
+  }
+
+  /**
+   * 「默认开启压缩」开关（后台 → 网页设置 → 默认开启压缩）。
+   * 用于没有前端开关的上传入口（API Token / WebDAV）：前端上传页会显式传 serverCompress。
+   */
+  private async defaultServerCompress(): Promise<boolean> {
+    try {
+      const page: any = await this.sysConfig.get('page');
+      const item = (page?.config || []).find((x: any) => x.id === 'defaultCustomerCompress');
+      return item ? item.value === true || item.value === 'true' : true;
+    } catch {
+      return true;
     }
-    return { buffer: out, mime: 'image/webp', ext: '.webp' };
   }
 
   /**
@@ -876,19 +889,44 @@ export class UploadService {
     const uploadIp = opts.ip || '';
     const uploadAddress = await this.cachedAddress(uploadIp);
 
-    if (opts.serverCompress && mime.startsWith('image/') && mime !== 'image/gif') {
-      try {
-        // 压缩期望：前端上传设置优先，否则用后台「默认压缩期望」（百分比）
-        const pct = opts.compressPercent && opts.compressPercent > 0 ? opts.compressPercent : await this.defaultCompressPercent();
-        const c = await this.compress(buffer, mime, pct);
-        buffer = c.buffer;
-        mime = c.mime;
-        originalName = originalName.replace(/\.[^.]+$/, '') + c.ext;
-      } catch (err) {
-        // 压缩失败降级用原图
-        console.warn('[upload] 压缩失败，使用原图:', (err as Error).message);
+    /*
+     * 压缩（v2.3.0）：
+     *   · 覆盖图片 / 视频 / 音频，具体能不能压、压成什么格式统一由 common/compress.ts 判定
+     *     （gif 会丢帧、png 必须保透明、没有 ffmpeg 就跳过视频音频 …… 都在那里处理）；
+     *   · 开关优先级：本次请求显式传入（前端上传设置） > 后台「网页设置 → 默认开启压缩」；
+     *     API Token / WebDAV 这类"没有前端开关"的入口因此也会跟随后台默认值；
+     *   · 压缩失败 / 压不动 → 原文件照常上传（需求明确要求"跳过压缩直接上传"）。
+     */
+    const wantCompress = opts.serverCompress ?? (await this.defaultServerCompress());
+    if (wantCompress) {
+      const srcExt = originalName.includes('.') ? String(originalName.split('.').pop() || '') : '';
+      const pct =
+        opts.compressPercent && opts.compressPercent > 0 ? opts.compressPercent : await this.defaultCompressPercent();
+      // 超大文件不压缩：sharp/ffmpeg 都要把内容整体读进内存，几百 MB 的视频会把进程拖垮
+      if (buffer.length > COMPRESS_MAX_BYTES) {
+        console.log(`[upload] 跳过压缩：文件 ${(buffer.length / 1024 / 1024).toFixed(1)}MB 超过压缩上限`);
+      } else {
+        const r = await compressMedia(buffer, mime, srcExt, pct);
+        if (r.compressed) {
+          const before = buffer.length;
+          buffer = r.buffer;
+          mime = r.mime || mime;
+          if (r.ext) originalName = originalName.replace(/\.[^.]+$/, '') + r.ext;
+          appLog.info(
+            'upload',
+            `已压缩：${before}B → ${buffer.length}B（${Math.round((1 - buffer.length / before) * 100)}%）`,
+            `${originalName} ｜ 期望 ${pct}%`,
+            uploadIp,
+          );
+        } else if (r.reason) {
+          appLog.info('upload', `跳过压缩：${r.reason}`, originalName, uploadIp);
+        }
       }
     }
+
+    // 尺寸（图片走 sharp）：详情页「图片尺寸」一直显示「无」就是因为这里从来没写过 metas.Width/Height。
+    // 放在压缩之后读，拿到的是最终文件的真实尺寸。
+    const dims = await readDimensions(buffer, mime, mime.split('/')[1] || '');
 
     // 主渠道 / 备份渠道统一由 StorageChannelService 按优先级解析：
     //   本次请求显式指定 → API Token 配置 → 「用户管理」账户指定 → 后台「上传设置」全局渠道
@@ -1027,6 +1065,9 @@ export class UploadService {
     const record = await prisma.fileRecord.create({
       data: {
         name: fileId,
+        // 重命名历史：第一次的名字先写进来，之后重命名只更新 prevName（v2.3.0）
+        firstName: fileId,
+        prevName: '',
         originalName,
         size: buffer.length,
         originalSize,
@@ -1040,7 +1081,11 @@ export class UploadService {
         // 上传计时：开始（请求到达 / 第一片 init）→ 完成（记录落库），详情页据此算时长与速度
         uploadStartedAt: opts.uploadStartedAt || new Date(startedAt),
         uploadFinishedAt: new Date(),
-        metas: JSON.stringify({ UploadAddress: uploadAddress }),
+        // metas 里带上归属地 + 真实尺寸（详情页「图片尺寸」读的就是这里）
+        metas: JSON.stringify({
+          UploadAddress: uploadAddress,
+          ...(dims.width && dims.height ? { Width: dims.width, Height: dims.height } : {}),
+        }),
         // 主渠道副本与文件记录一次写入（嵌套 create = 同一事务），少一次往返
         // isPrimary 补记（v1.8.0：此前只靠「第一条副本即主副本」的隐式约定，字段一直是 false）
         copies: {

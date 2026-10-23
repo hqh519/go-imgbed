@@ -21,6 +21,10 @@ const settings_service_1 = require("./settings/settings.service");
 const sysconfig_service_1 = require("./settings/sysconfig.service");
 const storage_channel_service_1 = require("./storage/storage-channel.service");
 const compat_controller_1 = require("./compat/compat.controller");
+const access_controller_1 = require("./access/access.controller");
+const access_service_1 = require("./access/access.service");
+const mail_controller_1 = require("./mail/mail.controller");
+const mail_service_1 = require("./mail/mail.service");
 let AppModule = class AppModule {
 };
 exports.AppModule = AppModule;
@@ -29,6 +33,7 @@ exports.AppModule = AppModule = __decorate([
         controllers: [
             auth_controller_1.AuthController,
             channels_controller_1.ChannelsController,
+            channels_controller_1.ChannelAllowedController,
             channels_controller_1.ChannelManageController,
             channels_controller_1.StorageSettingsController,
             upload_controller_1.UploadController,
@@ -41,7 +46,19 @@ exports.AppModule = AppModule = __decorate([
             webdav_controller_1.WebDavController,
             compat_controller_1.PublicCompatController,
             compat_controller_1.ManageCompatController,
+            access_controller_1.AccessController,
+            access_controller_1.AccessAdminController,
+            mail_controller_1.MailController,
         ],
-        providers: [settings_service_1.SettingsService, sysconfig_service_1.SysConfigService, channels_controller_1.ChannelsService, storage_channel_service_1.StorageChannelService, upload_service_1.UploadService, auth_guard_1.OptionalAuthGuard],
+        providers: [
+            settings_service_1.SettingsService,
+            sysconfig_service_1.SysConfigService,
+            channels_controller_1.ChannelsService,
+            storage_channel_service_1.StorageChannelService,
+            upload_service_1.UploadService,
+            auth_guard_1.OptionalAuthGuard,
+            access_service_1.AccessService,
+            mail_service_1.MailService,
+        ],
     })
 ], AppModule);

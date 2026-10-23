@@ -70,6 +70,38 @@
                 </div>
             </div>
 
+            <!-- v2.4.0：备用库预览（只读）—— 自定义访问域名的上一行 -->
+            <div class="storage-row">
+                <div class="mb-item domain-item">
+                    <span class="mb-label">备用库预览</span>
+                    <el-select
+                        :model-value="backupPoolIds"
+                        multiple
+                        collapse-tags
+                        size="small"
+                        disabled
+                        class="domain-input pool-preview-select"
+                        placeholder="未设置备用库"
+                    >
+                        <el-option
+                            v-for="c in backupPoolChannels"
+                            :key="c.id"
+                            :label="`${c.code} · ${c.name}`"
+                            :value="c.id"
+                        />
+                    </el-select>
+                    <el-tooltip placement="top" raw-content>
+                        <template #content>
+                            <div style="max-width: min(360px, 78vw); line-height: 1.7;">
+                                只读展示哪些渠道被设为了「备用库」（主渠道上传失败时的轮换池）。<br>
+                                设置入口：下方渠道卡片的操作菜单里「设为备用库 / 取消备用库」。
+                            </div>
+                        </template>
+                        <font-awesome-icon icon="question-circle" class="help-icon"/>
+                    </el-tooltip>
+                </div>
+            </div>
+
             <div class="storage-row">
                 <div class="mb-item domain-item">
                     <span class="mb-label">自定义访问域名</span>
@@ -212,9 +244,6 @@
                     <div class="card-header">
                         <div class="card-title">
                             <span class="channel-name">{{ channel.name }}</span>
-                            <el-tag v-if="channel.isMain" size="small" type="success">主渠道</el-tag>
-                            <el-tag v-else-if="channel.isBackup" size="small" type="warning">备份渠道</el-tag>
-                            <el-tag v-if="channel.backupPool" size="small" type="info">备用库</el-tag>
                         </div>
                         <el-switch
                             :model-value="channel.enabled"
@@ -246,6 +275,22 @@
                                 :stroke-width="6"
                             />
                             <span class="quota-text">{{ quotaText(channel) }}</span>
+                        </div>
+                        <!--
+                            v2.3.0：主渠道 / 备份渠道 / 备用库 三个标记从卡片标题右侧
+                            统一挪到内容摘要区最后一行，全部一起展示（可同时存在多个）。
+                        -->
+                        <div class="card-status-row">
+                            <el-tag v-if="channel.isMain" size="small" type="success" effect="light">主渠道</el-tag>
+                            <el-tag v-if="channel.isBackup" size="small" type="warning" effect="light">备份渠道</el-tag>
+                            <el-tag v-if="channel.backupPool" size="small" type="info" effect="light">备用库</el-tag>
+                            <el-tag
+                                v-if="!channel.isMain && !channel.isBackup && !channel.backupPool"
+                                size="small"
+                                type="info"
+                                effect="plain"
+                                class="is-plain"
+                            >普通渠道</el-tag>
                         </div>
                     </div>
                     <div class="card-actions">
@@ -596,6 +641,13 @@ export default {
         },
         backupChannel() {
             return this.allChannels.find((c) => c.isBackup) || null;
+        },
+        /** v2.4.0：被设为「备用库」的渠道列表（只读预览） */
+        backupPoolChannels() {
+            return this.allChannels.filter((c) => c.backupPool);
+        },
+        backupPoolIds() {
+            return this.backupPoolChannels.map((c) => c.id);
         },
         currentFields() {
             const type = this.showAddDialog ? this.newChannel.type : this.currentChannelType;
@@ -1138,6 +1190,19 @@ export default {
     }
 }
 
+/* v2.4.0：备用库预览（只读多选框）—— 与域名输入框同宽同位 */
+.pool-preview-select {
+    max-width: 320px;
+}
+
+.pool-preview-select :deep(.el-tag) {
+    max-width: 130px;
+}
+
+.pool-preview-select :deep(.el-select__wrapper.is-disabled) {
+    cursor: default;
+}
+
 .mb-name {
     font-weight: 600;
     color: var(--el-text-color-primary);
@@ -1311,6 +1376,26 @@ export default {
 
 .quota-text {
     font-size: 11px;
+    color: var(--el-text-color-secondary);
+}
+
+/* v2.3.0：主/备/备用库标记统一落在摘要区最后一行 */
+.card-status-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px dashed var(--el-border-color-lighter);
+    width: 100%;
+}
+
+.card-status-row .el-tag {
+    flex-shrink: 0;
+}
+
+.card-status-row .el-tag.is-plain {
     color: var(--el-text-color-secondary);
 }
 

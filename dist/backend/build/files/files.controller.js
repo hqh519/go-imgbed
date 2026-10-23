@@ -109,9 +109,62 @@ let LinkController = class LinkController {
         if (domains.length === 0)
             return true;
         const self = String(req.headers.host || '').split(':')[0].toLowerCase();
-        if (self)
+        if (self && !domains.includes(self))
             domains.push(self);
-        return domains.some((d) => host.includes(d));
+        return domains.some((raw) => {
+            if (raw.startsWith('*.')) {
+                const base = raw.slice(2);
+                return host === base || host.endsWith(`.${base}`);
+            }
+            if (raw.includes('.'))
+                return host === raw || host.endsWith(`.${raw}`);
+            return host.includes(raw);
+        });
+    }
+    async readFallback() {
+        try {
+            const security = await this.sysConfig.get('security');
+            const a = security?.access || {};
+            return {
+                enabled: a.fallbackEnabled === true && !!String(a.fallbackUrl || '').trim(),
+                type: a.fallbackType === 'redirect' ? 'redirect' : 'image',
+                url: String(a.fallbackUrl || '').trim(),
+            };
+        }
+        catch {
+            return { enabled: false, type: 'image', url: '' };
+        }
+    }
+    async serveFallback(res, isHead, fallback) {
+        const cfg = await this.readFallback();
+        if (!cfg.enabled) {
+            fallback();
+            return;
+        }
+        res.setHeader('Cache-Control', 'no-cache, max-age=0');
+        if (cfg.type === 'redirect') {
+            res.redirect(302, cfg.url);
+            return;
+        }
+        try {
+            const resp = await fetch(cfg.url, { signal: AbortSignal.timeout(8000) });
+            if (!resp.ok || !resp.body)
+                throw new Error(`HTTP ${resp.status}`);
+            const type = resp.headers.get('content-type') || 'image/png';
+            res.setHeader('Content-Type', type);
+            res.status(200);
+            if (isHead) {
+                res.end();
+                return;
+            }
+            node_stream_1.Readable.fromWeb(resp.body).pipe(res);
+            return;
+        }
+        catch (err) {
+            app_log_1.appLog.warn('file', `失效替换图片加载失败：${err.message}`, cfg.url);
+            if (!res.headersSent)
+                res.status(404).send('Not Found');
+        }
     }
     renderBlocked(res, kind) {
         const asset = kind === 'block' ? 'BlockImg.png' : 'WhiteListOn.png';
@@ -140,12 +193,14 @@ let LinkController = class LinkController {
             res.setHeader('Cache-Control', 'private, max-age=86400');
             return true;
         }
+        const isHead = String(req.method).toUpperCase() === 'HEAD';
         if (listType === 'Block' || metas.Label === 'adult') {
-            this.renderBlocked(res, 'block');
+            await this.serveFallback(res, isHead, () => this.renderBlocked(res, 'block'));
             return false;
         }
         if (!(await this.linkAllowed(record.uploader))) {
-            this.renderBlocked(res, 'block');
+            app_log_1.appLog.info('file', `链接权限已关闭，拒绝访问：${String(record.name || '')}`);
+            await this.serveFallback(res, isHead, () => this.renderBlocked(res, 'block'));
             return false;
         }
         if (listType === 'White')
@@ -153,7 +208,8 @@ let LinkController = class LinkController {
         const security = (await this.sysConfig.get('security'));
         const access = security?.access || {};
         if (access.whiteListMode && !this.domainAllowed(req, access.allowedDomains)) {
-            this.renderBlocked(res, 'white');
+            app_log_1.appLog.info('file', `白名单域名拒绝：referer=${String(req.headers.referer || '-')} path=${req.path}`);
+            await this.serveFallback(res, isHead, () => this.renderBlocked(res, 'white'));
             return false;
         }
         return true;
@@ -377,6 +433,7 @@ let LinkController = class LinkController {
     }
     async serve(req, res) {
         const name = wildcardParam(req);
+        const isHead = String(req.method).toUpperCase() === 'HEAD';
         const nameCandidates = [];
         const pushName = (v) => {
             const s = String(v || '').replace(/^\/+/, '');
@@ -399,11 +456,14 @@ let LinkController = class LinkController {
             where: { ...(adminPreview ? {} : { status: 'active' }), OR: nameCandidates.map((n) => ({ name: n })) },
             include: { copies: true },
         });
-        if (!record)
-            return res.status(404).send('Not Found');
+        if (!record) {
+            await this.serveFallback(res, isHead, () => res.status(404).send('Not Found'));
+            return;
+        }
         if (record.linkExpiresAt && !adminPreview && !(0, auth_guard_1.isAdminRole)((0, auth_guard_1.currentSession)(req)?.role) && Date.now() > record.linkExpiresAt.getTime()) {
             res.setHeader('Cache-Control', 'no-store');
-            return res.status(410).send('链接已过期');
+            await this.serveFallback(res, isHead, () => res.status(410).send('链接已过期'));
+            return;
         }
         if (!(await this.checkAccess(req, res, record)))
             return;
@@ -429,13 +489,17 @@ let LinkController = class LinkController {
         }
         const prefer = await this.settings.getAccessChannel();
         let active = record.copies.filter((c) => c.status === 'active' && (c.remoteKey || c.remoteUrl));
-        if (active.length === 0)
-            return res.status(404).send('Not Found');
+        if (active.length === 0) {
+            await this.serveFallback(res, isHead, () => res.status(404).send('Not Found'));
+            return;
+        }
         const forceChannel = String(req.query.channel || '').trim();
         if (forceChannel) {
             active = active.filter((c) => c.channelId === forceChannel);
-            if (active.length === 0)
-                return res.status(404).send('Not Found');
+            if (active.length === 0) {
+                await this.serveFallback(res, isHead, () => res.status(404).send('Not Found'));
+                return;
+            }
         }
         const channelIds = active.map((c) => c.channelId);
         const channels = await prisma_1.prisma.channel.findMany({ where: { id: { in: channelIds } } });
@@ -489,8 +553,10 @@ let LinkController = class LinkController {
             if (url)
                 candidates.push({ url, label: ch.name });
         }
-        if (candidates.length === 0)
-            return res.status(404).send('Not Found');
+        if (candidates.length === 0) {
+            await this.serveFallback(res, isHead, () => res.status(404).send('Not Found'));
+            return;
+        }
         const mode = await this.settings.getLinkMode();
         if (mode === 'redirect') {
             res.setHeader('Cache-Control', 'no-cache, max-age=0');
@@ -1097,9 +1163,15 @@ let ManageController = class ManageController {
         const dir = newId.includes('/') ? newId.split('/').slice(0, -1).join('/') : '';
         const updated = await prisma_1.prisma.fileRecord.update({
             where: { id: rec.id },
-            data: { name: newId, folder: dir },
+            data: {
+                name: newId,
+                folder: dir,
+                prevName: rec.name,
+                firstName: rec.firstName || rec.name,
+            },
             include: { copies: { include: { channel: true } }, tags: { include: { tag: true } } },
         });
+        app_log_1.appLog.info('file', `重命名：${rec.name} → ${newId}`);
         return {
             success: true,
             newFileId: newId,
@@ -1129,7 +1201,7 @@ let ManageController = class ManageController {
             data: {
                 metas: rec.metas,
                 name: rec.name,
-                ...(this.isAuthor(req, rec) ? { note: rec.note, Note: rec.note } : {}),
+                ...(this.canUseNote(req, rec) ? { note: rec.note, Note: rec.note } : {}),
                 metadata,
             },
         };
@@ -1142,6 +1214,9 @@ let ManageController = class ManageController {
         if (up)
             return up === me;
         return this.admin(req);
+    }
+    canUseNote(req, rec) {
+        return this.admin(req) || this.isAuthor(req, rec);
     }
     async setExpiry(req, body) {
         if (!(await this.userPerm(req, 'edit')))
@@ -1207,8 +1282,8 @@ let ManageController = class ManageController {
             const cur = (0, file_view_1.safeParse)(rec.metas);
             const b = (body || {});
             if (b.Note !== undefined || b.note !== undefined) {
-                if (!this.isAuthor(req, rec))
-                    return { success: false, message: '只有上传者本人可以编辑备注' };
+                if (!this.canUseNote(req, rec))
+                    return { success: false, message: '只有上传者本人或管理员可以编辑备注' };
                 patch.note = String(b.Note ?? b.note ?? '').slice(0, 4000);
             }
             if (b.FileName !== undefined) {
@@ -1234,13 +1309,15 @@ let ManageController = class ManageController {
             return { success: false, message: 'metas 不是合法 JSON' };
         }
         await prisma_1.prisma.fileRecord.update({ where: { id: rec.id }, data: { metas: metasRaw, ...patch } });
+        if (patch.note !== undefined)
+            app_log_1.appLog.info('file', `文件备注已保存：${rec.name}`);
         const updated = await this.resolveFile(rec.name, owner);
         return {
             success: true,
             data: {
                 metas: metasRaw,
                 name: rec.name,
-                ...(this.isAuthor(req, rec) ? { note: patch.note !== undefined ? patch.note : rec.note } : {}),
+                ...(this.canUseNote(req, rec) ? { note: patch.note !== undefined ? patch.note : rec.note } : {}),
                 metadata: updated
                     ? (0, file_view_1.serializeFile)(updated, updated.copies, { tags: updated.tags.map((t) => t.tag.name), resolveDirectUrl: this.directUrlResolver() }).metadata
                     : undefined,
@@ -1894,7 +1971,7 @@ let UserConfigController = class UserConfigController {
             defaultUploadNameType: pv('defaultUploadNameType', 'default'),
             defaultUploadFolder: pv('defaultUploadFolder', ''),
             defaultConvertToWebp: pv('defaultConvertToWebp', false) === true,
-            defaultCustomerCompress: pv('defaultCustomerCompress', false) === true,
+            defaultCustomerCompress: pv('defaultCustomerCompress', true) === true,
             defaultCompressBar: pv('defaultCompressBar', '0.8'),
             defaultCompressQuality: pv('defaultCompressQuality', '80'),
             defaultUrlForm: pv('defaultUrlForm', 'url'),

@@ -70,8 +70,8 @@
         :key="badge.key"
         class="stat-badge"
         :class="{ 'is-clickable': badge.clickable }"
-        :title="badge.clickable ? $t('sysStatus.viewHistoryTip') : ''"
-        @click="badge.clickable && goHistory(badge.query || {})"
+        :title="badge.clickable ? badge.tip : ''"
+        @click="onBadgeClick(badge)"
       >
         <font-awesome-icon :icon="badge.icon" class="stat-badge-icon" />
         <div class="stat-badge-body">
@@ -451,6 +451,63 @@
       </div>
     </div>
 
+    <!-- 访问记录：最近 20 条（v2.3.0），点击任意一条进入访问记录管理页 -->
+    <div class="recent-upload-section access-record-section">
+      <div class="section-header-row">
+        <h3 class="section-title">
+          <font-awesome-icon icon="globe" />
+          <span>{{ $t('sysStatus.recentAccess') }}</span>
+        </h3>
+        <div class="section-header-actions">
+          <span class="section-hint">{{ $t('sysStatus.recentAccessHint', { count: accessRecent.length }) }}</span>
+          <el-button link type="primary" size="small" class="section-link" @click="openAccessLog()">
+            {{ $t('sysStatus.viewAccessLog') }}
+            <font-awesome-icon icon="external-link-alt" />
+          </el-button>
+        </div>
+      </div>
+
+      <div class="recent-list" v-if="accessRecent.length > 0">
+        <div
+          v-for="row in accessRecent"
+          :key="row.id"
+          class="recent-item access-item"
+          :title="$t('sysStatus.openAccessLogHint')"
+          @click="openAccessLog(row)"
+        >
+          <div class="recent-main">
+            <div class="recent-name" :title="row.path">{{ row.path || '-' }}</div>
+            <div class="recent-url" :title="row.title">{{ row.title || row.path || '-' }}</div>
+          </div>
+          <div class="recent-meta">
+            <!-- IP + 归属地 -->
+            <span class="recent-ip" :title="$t('accessLog.colIp')">
+              <font-awesome-icon icon="globe" />
+              {{ row.ip || '-' }}
+            </span>
+            <span v-if="row.ipLocation" class="recent-location" :title="$t('accessLog.colLocation')">
+              {{ row.ipLocation }}
+            </span>
+            <!-- 登录用户（游客不显示） -->
+            <span v-if="row.username" class="recent-user" :title="$t('accessLog.colUser')">
+              <font-awesome-icon icon="users" />
+              {{ row.username }}
+            </span>
+            <!-- 停留时长 -->
+            <span class="recent-views" :title="$t('accessLog.colStay')">
+              <font-awesome-icon icon="clock" />
+              {{ formatStay(row.stayMs) }}
+            </span>
+            <span class="recent-time">{{ formatAccessTime(row.createdAt) }}</span>
+          </div>
+        </div>
+      </div>
+      <div v-else class="empty-state">
+        <font-awesome-icon icon="inbox" class="empty-icon" />
+        <span>{{ $t('sysStatus.noData') }}</span>
+      </div>
+    </div>
+
     <!-- 最近上传 → 文件详情：全站统一入口（FileDetailUnified），按钮/权限与其他页面完全一致 -->
     <FileDetailUnified
       v-model="showRecentDetail"
@@ -517,6 +574,8 @@ export default {
       // 最近上传 → 文件详情（FileDetailUnified 的入参：{ name, metadata }）
       showRecentDetail: false,
       recentDetail: null,
+      // 访问记录（最近 20 条，v2.3.0）
+      accessRecent: [],
       loadErrors: {
         newest: false,
         oldest: false
@@ -562,7 +621,7 @@ export default {
       const list = this.indexInfo.recentFiles
       return Array.isArray(list) ? list : []
     },
-    /** 统计徽章：上传数量统计（可点击跳历史记录）+ 累计占用 + 文件夹数量 */
+    /** 统计徽章：上传数量统计（可点击跳历史记录）+ 累计占用 + 文件夹数量 + 访问次数 */
     statBadges() {
       const s = this.indexInfo.stats || {}
       const n = (v) => Number(v || 0).toLocaleString(this.currentLocale)
@@ -572,7 +631,7 @@ export default {
         { key: 'week', label: this.$t('sysStatus.weekUpload'), value: n(s.week), icon: 'chart-line' },
         { key: 'month', label: this.$t('sysStatus.monthUpload'), value: n(s.month), icon: 'chart-bar' },
         { key: 'year', label: this.$t('sysStatus.yearUpload'), value: n(s.year), icon: 'chart-bar' }
-      ].map((b) => ({ ...b, clickable: true, query: { range: b.key } }))
+      ].map((b) => ({ ...b, clickable: true, tip: this.$t('sysStatus.viewHistoryTip'), query: { range: b.key } }))
       return [
         ...uploadBadges,
         {
@@ -590,11 +649,14 @@ export default {
           clickable: false
         },
         {
+          // 访问次数（v2.3.0）：新标签打开访问记录管理页
           key: 'totalViews',
           label: this.$t('sysStatus.totalViews'),
           value: n(s.totalViews),
           icon: 'eye',
-          clickable: false
+          clickable: true,
+          action: 'access',
+          tip: this.$t('sysStatus.viewAccessLogTip')
         }
       ]
     },
@@ -931,6 +993,7 @@ export default {
   },
   mounted() {
     this.fetchIndexInfo()
+    this.fetchAccessRecent()
     this.clockTimer = window.setInterval(() => {
       this.currentTime = new Date()
     }, 1000)
@@ -1394,6 +1457,61 @@ export default {
     goHistory(query = {}) {
       const url = this.$router.resolve({ name: 'history', query }).href
       window.open(url, '_blank', 'noopener')
+    },
+
+    /**
+     * 统计徽章点击（v2.3.0）：上传类跳历史记录，「访问次数」跳访问记录管理页。
+     * 两种跳转都用新标签打开，不打断当前状态页的浏览位置。
+     */
+    onBadgeClick(badge) {
+      if (!badge?.clickable) return
+      if (badge.action === 'access') return this.openAccessLog()
+      return this.goHistory(badge.query || {})
+    },
+
+    /** 拉取最近 20 条访问记录（系统状态页的「访问记录」功能块） */
+    async fetchAccessRecent() {
+      try {
+        const res = await fetchWithAuth('/api/manage/access/recent?take=20')
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        const body = await res.json().catch(() => ({}))
+        const list = body?.data
+        this.accessRecent = Array.isArray(list) ? list : []
+      } catch {
+        this.accessRecent = []
+      }
+    },
+
+    /**
+     * 打开「访问记录」管理页（新标签）。
+     * 从某条记录点进来时带上该记录的 IP，管理页会自动按 IP 过滤，
+     * 相当于「点这条记录 → 看这个访客的全部足迹」。
+     */
+    openAccessLog(row) {
+      const query = {}
+      if (row && typeof row === 'object' && row.ip) query.ip = row.ip
+      const url = this.$router.resolve({ name: 'accessLog', query }).href
+      window.open(url, '_blank', 'noopener')
+    },
+
+    /** 停留时长（访问记录用）：<1 分钟按秒显示 */
+    formatStay(ms) {
+      const n = Number(ms || 0)
+      if (!n) return '-'
+      if (n < 1000) return `${n} ms`
+      const sec = Math.round(n / 1000)
+      if (sec < 60) return `${sec}s`
+      const min = Math.floor(sec / 60)
+      const rest = sec % 60
+      return rest ? `${min}m${rest}s` : `${min}m`
+    },
+
+    /** 访问记录时间：MM-DD HH:mm:ss（列表里空间紧张，不带年份） */
+    formatAccessTime(ts) {
+      const d = new Date(Number(ts) || 0)
+      if (!Number.isFinite(d.getTime()) || !ts) return '-'
+      const p = (n) => String(n).padStart(2, '0')
+      return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
     },
 
     /** 跳转到「文件管理」页并定位到文件所在目录（新标签打开） */
@@ -2347,6 +2465,22 @@ html.dark .legend-item:hover {
   opacity: 0.6;
 }
 
+/* 区块标题右侧：提示文字 + 「查看全部」链接（v2.3.0 访问记录块） */
+.section-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+  flex-wrap: wrap;
+}
+
+.section-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+}
+
 .recent-list {
   display: flex;
   flex-direction: column;
@@ -2483,6 +2617,43 @@ html.dark .legend-item:hover {
   font-variant-numeric: tabular-nums;
 }
 
+/* ===== 访问记录（v2.3.0，最近 20 条） ===== */
+.access-record-section .recent-list {
+  /* 访问条目高度更小，20 条一屏可见 */
+  max-height: 560px;
+}
+
+.access-record-section .recent-name {
+  font-family: Consolas, Monaco, monospace;
+  font-size: 13px;
+}
+
+.recent-ip,
+.recent-location {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.recent-ip {
+  font-weight: 600;
+}
+
+.recent-location {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0.75;
+}
+
+/* 访问条目没有缩略图，文件名行不再有 pointer 语义（整行都可点） */
+.access-record-section .recent-name:hover,
+.access-record-section .recent-url:hover {
+  text-decoration: none;
+}
+
 /* ===== 统计徽章 ===== */
 .stat-badge-row {
   /* 位于「文件总数」概览卡片下方、「上传趋势」上方 */
@@ -2538,8 +2709,16 @@ html.dark .legend-item:hover {
 @media (max-width: 768px) {
   .recent-meta .recent-size,
   .recent-meta .recent-time,
-  .recent-meta .recent-category {
+  .recent-meta .recent-category,
+  .access-record-section .recent-location {
     display: none;
+  }
+
+  /* 访问记录块：标题右侧的「查看全部」独占一行，避免挤压标题 */
+  .access-record-section .section-header-actions {
+    margin-left: 0;
+    width: 100%;
+    justify-content: space-between;
   }
 }
 

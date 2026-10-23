@@ -188,7 +188,14 @@ export class UploadController {
       // 渠道一律按 ID 匹配；兼容老前端传来的 channelName 参数名（其值同样是渠道 ID）
       channelId: q.channelId ?? q.channelName,
       uploadNameType: q.uploadNameType,
-      serverCompress: q.serverCompress === 'true' || q.serverCompress === '1',
+      /*
+       * 压缩开关（v2.3.0）：
+       *   显式传了 serverCompress → 完全听调用方（前端上传设置里的开关）；
+       *   没传（curl / 第三方客户端 / ShareX 之类直连 /upload）→ 交给 UploadService
+       *   按后台「网页设置 → 默认开启压缩」兜底，避免这些入口静默地不压缩。
+       */
+      serverCompress:
+        q.serverCompress === undefined ? undefined : q.serverCompress === 'true' || q.serverCompress === '1',
       uploadFolder: q.uploadFolder || '',
       uploader,
       ip: this.clientIp(req),

@@ -30,6 +30,7 @@ import { faCogs } from '@fortawesome/free-solid-svg-icons/faCogs';
 import { faComments } from '@fortawesome/free-solid-svg-icons/faComments';
 import { faCompressAlt } from '@fortawesome/free-solid-svg-icons/faCompressAlt';
 import { faCopy } from '@fortawesome/free-solid-svg-icons/faCopy';
+import { faCut } from '@fortawesome/free-solid-svg-icons/faCut';
 import { faDatabase } from '@fortawesome/free-solid-svg-icons/faDatabase';
 import { faDownload } from '@fortawesome/free-solid-svg-icons/faDownload';
 import { faEdit } from '@fortawesome/free-solid-svg-icons/faEdit';
@@ -68,6 +69,7 @@ import { faPager } from '@fortawesome/free-solid-svg-icons/faPager';
 import { faPaperPlane } from '@fortawesome/free-solid-svg-icons/faPaperPlane';
 import { faPaste } from '@fortawesome/free-solid-svg-icons/faPaste';
 import { faPlus } from '@fortawesome/free-solid-svg-icons/faPlus';
+import { faQrcode } from '@fortawesome/free-solid-svg-icons/faQrcode';
 import { faQuestionCircle } from '@fortawesome/free-solid-svg-icons/faQuestionCircle';
 import { faQuoteRight } from '@fortawesome/free-solid-svg-icons/faQuoteRight';
 import { faRedo } from '@fortawesome/free-solid-svg-icons/faRedo';
@@ -132,6 +134,7 @@ export default [
     faComments,
     faCompressAlt,
     faCopy,
+    faCut,
     faDatabase,
     faDiscord,
     faDownload,
@@ -171,6 +174,7 @@ export default [
     faPaperPlane,
     faPaste,
     faPlus,
+    faQrcode,
     faQuestionCircle,
     faQuoteRight,
     faRedo,

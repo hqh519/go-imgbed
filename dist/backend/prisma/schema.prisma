@@ -64,10 +64,20 @@ model User {
   enforceLimits   Boolean  @default(true) // 类型和大小限制：开启时受「允许上传格式 + 单文件大小上限」约束，关闭则跳过
   mainChannelId   String   @default("") // 该账户上传时优先使用的主渠道 ID（空 = 用全局）
   backupChannelId String   @default("") // 该账户上传时优先使用的备份渠道 ID（空 = 用全局）
+  // ---- 邮箱验证（v2.3.0）----
+  // 邮箱验证码校验通过后置 true；「验证过的邮箱」在编辑页锁定不可改，
+  // 改绑需要重新走一次验证码校验。启用两步验证前必须先通过邮箱验证。
+  emailVerified   Boolean  @default(false)
   // ---- 两步验证（TOTP，v202610221824）----
   // totpSecret 为 AES-GCM 加密后的 Base32 密钥；启用后进后台需再输入 6 位验证码
   totpSecret      String   @default("")
   totpEnabled     Boolean  @default(false)
+  // 恢复码（v2.3.0）：启用 2FA 时一次性生成 10 个，**只展示一次**。
+  // 库里只存每个恢复码的 HMAC-SHA256（JSON 数组），不存明文 —— 用掉一个删一个。
+  // 用于「验证器丢失」时进后台 / 关闭 2FA。
+  recoveryHashes  String   @default("[]")
+  // 最近一次生成恢复码的时间（仅用于展示与日志）
+  recoveryAt      DateTime?
   // 后端（管理端）最近一次通过 2FA 的时间；超过 backSessionDays 即视为过期，需重新验证
   backVerifiedAt  DateTime?
   // ---- 会话有效期（天，v202610221824）----
@@ -128,6 +138,13 @@ model Channel {
 model FileRecord {
   id           String    @id @default(cuid())
   name         String    @unique
+  // 重命名历史（v2.3.0）：
+  //   firstName —— 第一次的 File_ID（上传时写入，之后不再变）
+  //   prevName  —— 上一次的 File_ID（每次重命名时把「当时的值」写进来）
+  // 详情页重命名对话框提供「恢复到初始名 / 恢复到上一次」两个快捷键，
+  // 避免改花了就再也回不去原来的名字。
+  firstName    String    @default("")
+  prevName     String    @default("")
   originalName String
   size         Int       @default(0) // 字节；单文件上限受上传设置约束（默认远小于 2GB，Int 足够）
   originalSize Int       @default(0) // 压缩前的初始文件大小（字节）；未压缩时与 size 相同
@@ -255,4 +272,46 @@ model IpRecord {
   createdAt   DateTime @default(now())
 
   @@map("ip_records")
+}
+
+// 访问记录（v2.3.0）—— 站内页面访问 + 文件外链访问，独立成表。
+//   写入路径：前端路由切换时 POST /api/access/visit（拿到 id）→ 离开时 POST /api/access/stay 回填停留时长；
+//             /file/* 直链访问由服务端中间件直接落库（前端拿不到这些请求）。
+//   prevVisitAt  同一 ip（+ 同账户）上一条记录的访问时间 —— 展示「上次来访」。
+//   targetUrl    「跳转链接」：由后端在收到下一次访问时回填到上一条记录（同一 ip+UA 的相邻两条）。
+model AccessLog {
+  id          String   @id @default(cuid())
+  ip          String   @default("")
+  // IP 归属地（开启「IP 归属地查询」后才会有值，异步补写）
+  ipLocation  String   @default("")
+  // 来路（Referer）：域名与完整链接分开存，前端列表按域名聚合更方便
+  refererHost String   @default("")
+  refererUrl  String   @default("")
+  // 访问页面（站内路径，如 /dashboard 或 /file/abc.png）
+  path        String   @default("")
+  // 跳转链接（基于后续访问回填，空 = 还没跳走 / 直接关页）
+  targetUrl   String   @default("")
+  // 页面标题（前端上报，便于在列表里辨认）
+  title       String   @default("")
+  // 停留时长（毫秒，前端 beacon 回填；0 = 未上报）
+  stayMs      Int      @default(0)
+  // 登录用户（未登录为空串）
+  username    String   @default("")
+  // 客户端环境
+  ua          String   @default("")
+  device      String   @default("") // desktop | mobile | tablet
+  browser     String   @default("")
+  os          String   @default("")
+  method      String   @default("GET")
+  status      Int      @default(200)
+  // 访问类型：page（站内页面）/ file（外链直链）/ api
+  kind        String   @default("page")
+  prevVisitAt DateTime?
+  metas       String   @default("{}")
+  createdAt   DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([ip, createdAt])
+  @@index([username, createdAt])
+  @@map("access_logs")
 }

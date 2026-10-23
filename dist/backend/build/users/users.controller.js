@@ -55,6 +55,11 @@ const file_view_1 = require("../common/file-view");
 const crypto_service_1 = require("../common/crypto.service");
 const project_paths_1 = require("../common/project-paths");
 const totp_1 = require("../common/totp");
+const recovery_1 = require("../common/recovery");
+const mail_service_1 = require("../mail/mail.service");
+const auth_controller_1 = require("../auth/auth.controller");
+const channel_access_1 = require("../common/channel-access");
+const app_log_1 = require("../common/app-log");
 const auth_guard_1 = require("../auth/auth.guard");
 const sysconfig_service_1 = require("../settings/sysconfig.service");
 const settings_service_1 = require("../settings/settings.service");
@@ -64,9 +69,11 @@ const NOTICE_KEY = 'userNotice';
 let UsersController = class UsersController {
     sysConfig;
     settings;
-    constructor(sysConfig, settings) {
+    mail;
+    constructor(sysConfig, settings, mail) {
         this.sysConfig = sysConfig;
         this.settings = settings;
+        this.mail = mail;
     }
     isAdmin(req) {
         return (0, auth_guard_1.isAdminRole)((0, auth_guard_1.currentSession)(req)?.role);
@@ -107,6 +114,29 @@ let UsersController = class UsersController {
     async readNotice() {
         return (await this.settings.get(NOTICE_KEY, '')) || '';
     }
+    async authorizedChannelIds(username) {
+        const out = new Set();
+        const rows = await prisma_1.prisma.channel.findMany({
+            select: { id: true, code: true, type: true, authorizedUsers: true },
+        });
+        let isAdmin = false;
+        try {
+            const me = await prisma_1.prisma.user.findUnique({ where: { username }, select: { role: true } });
+            isAdmin = me?.role === 'admin';
+        }
+        catch {
+            isAdmin = false;
+        }
+        for (const c of rows) {
+            const ok = isAdmin || c.type === 'local' || (0, channel_access_1.parseAuthorizedUsers)(c.authorizedUsers).includes(username);
+            if (!ok)
+                continue;
+            out.add(c.id);
+            if (c.code)
+                out.add(c.code);
+        }
+        return out;
+    }
     async list(req) {
         const users = await prisma_1.prisma.user.findMany({ orderBy: { createdAt: 'asc' } });
         const cName = await this.channelLabelMap();
@@ -127,6 +157,8 @@ let UsersController = class UsersController {
             mainChannelName: cName.get(u.mainChannelId) || '',
             backupChannelName: cName.get(u.backupChannelId) || '',
             totpEnabled: u.totpEnabled,
+            emailVerified: u.emailVerified,
+            recoveryCount: (0, recovery_1.countRecoveryCodes)(u.recoveryHashes),
             frontSessionDays: u.frontSessionDays ?? DEFAULT_SESSION_DAYS,
             backSessionDays: u.backSessionDays ?? DEFAULT_SESSION_DAYS,
             adminNote: u.adminNote || '',
@@ -306,6 +338,10 @@ let UsersController = class UsersController {
                 mainChannelId: u.mainChannelId,
                 backupChannelId: u.backupChannelId,
                 totpEnabled: u.totpEnabled,
+                emailVerified: u.emailVerified,
+                recoveryCount: (0, recovery_1.countRecoveryCodes)(u.recoveryHashes),
+                recoveryAt: u.recoveryAt ? u.recoveryAt.getTime() : 0,
+                mailReady: await this.mail.configured(),
                 frontSessionDays: u.frontSessionDays ?? DEFAULT_SESSION_DAYS,
                 backSessionDays: u.backSessionDays ?? DEFAULT_SESSION_DAYS,
                 adminNote: admin ? u.adminNote || '' : '',
@@ -394,7 +430,13 @@ let UsersController = class UsersController {
             const email = String(body.email).trim().slice(0, 120);
             if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
                 return { success: false, message: '邮箱格式不正确' };
-            data.email = email;
+            if (email !== (u.email || '')) {
+                if (u.emailVerified) {
+                    return { success: false, message: '该邮箱已验证，更换邮箱请点击「更换邮箱」并重新接收验证码' };
+                }
+                data.email = email;
+                data.emailVerified = false;
+            }
         }
         for (const key of ['frontSessionDays', 'backSessionDays']) {
             const raw = body[key];
@@ -421,12 +463,23 @@ let UsersController = class UsersController {
                 data.linkEnabled = !!body.linkEnabled;
             if (body.enforceLimits !== undefined)
                 data.enforceLimits = !!body.enforceLimits;
-            if (body.mainChannelId !== undefined)
-                data.mainChannelId = String(body.mainChannelId);
-            if (body.backupChannelId !== undefined)
-                data.backupChannelId = String(body.backupChannelId);
             if (body.adminNote !== undefined)
                 data.adminNote = String(body.adminNote).slice(0, 4000);
+        }
+        if (body.mainChannelId !== undefined || body.backupChannelId !== undefined) {
+            const allowed = await this.authorizedChannelIds(u.username);
+            if (body.mainChannelId !== undefined) {
+                const v = String(body.mainChannelId || '');
+                if (v && !allowed.has(v))
+                    return { success: false, message: '该存储渠道未授权给此账户' };
+                data.mainChannelId = v;
+            }
+            if (body.backupChannelId !== undefined) {
+                const v = String(body.backupChannelId || '');
+                if (v && v !== 'none' && !allowed.has(v))
+                    return { success: false, message: '该备份渠道未授权给此账户' };
+                data.backupChannelId = v;
+            }
         }
         if (Object.keys(data).length === 0)
             return { success: false, message: '没有可修改的内容' };
@@ -491,6 +544,66 @@ let UsersController = class UsersController {
         await prisma_1.prisma.user.update({ where: { id: u.id }, data: { avatar: '' } });
         return { success: true };
     }
+    async sendEmailCode(req, id, body) {
+        const target = await this.emailTarget(req, id);
+        if (!target.u)
+            return { success: false, message: target.err };
+        const email = String(body?.email || target.u.email || '').trim().toLowerCase();
+        if (!email)
+            return { success: false, message: '请先填写邮箱地址' };
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
+            return { success: false, message: '邮箱格式不正确' };
+        if (target.u.emailVerified && email === (target.u.email || '').toLowerCase()) {
+            return { success: false, message: '该邮箱已验证，无需重复验证' };
+        }
+        if (!(await this.mail.configured())) {
+            return { success: false, message: '管理员尚未配置发信邮箱（安全设置 → 邮箱配置）' };
+        }
+        const r = await this.mail.sendCode(email, 'verify-email', target.u.nickname || target.u.username);
+        if (!r.ok)
+            return { success: false, message: r.message };
+        return { success: true, message: `验证码已发送至 ${(0, auth_controller_1.maskEmail)(email)}`, data: { email } };
+    }
+    async verifyEmail(req, id, body) {
+        const target = await this.emailTarget(req, id);
+        if (!target.u)
+            return { success: false, message: target.err };
+        const email = String(body?.email || target.u.email || '').trim().toLowerCase();
+        if (!email)
+            return { success: false, message: '请先填写邮箱地址' };
+        const code = String(body?.code || '').trim();
+        if (!/^\d{6}$/.test(code))
+            return { success: false, message: '请输入 6 位验证码' };
+        const r = this.mail.consumeCode(email, 'verify-email', code);
+        if (!r.ok)
+            return { success: false, message: r.message };
+        const dup = await prisma_1.prisma.user.findFirst({
+            where: { email, emailVerified: true, NOT: { id: target.u.id } },
+            select: { username: true },
+        });
+        if (dup)
+            return { success: false, message: '该邮箱已被其他账户验证使用' };
+        await prisma_1.prisma.user.update({ where: { id: target.u.id }, data: { email, emailVerified: true } });
+        app_log_1.appLog.info('user', `账户「${target.u.username}」邮箱验证通过（${(0, auth_controller_1.maskEmail)(email)}）`);
+        return { success: true, message: '邮箱验证成功', data: { email, emailVerified: true } };
+    }
+    async resetEmailVerified(req, id) {
+        const target = await this.emailTarget(req, id);
+        if (!target.u)
+            return { success: false, message: target.err };
+        if (target.u.totpEnabled)
+            return { success: false, message: '请先关闭两步验证，否则将无法接收验证码' };
+        await prisma_1.prisma.user.update({ where: { id: target.u.id }, data: { emailVerified: false } });
+        return { success: true, message: '已取消邮箱验证状态' };
+    }
+    async emailTarget(req, id) {
+        const u = await prisma_1.prisma.user.findUnique({ where: { id } });
+        if (!u)
+            return { u: null, err: '用户不存在' };
+        if (!this.isAdmin(req) && u.username !== this.me(req))
+            return { u: null, err: '只能操作自己的账户' };
+        return { u, err: '' };
+    }
     async totpTarget(req, id) {
         const u = await prisma_1.prisma.user.findUnique({ where: { id } });
         if (!u)
@@ -505,6 +618,9 @@ let UsersController = class UsersController {
             return { success: false, message: err };
         if (u.totpEnabled)
             return { success: false, message: '该账户已启用两步验证，请先关闭再重新绑定' };
+        if (!u.email || !u.emailVerified) {
+            return { success: false, message: '请先完成邮箱验证，再启用两步验证' };
+        }
         const secret = (0, totp_1.generateTotpSecret)();
         await prisma_1.prisma.user.update({
             where: { id: u.id },
@@ -538,11 +654,94 @@ let UsersController = class UsersController {
         if (!(0, totp_1.verifyTotp)(secret, String(body.code || ''))) {
             return { success: false, message: '验证码错误或已过期' };
         }
+        const { plain, hashes } = (0, recovery_1.generateRecoveryCodes)();
         await prisma_1.prisma.user.update({
             where: { id: u.id },
-            data: { totpEnabled: true, backVerifiedAt: new Date() },
+            data: {
+                totpEnabled: true,
+                backVerifiedAt: new Date(),
+                recoveryHashes: JSON.stringify(hashes),
+                recoveryAt: new Date(),
+            },
         });
-        return { success: true };
+        app_log_1.appLog.info('auth', `账户「${u.username}」启用了两步验证（已生成 ${plain.length} 个恢复码）`);
+        return {
+            success: true,
+            data: { recoveryCodes: plain },
+            message: '两步验证已启用，请立即保存恢复码（仅显示这一次）',
+        };
+    }
+    async regenerateRecovery(req, id, body) {
+        const { u, err } = await this.totpTarget(req, id);
+        if (!u)
+            return { success: false, message: err };
+        if (!u.totpEnabled)
+            return { success: false, message: '该账户未启用两步验证' };
+        let secret = '';
+        try {
+            secret = crypto_service_1.CryptoService.decrypt(u.totpSecret || '');
+        }
+        catch {
+            secret = '';
+        }
+        if (!secret || !(0, totp_1.verifyTotp)(secret, String(body?.code || ''))) {
+            return { success: false, message: '动态码错误或已过期' };
+        }
+        const { plain, hashes } = (0, recovery_1.generateRecoveryCodes)();
+        await prisma_1.prisma.user.update({
+            where: { id: u.id },
+            data: { recoveryHashes: JSON.stringify(hashes), recoveryAt: new Date() },
+        });
+        app_log_1.appLog.warn('auth', `账户「${u.username}」重新生成了恢复码（旧恢复码已全部作废）`);
+        return { success: true, data: { recoveryCodes: plain }, message: '新的恢复码已生成，请立即保存（仅显示这一次）' };
+    }
+    async totpDisableFallback(req, id, body) {
+        const { u, err } = await this.totpTarget(req, id);
+        if (!u)
+            return { success: false, message: err };
+        if (!u.totpEnabled)
+            return { success: true, message: '该账户未启用两步验证' };
+        if (!u.email || !u.emailVerified)
+            return { success: false, message: '该账户邮箱未验证，无法使用邮箱验证码关闭' };
+        const emailCode = String(body?.emailCode || '').trim();
+        const recoveryCode = String(body?.recoveryCode || '').trim();
+        if (!emailCode)
+            return { success: false, message: '请输入邮箱验证码' };
+        if (!recoveryCode)
+            return { success: false, message: '请输入一枚恢复码' };
+        const mailRes = this.mail.consumeAnyCode(u.email, ['disable-2fa', 'login'], emailCode);
+        if (!mailRes.ok)
+            return { success: false, message: mailRes.message };
+        const hit = (0, recovery_1.consumeRecoveryCode)(u.recoveryHashes, recoveryCode);
+        if (!hit)
+            return { success: false, message: '恢复码无效或已被使用' };
+        await prisma_1.prisma.user.update({
+            where: { id: u.id },
+            data: {
+                totpEnabled: false,
+                totpSecret: '',
+                recoveryHashes: JSON.stringify(hit.rest),
+                backVerifiedAt: null,
+            },
+        });
+        app_log_1.appLog.warn('auth', `账户「${u.username}」通过「邮箱验证码 + 恢复码」关闭了两步验证`);
+        return { success: true, message: '两步验证已关闭，请重新绑定验证器' };
+    }
+    async sendDisableCode(req, id) {
+        const { u, err } = await this.totpTarget(req, id);
+        if (!u)
+            return { success: false, message: err };
+        if (!u.totpEnabled)
+            return { success: false, message: '该账户未启用两步验证' };
+        if (!u.email || !u.emailVerified)
+            return { success: false, message: '该账户邮箱未验证，无法通过邮箱验证码关闭' };
+        if (!(await this.mail.configured())) {
+            return { success: false, message: '管理员尚未配置发信邮箱（安全设置 → 邮箱配置）' };
+        }
+        const r = await this.mail.sendCode(u.email, 'disable-2fa', u.nickname || u.username);
+        if (!r.ok)
+            return { success: false, message: r.message };
+        return { success: true, message: `验证码已发送至 ${(0, auth_controller_1.maskEmail)(u.email)}`, data: { email: (0, auth_controller_1.maskEmail)(u.email) } };
     }
     async totpDisable(req, id, body) {
         const { u, err } = await this.totpTarget(req, id);
@@ -562,8 +761,9 @@ let UsersController = class UsersController {
         }
         await prisma_1.prisma.user.update({
             where: { id: u.id },
-            data: { totpEnabled: false, totpSecret: '', backVerifiedAt: null },
+            data: { totpEnabled: false, totpSecret: '', recoveryHashes: '[]', backVerifiedAt: null },
         });
+        app_log_1.appLog.warn('auth', `账户「${u.username}」关闭了两步验证`);
         return { success: true };
     }
 };
@@ -657,6 +857,32 @@ __decorate([
     __metadata("design:returntype", Promise)
 ], UsersController.prototype, "removeAvatar", null);
 __decorate([
+    (0, common_1.Post)(':id/email/send-code'),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Param)('id')),
+    __param(2, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, String, Object]),
+    __metadata("design:returntype", Promise)
+], UsersController.prototype, "sendEmailCode", null);
+__decorate([
+    (0, common_1.Post)(':id/email/verify'),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Param)('id')),
+    __param(2, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, String, Object]),
+    __metadata("design:returntype", Promise)
+], UsersController.prototype, "verifyEmail", null);
+__decorate([
+    (0, common_1.Delete)(':id/email/verified'),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Param)('id')),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, String]),
+    __metadata("design:returntype", Promise)
+], UsersController.prototype, "resetEmailVerified", null);
+__decorate([
     (0, common_1.Post)(':id/totp/setup'),
     __param(0, (0, common_1.Req)()),
     __param(1, (0, common_1.Param)('id')),
@@ -674,6 +900,32 @@ __decorate([
     __metadata("design:returntype", Promise)
 ], UsersController.prototype, "totpEnable", null);
 __decorate([
+    (0, common_1.Post)(':id/totp/recovery'),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Param)('id')),
+    __param(2, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, String, Object]),
+    __metadata("design:returntype", Promise)
+], UsersController.prototype, "regenerateRecovery", null);
+__decorate([
+    (0, common_1.Post)(':id/totp/disable-fallback'),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Param)('id')),
+    __param(2, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, String, Object]),
+    __metadata("design:returntype", Promise)
+], UsersController.prototype, "totpDisableFallback", null);
+__decorate([
+    (0, common_1.Post)(':id/totp/disable-code'),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Param)('id')),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, String]),
+    __metadata("design:returntype", Promise)
+], UsersController.prototype, "sendDisableCode", null);
+__decorate([
     (0, common_1.Post)(':id/totp/disable'),
     __param(0, (0, common_1.Req)()),
     __param(1, (0, common_1.Param)('id')),
@@ -686,7 +938,8 @@ exports.UsersController = UsersController = __decorate([
     (0, common_1.Controller)('api/manage/users'),
     (0, common_1.UseGuards)(auth_guard_1.ManageAuthGuard),
     __metadata("design:paramtypes", [sysconfig_service_1.SysConfigService,
-        settings_service_1.SettingsService])
+        settings_service_1.SettingsService,
+        mail_service_1.MailService])
 ], UsersController);
 function avatarDir() {
     return (0, project_paths_1.backendSub)('uploads', 'avatars');

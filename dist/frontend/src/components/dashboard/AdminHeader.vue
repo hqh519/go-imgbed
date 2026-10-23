@@ -235,6 +235,17 @@ export default {
         gap: 4px 6px;
         border-radius: 14px;
     }
+
+    /* v2.4.0：移动端顶部栏取消粘滞 —— fixed 改 absolute 随页面滚动，
+       且不再「下滑隐藏 / 上滑出现」，上下滚动都跟随内容一起走 */
+    .admin-header-content {
+        position: absolute;
+        transform: translateX(-50%) !important;
+    }
+    .admin-header-content.is-scroll-hidden {
+        transform: translateX(-50%) !important;
+        pointer-events: auto;
+    }
 }
 
 @media (max-width: 360px) {

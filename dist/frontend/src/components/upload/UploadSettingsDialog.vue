@@ -189,8 +189,16 @@
             </div>
         </div>
 
+        <!--
+            v2.3.0：所有设置项都通过 v-model 实时回写父组件（父组件 watch 里立刻持久化），
+            所以这里不再提供「保存」按钮 —— 关掉弹窗即已生效。只留一个「完成」关闭。
+        -->
         <div class="dialog-action">
-            <el-button type="primary" @click="visible = false" class="confirm-btn">{{ $t('uploadSettings.confirm') }}</el-button>
+            <span class="autosave-hint">
+                <font-awesome-icon icon="check-circle" />
+                {{ $t('uploadSettings.autoSaveHint') }}
+            </span>
+            <el-button type="primary" @click="visible = false" class="confirm-btn">{{ $t('uploadSettings.done') }}</el-button>
         </div>
     </el-dialog>
 </template>
@@ -242,7 +250,36 @@ export default {
         'update:limitExtensions',
         'update:limitMaxSizeMB'
     ],
+    watch: {
+        /*
+         * v2.4.0：任何设置项发生变化 → 自动保存（父组件的 store 持久化）+ 弹「保存成功」提示。
+         * 滑杆拖动会连续触发，这里 600ms 防抖合并成一条提示。
+         */
+        channelName() { this.notifySaved() },
+        backupChannel() { this.notifySaved() },
+        uploadFolder() { this.notifySaved() },
+        autoRetry() { this.notifySaved() },
+        uploadNameType() { this.notifySaved() },
+        convertToWebp() { this.notifySaved() },
+        customerCompress() { this.notifySaved() },
+        compressBar() { this.notifySaved() },
+        compressPercent() { this.notifySaved() },
+        limitExtensions() { this.notifySaved() },
+        limitMaxSizeMB() { this.notifySaved() }
+    },
     methods: {
+        /** 防抖弹出「保存成功」提示（600ms 内的连续变更只弹一次）；
+         *  仅在弹窗打开期间生效，避免页面初始化回填配置时误弹 */
+        notifySaved() {
+            if (!this.modelValue) return
+            if (this._savedToastTimer) clearTimeout(this._savedToastTimer)
+            this._savedToastTimer = setTimeout(() => {
+                this._savedToastTimer = null
+                try {
+                    this.$message.success(this.$t('uploadSettings.savedToast'))
+                } catch (e) { /* 弹窗关闭瞬间可能拿不到实例，忽略 */ }
+            }, 600)
+        },
         handleUploadFolderInput(val) {
             // 自动补全前导 /
             if (val && !val.startsWith('/')) {
@@ -311,9 +348,7 @@ export default {
     flex-direction: column;
     align-items: flex-start;
     gap: 12px;
-}
-
-.slider-wrapper {
+}.slider-wrapper {
     display: flex;
     align-items: center;
     gap: 12px;
@@ -365,9 +400,33 @@ export default {
     color: var(--el-text-color-secondary);
 }
 
+/* v2.3.0：设置项全部即时生效，底部提示 + 单个「完成」按钮 */
+.autosave-hint {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-right: auto;
+    font-size: 12px;
+    color: var(--el-text-color-secondary);
+}
+
+.autosave-hint svg {
+    color: var(--el-color-success);
+}
+
 @media (max-width: 768px) {
     .slider-wrapper {
         gap: 8px;
+    }
+
+    .autosave-hint {
+        margin-right: 0;
+        margin-bottom: 8px;
+    }
+
+    .dialog-action {
+        flex-wrap: wrap;
+        justify-content: center;
     }
 }
 </style>

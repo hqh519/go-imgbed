@@ -956,10 +956,14 @@ export default {
     color: var(--el-text-color-secondary);
     margin-left: 6px;
 }
-/* 用户公告区块（列表下方） */
+/* 用户公告区块（列表下方）
+ * 宽度规则与 .main-table 完全一致（95% + max-width 1400px 居中）；
+ * box-sizing:border-box 必须显式声明 —— 否则左右各 18px 内边距会把 95% 撑成
+ * 「95% + 36px」，在窄屏上溢出容器，视觉上也不再居中（v2.3.0 修复）。 */
 .notice-block {
     width: 95%;
     max-width: 1400px;
+    box-sizing: border-box;
     margin: 16px auto 24px;
     padding: 16px 18px;
     border-radius: 16px;
@@ -1002,6 +1006,8 @@ export default {
 .main-table {
     width: 95%;
     max-width: 1400px;
+    /* 与公告块同一套盒模型，95% 宽 + 1px 边框才不会各自算各自的 */
+    box-sizing: border-box;
     border-radius: 16px;
     box-shadow: var(--glass-shadow);
     min-height: 420px;

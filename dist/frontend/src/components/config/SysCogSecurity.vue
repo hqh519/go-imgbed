@@ -4,15 +4,67 @@
         <div class="first-settings">
             <h3 class="first-title">{{ $t('sysSecurity.authManagement') }}</h3>
 
-            <!-- v202610221824：用户端上传密码 / 管理端账号密码 已下线，
-                 用户名与密码统一在「用户管理 → 编辑用户」里维护。 -->
-            <el-alert
-                class="auth-migrated-tip"
-                type="info"
-                :closable="false"
-                show-icon
-                :title="$t('sysSecurity.authMigratedTip')"
-            />
+            <!-- v2.3.0：原来那句「用户端上传密码 / 管理端账号密码已移至用户管理」的迁移提示已移除
+                 （迁移早已完成，留着只是噪音）。账户信息统一在「用户管理 → 编辑用户」维护。 -->
+
+            <!-- ================= 邮箱配置（v2.3.0）=================
+                 放在 API Token 之前：它是「邮箱验证 / 两步验证验证码 / 关闭 2FA」的前置依赖，
+                 属于认证体系的基础设施，先配置它再谈 Token。 -->
+            <h4 class="second-title mail-title">{{ $t('sysSecurity.mailConfig') }}
+                <el-tooltip :content="$t('sysSecurity.mailConfigTooltip')" placement="top" raw-content>
+                    <font-awesome-icon icon="question-circle" style="margin-left: 5px; cursor: pointer;"/>
+                </el-tooltip>
+                <el-tag
+                    size="small"
+                    :type="mailSettings.ready ? 'success' : 'info'"
+                    effect="plain"
+                    class="mail-status-tag"
+                >{{ mailSettings.ready ? $t('sysSecurity.mailReady') : $t('sysSecurity.mailNotReady') }}</el-tag>
+            </h4>
+            <el-form :model="mailSettings" label-width="140px" :disabled="saving" class="mail-form">
+                <el-form-item :label="$t('sysSecurity.mailEnabled')">
+                    <el-switch v-model="mailSettings.enabled"/>
+                </el-form-item>
+                <el-form-item :label="$t('sysSecurity.mailHost')">
+                    <el-input v-model="mailSettings.host" placeholder="smtp.qq.com"/>
+                </el-form-item>
+                <el-form-item :label="$t('sysSecurity.mailPort')">
+                    <el-input-number v-model="mailSettings.port" :min="1" :max="65535" controls-position="right" class="mail-port"/>
+                    <span class="mail-hint">{{ $t('sysSecurity.mailPortHint') }}</span>
+                </el-form-item>
+                <el-form-item :label="$t('sysSecurity.mailSecure')">
+                    <el-switch v-model="mailSettings.secure"/>
+                    <span class="mail-hint">{{ mailSettings.secure ? $t('sysSecurity.mailSecureOn') : $t('sysSecurity.mailSecureOff') }}</span>
+                </el-form-item>
+                <el-form-item :label="$t('sysSecurity.mailUser')">
+                    <el-input v-model="mailSettings.user" placeholder="noreply@example.com"/>
+                </el-form-item>
+                <el-form-item :label="$t('sysSecurity.mailPass')">
+                    <el-input
+                        v-model="mailSettings.pass"
+                        type="password"
+                        show-password
+                        :placeholder="mailSettings._hasPassword ? $t('sysSecurity.mailPassKeep') : $t('sysSecurity.mailPassPlaceholder')"
+                    />
+                </el-form-item>
+                <el-form-item :label="$t('sysSecurity.mailFromName')">
+                    <el-input v-model="mailSettings.fromName" placeholder="go-imgbed"/>
+                </el-form-item>
+                <el-form-item :label="$t('sysSecurity.mailFromAddress')">
+                    <el-input v-model="mailSettings.fromAddress" :placeholder="$t('sysSecurity.mailFromAddressHint')"/>
+                </el-form-item>
+                <el-form-item :label="$t('sysSecurity.mailReplyTo')">
+                    <el-input v-model="mailSettings.replyTo" :placeholder="$t('sysSecurity.mailReplyToHint')"/>
+                </el-form-item>
+                <el-form-item :label="$t('sysSecurity.mailTest')">
+                    <div class="mail-test-row">
+                        <el-input v-model="mailTestTo" :placeholder="$t('sysSecurity.mailTestToPlaceholder')"/>
+                        <el-button plain size="small" :loading="mailBusy" @click="verifyMail">{{ $t('sysSecurity.mailVerify') }}</el-button>
+                        <el-button type="primary" plain size="small" :loading="mailBusy" @click="sendTestMail">{{ $t('sysSecurity.mailSendTest') }}</el-button>
+                    </div>
+                    <p class="mail-hint block">{{ $t('sysSecurity.mailTestHint') }}</p>
+                </el-form-item>
+            </el-form>
 
             <h4 class="second-title token-title">{{ $t('sysSecurity.apiTokenManagement') }}
                 <a class="token-actions">
@@ -288,24 +340,9 @@
         <!-- 一级设置：访问管理 -->
         <div class="first-settings">
             <h3 class="first-title">{{ $t('sysSecurity.accessManagement') }}</h3>
-            <h4 class="second-title">{{ $t('sysSecurity.domainFilter') }}</h4>
-            <el-form :model="accessSettings" label-width="120px" :disabled="saving">
-                <el-form-item>
-                    <template #label>
-                        {{ $t('sysSecurity.allowedDomains') }}
-                        <el-tooltip :content="$t('sysSecurity.allowedDomainsTooltip')" placement="top" raw-content>
-                            <font-awesome-icon icon="question-circle" style="margin-left: 5px; cursor: pointer;"/>
-                        </el-tooltip>
-                    </template>
-                    <!-- 一行一个域名，后端按行拆分并做「包含式」匹配 -->
-                    <el-input
-                        v-model="accessSettings.allowedDomains"
-                        type="textarea"
-                        :autosize="{ minRows: 4, maxRows: 12 }"
-                        placeholder="一行一个域名，例如：&#10;hhh555.top&#10;example.com&#10;（域名包含清单中的字符串即放行）"
-                    />
-                </el-form-item>
-            </el-form>
+
+            <!-- v2.3.0：放行域名移到「白名单模式」下方 —— 它只对白名单模式生效，
+                 放在前面会让人误以为是独立的外链总开关。 -->
             <h4 class="second-title">{{ $t('sysSecurity.whiteListMode') }}</h4>
             <el-form :model="accessSettings" :rules="accessRules" ref="accessForm" label-width="120px" :disabled="saving">
                 <el-form-item>
@@ -317,8 +354,55 @@
                     </template>
                     <el-switch v-model="accessSettings.whiteListMode"/>
                 </el-form-item>
+                <!-- 放行域名：仅当白名单模式开启时才有意义，这里直接跟随开关禁用 -->
+                <el-form-item :class="{ 'is-muted': !accessSettings.whiteListMode }">
+                    <template #label>
+                        {{ $t('sysSecurity.allowedDomains') }}
+                        <el-tooltip :content="$t('sysSecurity.allowedDomainsTooltip')" placement="top" raw-content>
+                            <font-awesome-icon icon="question-circle" style="margin-left: 5px; cursor: pointer;"/>
+                        </el-tooltip>
+                    </template>
+                    <!-- 一行一个域名，后端按行拆分并做「精确 / 子域」匹配 -->
+                    <el-input
+                        v-model="accessSettings.allowedDomains"
+                        type="textarea"
+                        :autosize="{ minRows: 4, maxRows: 12 }"
+                        :disabled="saving || !accessSettings.whiteListMode"
+                        :placeholder="$t('sysSecurity.allowedDomainsPlaceholder')"
+                    />
+                </el-form-item>
             </el-form>
-            <!-- 图片尺寸处理已迁移到「其他设置 → 图片尺寸处理」 -->
+
+            <!-- ================= 失效文件替换地址（v2.3.0）=================
+                 覆盖「无权限 / 不存在 / 未开放 / 已过期」等所有打不开的情况：
+                   image    → 直接下发这张图片（链接不变，内容变成替换图）
+                   redirect → 302 跳到该链接 -->
+            <h4 class="second-title">{{ $t('sysSecurity.fallbackTitle') }}
+                <el-tooltip :content="$t('sysSecurity.fallbackTooltip')" placement="top" raw-content>
+                    <font-awesome-icon icon="question-circle" style="margin-left: 5px; cursor: pointer;"/>
+                </el-tooltip>
+            </h4>
+            <el-form :model="accessSettings" label-width="120px" :disabled="saving">
+                <el-form-item :label="$t('sysSecurity.fallbackEnabled')">
+                    <el-switch v-model="accessSettings.fallbackEnabled"/>
+                </el-form-item>
+                <template v-if="accessSettings.fallbackEnabled">
+                    <el-form-item :label="$t('sysSecurity.fallbackType')">
+                        <el-radio-group v-model="accessSettings.fallbackType">
+                            <el-radio-button label="image">{{ $t('sysSecurity.fallbackTypeImage') }}</el-radio-button>
+                            <el-radio-button label="redirect">{{ $t('sysSecurity.fallbackTypeRedirect') }}</el-radio-button>
+                        </el-radio-group>
+                    </el-form-item>
+                    <el-form-item :label="$t('sysSecurity.fallbackUrl')">
+                        <el-input
+                            v-model="accessSettings.fallbackUrl"
+                            :placeholder="accessSettings.fallbackType === 'image' ? $t('sysSecurity.fallbackUrlImagePlaceholder') : $t('sysSecurity.fallbackUrlRedirectPlaceholder')"
+                        />
+                        <p class="mail-hint block">{{ $t('sysSecurity.fallbackUrlHint') }}</p>
+                    </el-form-item>
+                </template>
+            </el-form>
+
             <h4 class="second-title">{{ $t('sysSecurity.sessionSecurityPolicy') }}</h4>
             <el-form :model="accessSettings" label-width="120px" :disabled="saving">
                 <el-form-item>
@@ -583,6 +667,27 @@ data() {
         // 数据仍存在 sysConfig 的 others 分区（others.webdav），保存时整段回写
         webdavSettings: { enabled: false, rootPath: '', readonly: false },
         othersSnapshot: null,
+        /*
+         * 发信邮箱（v2.3.0）
+         * 配置本体存在 security.mail 段，跟随本页「悬浮保存」一起写回；
+         * _hasPassword 表示库里已存密码（此时输入框留空 = 不修改）；
+         * ready 由后端算好（enabled && host && port && user）。
+         */
+        mailSettings: {
+            enabled: false,
+            host: '',
+            port: 465,
+            secure: true,
+            user: '',
+            pass: '',
+            fromName: 'go-imgbed',
+            fromAddress: '',
+            replyTo: '',
+            _hasPassword: false,
+            ready: false
+        },
+        mailTestTo: '',
+        mailBusy: false,
         apiTokens: [], // API Token列表
         revealedTokens: {}, // Token 明文显示开关（按 Token id；默认全部隐藏，点小眼睛显示）
         // 加载状态
@@ -672,6 +777,18 @@ computed: {
             },
             upload: this.uploadSettings,
             access: this.accessSettings,
+            // 发信邮箱参与脏值判断（不含 _hasPassword / ready 这类瞬时状态）
+            mail: {
+                enabled: this.mailSettings.enabled,
+                host: this.mailSettings.host,
+                port: this.mailSettings.port,
+                secure: this.mailSettings.secure,
+                user: this.mailSettings.user,
+                pass: this.mailSettings.pass,
+                fromName: this.mailSettings.fromName,
+                fromAddress: this.mailSettings.fromAddress,
+                replyTo: this.mailSettings.replyTo
+            },
             // 对外 WebDAV 也参与脏值判断
             webdav: this.webdavSettings,
             clearUserPassword: this.clearUserPassword,
@@ -944,6 +1061,91 @@ methods: {
     showCredential(row) {
         this.credentialToken = { ...row }
         this.showCredentialDialog = true
+    },
+
+    /* ---------------- 发信邮箱（v2.3.0） ---------------- */
+
+    /** 读取脱敏后的邮箱配置（pass 恒为空，hasPass 表示库里已存密码） */
+    async loadMailConfig() {
+        try {
+            const res = await fetchWithAuth('/api/manage/mail');
+            const body = await res.json().catch(() => ({}));
+            const d = body?.data || {};
+            this.mailSettings = {
+                enabled: d.enabled === true,
+                host: d.host || '',
+                port: Number(d.port) || 465,
+                secure: d.secure !== false,
+                user: d.user || '',
+                pass: '',
+                fromName: d.fromName || 'go-imgbed',
+                fromAddress: d.fromAddress || '',
+                replyTo: d.replyTo || '',
+                _hasPassword: d.hasPass === true,
+                ready: d.ready === true
+            };
+        } catch {
+            /* 读不到就保持默认值（不影响其它设置项的编辑与保存） */
+        }
+    },
+
+    /** 组装「表单当前值」（自检/测试邮件用，不必先保存也能测当前填写内容） */
+    mailFormPayload() {
+        return {
+            enabled: this.mailSettings.enabled === true,
+            host: String(this.mailSettings.host || '').trim(),
+            port: Number(this.mailSettings.port) || 465,
+            secure: this.mailSettings.secure !== false,
+            user: String(this.mailSettings.user || '').trim(),
+            // 留空 = 用库中已存密码（后端回退逻辑）
+            pass: String(this.mailSettings.pass || ''),
+            fromName: String(this.mailSettings.fromName || '').trim(),
+            fromAddress: String(this.mailSettings.fromAddress || '').trim(),
+            replyTo: String(this.mailSettings.replyTo || '').trim()
+        };
+    },
+
+    /** SMTP 连通性自检（v2.4.0：携带表单当前值，未保存也能测） */
+    async verifyMail() {
+        this.mailBusy = true;
+        try {
+            const res = await fetchWithAuth('/api/manage/mail/verify', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ mail: this.mailFormPayload() })
+            });
+            const body = await res.json().catch(() => ({}));
+            if (body?.success) this.$message.success(body.message || this.$t('sysSecurity.mailVerifyOk'));
+            else this.$message.error(body?.message || this.$t('sysSecurity.mailVerifyFailed'));
+        } catch (e) {
+            this.$message.error(e?.message || this.$t('sysSecurity.mailVerifyFailed'));
+        } finally {
+            this.mailBusy = false;
+        }
+    },
+
+    /** 发一封测试邮件 */
+    async sendTestMail() {
+        const to = String(this.mailTestTo || '').trim();
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) {
+            this.$message.warning(this.$t('sysSecurity.mailTestToPlaceholder'));
+            return;
+        }
+        this.mailBusy = true;
+        try {
+            const res = await fetchWithAuth('/api/manage/mail/test', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ to, mail: this.mailFormPayload() })
+            });
+            const body = await res.json().catch(() => ({}));
+            if (body?.success) this.$message.success(body.message || this.$t('sysSecurity.mailSent'));
+            else this.$message.error(body?.message || this.$t('sysSecurity.mailSendFailed'));
+        } catch (e) {
+            this.$message.error(e?.message || this.$t('sysSecurity.mailSendFailed'));
+        } finally {
+            this.mailBusy = false;
+        }
     },
 
     async loadApiTokens() {
@@ -1221,7 +1423,20 @@ methods: {
             // 这里不再提交 auth 段 —— 不传后端就保持原值，避免误清历史口令。
             const settings = JSON.parse(JSON.stringify({
                 upload: this.uploadSettings,
-                access: this.accessSettings
+                access: this.accessSettings,
+                // 发信邮箱（v2.3.0）：pass 留空 = 不修改，_clear = 显式清除；
+                // 这里只挑真实字段，_hasPassword / ready 是纯前端状态，不能写进库。
+                mail: {
+                    enabled: this.mailSettings.enabled,
+                    host: this.mailSettings.host,
+                    port: this.mailSettings.port,
+                    secure: this.mailSettings.secure,
+                    user: this.mailSettings.user,
+                    pass: this.mailSettings.pass,
+                    fromName: this.mailSettings.fromName,
+                    fromAddress: this.mailSettings.fromAddress,
+                    replyTo: this.mailSettings.replyTo
+                }
             }));
             return fetchWithAuth('/api/manage/sysConfig/security', {
                 method: 'POST',
@@ -1248,6 +1463,16 @@ methods: {
                 // 「对外 WebDAV」的配置在 others 分区，跟随本次保存一起写回
                 return this.saveWebdavSettings().then(() => {
                     this.$message.success(this.$t('sysSecurity.settingsSaved'));
+                    // 发信邮箱：密码已加密落库，前端立刻清空并标记「已设置」，
+                    // ready 同步刷新（否则徽章要等下次进页面才变）
+                    if (this.mailSettings.pass) this.mailSettings._hasPassword = true;
+                    this.mailSettings.pass = '';
+                    this.mailSettings.ready = !!(
+                        this.mailSettings.enabled &&
+                        this.mailSettings.host &&
+                        this.mailSettings.port &&
+                        this.mailSettings.user
+                    );
                     // 保存成功后重置密码字段为空（后端已处理）
                     this.authSettings.user.authCode = '';
                     this.authSettings.admin.adminPassword = '';
@@ -1255,21 +1480,6 @@ methods: {
                     this.authSettings.admin.confirmNewAdminPassword = '';
                     this.oriUserPassword = '';
                     this.oriAdminPassword = '';
-                    // 标记已有密码（如果用户刚设置了密码，且不是清除操作）
-                    if (settings.auth.user.authCode && !settings.auth.user._clear) {
-                        this.authSettings.user._hasPassword = true;
-                    } else if (settings.auth.user._clear) {
-                        this.authSettings.user._hasPassword = false;
-                    }
-                    if (settings.auth.admin.adminPassword && !settings.auth.admin._clear) {
-                        this.authSettings.admin._hasPassword = true;
-                    } else if (settings.auth.admin._clear) {
-                        this.authSettings.admin._hasPassword = false;
-                    }
-                    this.showUserPassConfirm = false;
-                    this.showAdminPassConfirm = false;
-                    this.clearUserPassword = false;
-                    this.clearAdminPassword = false;
                     this.markSettingsSaved();
                 });
             });
@@ -1314,6 +1524,9 @@ mounted() {
         this.oriAdminPassword = '';
         this.authSettings.user.confirmNewUserPassword = '';
         this.authSettings.admin.confirmNewAdminPassword = '';
+        // 发信邮箱（脱敏读取）必须在 markSettingsSaved 之前完成，
+        // 否则刚加载完就被判定为「有未保存修改」，悬浮保存按钮会一直亮着。
+        await this.loadMailConfig();
         await this.$nextTick();
         this.markSettingsSaved();
         
@@ -1365,8 +1578,7 @@ beforeUnmount() {
     border-bottom: 1px solid var(--el-border-color-lighter);
 }
 
-/* 对外 WebDAV 统一说明（账号来源 / 渠道来源 / 不受类型与大小限制） */
-/* WebDAV 统一说明：已并入上方表单框内，不再自带背景 / 边框（否则视觉上多一层框） */
+/* 对外 WebDAV 统一说明（账号来源 / 渠道来源 / 不受类型与大小限制） *//* WebDAV 统一说明：已并入上方表单框内，不再自带背景 / 边框（否则视觉上多一层框） */
 .webdav-note {
     width: 100%;
     font-size: 13px;
@@ -1773,5 +1985,63 @@ html.dark .token-table :deep(.el-table__row:hover td) {
     background-color: var(--dialog-bg-color);
     border: 1px solid var(--glass-border);
     box-shadow: var(--dialog-box-shadow);
+}
+
+/* ===== 发信邮箱（v2.3.0） ===== */
+.mail-title {
+    flex-wrap: wrap;
+}
+
+.mail-status-tag {
+    margin-left: auto;
+    font-weight: 400;
+}
+
+.mail-form {
+    max-width: 720px;
+}
+
+.mail-port {
+    width: 140px;
+}
+
+.mail-hint {
+    margin-left: 10px;
+    font-size: 12px;
+    color: var(--el-text-color-secondary);
+    line-height: 1.5;
+}
+
+.mail-hint.block {
+    display: block;
+    margin: 4px 0 0;
+}
+
+.mail-test-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    width: 100%;
+}
+
+.mail-test-row .el-input {
+    max-width: 260px;
+}
+
+/* 白名单未开启时，「放行域名」整体降权（仍然可编辑，但明确它当前不生效） */
+.is-muted {
+    opacity: 0.55;
+}
+
+@media (max-width: 768px) {
+    .mail-status-tag {
+        margin-left: 0;
+    }
+
+    .mail-test-row .el-input {
+        max-width: 100%;
+        width: 100%;
+    }
 }
 </style>

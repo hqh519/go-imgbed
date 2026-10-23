@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { SettingsService } from './settings.service';
 import { PAGE_CONFIG_DEFAULTS } from './page-config';
 import { hashSecret, isHashedSecret } from '../common/secret';
+import { CryptoService } from '../common/crypto.service';
 
 /** 深合并（数组直接替换，对象递归合并） */
 function deepMerge<T>(base: T, patch: any): T {
@@ -68,6 +69,27 @@ export class SysConfigService {
             // 会话有效期（天）：0 表示永久有效（不设置过期时间）
             userSessionMaxAge: 14,
             adminSessionMaxAge: 14,
+            // ---- 失效文件替换（v2.3.0）----
+            // 任何「不能正常访问」的文件链接（无权限 / 不存在 / 未开放 / 已过期）
+            // 都改为加载 fallbackUrl：
+            //   fallbackType = 'image'    → 直接下发该图片（访问链接不变，内容变成替换图）
+            //   fallbackType = 'redirect' → 302 跳到该链接
+            fallbackEnabled: false,
+            fallbackType: 'image',
+            fallbackUrl: '',
+          },
+          // ---- 发信邮箱（v2.3.0）----
+          // 用于「邮箱验证 / 两步验证验证码 / 关闭 2FA 校验」，密码字段加密存储。
+          mail: {
+            enabled: false,
+            host: '',
+            port: 465,
+            secure: true,
+            user: '',
+            pass: '',
+            fromName: 'go-imgbed',
+            fromAddress: '',
+            replyTo: '',
           },
         };
       case 'upload':
@@ -199,6 +221,11 @@ export class SysConfigService {
       merged.auth.admin._hasPassword = true;
       merged.auth.admin.adminPassword = '';
     }
+    // 发信邮箱密码同样脱敏（v2.3.0）
+    if (merged.mail?.pass) {
+      merged.mail._hasPassword = true;
+      merged.mail.pass = '';
+    }
     return merged;
   }
 
@@ -219,6 +246,27 @@ export class SysConfigService {
       out.access = deepMerge(base.access, body.access);
       out.access.sessionSecure = out.access.sessionSecure === true;
       out.access.imageTransformEnabled = out.access.imageTransformEnabled === true;
+      // 失效文件替换（v2.3.0）：类型只允许 image / redirect
+      out.access.fallbackEnabled = out.access.fallbackEnabled === true;
+      out.access.fallbackType = out.access.fallbackType === 'redirect' ? 'redirect' : 'image';
+      out.access.fallbackUrl = String(out.access.fallbackUrl || '').trim();
+    }
+    // 发信邮箱（v2.3.0）：密码加密落库，空值 = 不修改
+    if (body.mail) {
+      const prevMail: any = base.mail || {};
+      const m: any = { ...prevMail, ...body.mail };
+      if (body.mail._clear) m.pass = '';
+      else if (body.mail.pass) m.pass = `enc:${CryptoService.encrypt(String(body.mail.pass))}`;
+      else m.pass = prevMail.pass || '';
+      delete m._clear;
+      delete m._hasPassword;
+      m.port = Number(m.port) || 465;
+      m.secure = m.secure !== false;
+      m.enabled = m.enabled === true;
+      for (const k of ['host', 'user', 'fromName', 'fromAddress', 'replyTo'] as const) {
+        m[k] = String(m[k] ?? '').trim();
+      }
+      out.mail = m;
     }
     if (body.auth) {
       if (body.auth.user) {

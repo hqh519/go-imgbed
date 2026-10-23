@@ -12,6 +12,10 @@ import App from './App.vue'
 import router from './router'
 import store from './store'
 import i18n, { initializeLocale } from './locales'
+// 访问记录上报（v2.3.0）：站内页面访问 + 停留时长
+import { setupAccessTracker } from './utils/accessTracker'
+// 移动端返回键优先关弹窗（v2.3.0）
+import { setupBackGuard } from './utils/backGuard'
 
 import * as ElementPlusIconsVue from '@element-plus/icons-vue'
 import 'element-plus/theme-chalk/dark/css-vars.css'
@@ -36,14 +40,12 @@ for (const [key, component] of Object.entries(ElementPlusIconsVue)) {
 }
 
 /**
- * 主题初始化（v202610221824 改写）。
+ * 主题初始化。
  *
- * 网页设置里的开关语义变了：从「自动切换」改为「强制切换」——
- *   autoDarkMode = true  → 按时间强制：19:00—07:00 夜间、07:00—19:00 白天；
- *                          此时右上角按钮隐藏且失效（不允许用户覆盖）；
- *   autoDarkMode = false → 以右上角按钮为准（亮 / 暗 / 自动三态），
- *                          其中「自动」态也按 19:00—07:00 + 系统深色偏好判断。
- * 默认值为 false（首次安装不强制）。
+ * v2.4.0：「夜间/白天强制切换」（autoDarkMode）已按需求移除 ——
+ * 主题一律以右上角切换按钮为准（亮 / 暗 / 自动三态），
+ * 其中「自动」态按 19:00—07:00 + 系统深色偏好判断。
+ * 老库存量配置里即使还有 autoDarkMode=true 也不再读取。
  */
 const NIGHT_START_HOUR = 19;
 const NIGHT_END_HOUR = 7;
@@ -56,14 +58,9 @@ const isNightNow = () => {
 
 const initDarkModeClass = () => {
     const htmlElement = document.documentElement;
-    const forced = store.getters.userConfig?.autoDarkMode === true;
     let isDarkMode;
 
-    if (forced) {
-        // 强制模式：只按时间，忽略系统偏好与用户手动选择
-        isDarkMode = isNightNow();
-        store.commit('setUseDarkMode', isDarkMode);
-    } else if (store.state.cusDarkMode && store.state.useDarkMode !== null) {
+    if (store.state.cusDarkMode && store.state.useDarkMode !== null) {
         // 用户手动设置了亮色 / 暗色
         isDarkMode = store.state.useDarkMode;
     } else {
@@ -154,8 +151,7 @@ store.dispatch('fetchUserConfig').then(() => {
      * 以及「标签页重新可见」时各重算一次主题 —— 长时间挂着的页面也能自动切换。
      */
     const refreshThemeByTime = () => {
-        const forced = store.getters.userConfig?.autoDarkMode === true;
-        if (forced || !store.state.cusDarkMode) initDarkModeClass();
+        if (!store.state.cusDarkMode) initDarkModeClass();
     };
     setInterval(refreshThemeByTime, 60 * 1000);
     document.addEventListener('visibilitychange', () => {
@@ -163,8 +159,22 @@ store.dispatch('fetchUserConfig').then(() => {
     });
 
     app.use(store).use(router).use(ElementPlus).use(i18n).mount('#app');
+
+    /*
+     * 访问记录上报（v2.3.0）。
+     * 必须放在 router 挂载之后：它 hook 的是 router.afterEach，注册越早越好，
+     * 但只有 mount 之后首次导航才会真正触发，因此这里是最稳的位置。
+     */
+    setupAccessTracker();
+
+    /*
+     * 移动端返回键优先关弹窗（v2.3.0）：
+     * 有弹窗时返回键只关弹窗，没有弹窗才真的返回上一页。桌面端自动跳过。
+     */
+    setupBackGuard();
 }).catch(error => {
     console.error('Failed to load user configuration:', error);
     initializeLocale();
     app.use(store).use(router).use(ElementPlus).use(i18n).use(head).mount('#app');
+    setupBackGuard();
 })

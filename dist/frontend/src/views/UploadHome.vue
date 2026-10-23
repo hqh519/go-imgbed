@@ -154,8 +154,8 @@
                 </el-button>
             </el-tooltip>
         </div>
-        <!-- 左上角 logo：优先显示当前用户头像；点击进入「用户管理」页 -->
-        <Logo href="/customerConfig" target="_self" :useConfigLink="false" />
+        <!-- 左上角 logo：优先显示当前用户头像；点击在新标签页打开「用户管理」页（v2.3.0） -->
+        <Logo href="/customerConfig" target="_blank" :useConfigLink="false" />
         <div class="header">
             <h1 class="title">
                 <span class="title-crayon-text" aria-hidden="true">{{ ownerName }}</span>
@@ -1447,6 +1447,40 @@ html.dark .upload-folder:hover :deep(.el-input__wrapper) {
     align-items: center;
     min-height: 94vh;
     background-color: transparent;
+}
+
+/* ── 顶部栏定位（v2.3.0 吸顶 → v2.4.0 移动端取消）────────────────────────
+ * PC 端保持 fixed 挂视口；移动端改为 absolute 跟随页面滚动（上下都随内容滚走）。
+ */
+.toggle-dark-button,
+.more-dropdown,
+.mobile-more-dropdown {
+    z-index: 900;
+}
+.upload-home :deep(.logo-link) {
+    z-index: 901;
+}
+@media (max-width: 768px) {
+    /* v2.4.0：移动端顶部栏不再粘滞 —— fixed 改 absolute，随页面一起滚动 */
+    .upload-home {
+        position: relative;
+    }
+    .mobile-more-dropdown,
+    .upload-folder-container {
+        position: absolute;
+    }
+    .upload-home :deep(.logo-link),
+    .upload-home :deep(.logo--fixed) {
+        position: absolute;
+    }
+    .mobile-more-dropdown {
+        top: calc(30px + env(safe-area-inset-top, 0px));
+        right: calc(14px + env(safe-area-inset-right, 0px));
+    }
+    .upload-home :deep(.logo-link) {
+        top: calc(20px + env(safe-area-inset-top, 0px));
+        left: calc(20px + env(safe-area-inset-left, 0px));
+    }
 }
 /* 上传区整体（标签页 + 上传框）作为一个纵向栈，统一保持原有的视觉上移 */
 .upload-stack {

@@ -14,6 +14,7 @@ const common_1 = require("@nestjs/common");
 const settings_service_1 = require("./settings.service");
 const page_config_1 = require("./page-config");
 const secret_1 = require("../common/secret");
+const crypto_service_1 = require("../common/crypto.service");
 function deepMerge(base, patch) {
     if (patch === undefined || patch === null)
         return base;
@@ -71,6 +72,20 @@ let SysConfigService = class SysConfigService {
                         sessionSecure: false,
                         userSessionMaxAge: 14,
                         adminSessionMaxAge: 14,
+                        fallbackEnabled: false,
+                        fallbackType: 'image',
+                        fallbackUrl: '',
+                    },
+                    mail: {
+                        enabled: false,
+                        host: '',
+                        port: 465,
+                        secure: true,
+                        user: '',
+                        pass: '',
+                        fromName: 'go-imgbed',
+                        fromAddress: '',
+                        replyTo: '',
                     },
                 };
             case 'upload':
@@ -174,6 +189,10 @@ let SysConfigService = class SysConfigService {
             merged.auth.admin._hasPassword = true;
             merged.auth.admin.adminPassword = '';
         }
+        if (merged.mail?.pass) {
+            merged.mail._hasPassword = true;
+            merged.mail.pass = '';
+        }
         return merged;
     }
     mergeSecurityForSave(body, prev) {
@@ -186,6 +205,28 @@ let SysConfigService = class SysConfigService {
             out.access = deepMerge(base.access, body.access);
             out.access.sessionSecure = out.access.sessionSecure === true;
             out.access.imageTransformEnabled = out.access.imageTransformEnabled === true;
+            out.access.fallbackEnabled = out.access.fallbackEnabled === true;
+            out.access.fallbackType = out.access.fallbackType === 'redirect' ? 'redirect' : 'image';
+            out.access.fallbackUrl = String(out.access.fallbackUrl || '').trim();
+        }
+        if (body.mail) {
+            const prevMail = base.mail || {};
+            const m = { ...prevMail, ...body.mail };
+            if (body.mail._clear)
+                m.pass = '';
+            else if (body.mail.pass)
+                m.pass = `enc:${crypto_service_1.CryptoService.encrypt(String(body.mail.pass))}`;
+            else
+                m.pass = prevMail.pass || '';
+            delete m._clear;
+            delete m._hasPassword;
+            m.port = Number(m.port) || 465;
+            m.secure = m.secure !== false;
+            m.enabled = m.enabled === true;
+            for (const k of ['host', 'user', 'fromName', 'fromAddress', 'replyTo']) {
+                m[k] = String(m[k] ?? '').trim();
+            }
+            out.mail = m;
         }
         if (body.auth) {
             if (body.auth.user) {

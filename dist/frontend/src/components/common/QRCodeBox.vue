@@ -1,6 +1,9 @@
 <template>
   <div class="qr-code-box">
-    <canvas ref="canvas" class="qr-canvas"></canvas>
+    <!-- v2.4.0：canvas 只作离屏渲染，实际展示真实 <img> ——
+         移动端长按才能唤起浏览器自带的「保存图片」菜单（canvas 不行） -->
+    <canvas ref="canvas" class="qr-canvas" v-show="false"></canvas>
+    <img v-if="imgSrc" :src="imgSrc" class="qr-img" :style="{ width: px + 'px', height: px + 'px' }" alt="QR Code" />
     <div v-if="!value" class="qr-empty">{{ emptyText }}</div>
   </div>
 </template>
@@ -28,6 +31,14 @@ export default {
         level: { type: String, default: 'M' },
         emptyText: { type: String, default: '暂无内容' },
     },
+    data() {
+        return {
+            /** 渲染完成的 PNG dataURL（真实 <img> 展示，长按可存图） */
+            imgSrc: '',
+            /** 实际渲染尺寸（与 size prop 同步，用于 <img> 的内联宽高） */
+            px: 220,
+        };
+    },
     watch: {
         value() { this.render(); },
         size() { this.render(); },
@@ -41,6 +52,7 @@ export default {
             const canvas = this.$refs.canvas;
             if (!canvas) return;
             const px = Math.max(64, Number(this.size) || 220);
+            this.px = px;
             const dpr = window.devicePixelRatio || 1;
             canvas.width = Math.round(px * dpr);
             canvas.height = Math.round(px * dpr);
@@ -52,7 +64,10 @@ export default {
             ctx.fillRect(0, 0, px, px);
 
             const text = String(this.value || '').trim();
-            if (!text) return;
+            if (!text) {
+                this.imgSrc = '';
+                return;
+            }
             try {
                 const qr = qrcode(0, this.level);
                 qr.addData(text);
@@ -72,6 +87,8 @@ export default {
                         );
                     }
                 }
+                // 转成真实 <img> 展示：移动端长按可唤起浏览器原生「保存图片」菜单
+                this.imgSrc = canvas.toDataURL('image/png');
                 this.$emit('rendered');
             } catch (e) {
                 // 内容过长等异常不阻塞页面：留白即可
@@ -97,7 +114,8 @@ export default {
     border-radius: 8px;
     line-height: 0;
 }
-.qr-canvas { display: block; border-radius: 4px; }
+.qr-canvas { display: none; }
+.qr-img { display: block; border-radius: 4px; }
 .qr-empty {
     position: absolute;
     inset: 0;

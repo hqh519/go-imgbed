@@ -9,6 +9,7 @@ import { join } from 'path';
 import { existsSync } from 'fs';
 import { AppModule } from './app.module';
 import { ChannelsService } from './channels/channels.controller';
+import { AccessService } from './access/access.service';
 import { prisma } from './common/prisma';
 import { SESSION_COOKIE, parseSession } from './auth/auth.guard';
 import { rateLimiter } from './common/rate-limit';
@@ -21,6 +22,15 @@ appLog.patchConsole();
 
 /** 黑白名单缓存（避免每请求查库） */
 let listCache = { at: 0, white: [] as string[], block: [] as string[], enabled: false };
+
+/**
+ * 访问记录服务引用（v2.3.0）。
+ *
+ * 采集 /file/* 的中间件必须注册在 Nest 路由之前（否则命中不了这些路径），
+ * 但 AccessService 要等 app.init() 之后才能从容器里取 ——
+ * 所以先留一个「晚绑定」的引用，中间件里判空即可（启动瞬间的几百毫秒不做记录）。
+ */
+let accessSvc: AccessService | null = null;
 
 async function loadLists() {
   if (Date.now() - listCache.at < 5000) return listCache;
@@ -244,6 +254,42 @@ async function bootstrap() {
     next();
   });
 
+  /**
+   * 访问记录采集（v2.3.0）—— 只覆盖「前端拿不到」的那部分：
+   *   /file/*  外链直链访问（图床最关心的数据：谁在什么时候从哪个域名引用了哪张图）
+   *   /random  随机图 API
+   *
+   * 站内 SPA 页面不在这里记：路由切换不经过服务端，改由前端 POST /api/access/visit 上报，
+   * 顺带能把「停留时长 / 跳转链接」带回来。
+   * 管理端预览（?from=admin）与本地回环访问不计入，否则后台自己点一下就刷一条。
+   */
+  server.use((req, res, next) => {
+    const isFile = req.path.startsWith('/file/') || req.path === '/random';
+    if (!isFile || (req.method !== 'GET' && req.method !== 'HEAD')) return next();
+    if (req.query.from === 'admin') return next();
+    res.on('finish', () => {
+      try {
+        if (!accessSvc) return;
+        const ip = clientIp(req);
+        if (!ip || ip === '127.0.0.1' || ip === '::1') return;
+        const session = parseSession(req.cookies?.[SESSION_COOKIE]);
+        void accessSvc.record({
+          ip,
+          path: req.path,
+          referer: String(req.headers.referer || ''),
+          username: session?.user || '',
+          ua: String(req.headers['user-agent'] || ''),
+          method: req.method,
+          status: res.statusCode,
+          kind: 'file',
+        });
+      } catch {
+        /* 采集失败不影响响应 */
+      }
+    });
+    next();
+  });
+
   // public/ 只放开发用测试页（upload-test.html），不占用 index.html
   const publicDir = backendSub('public');
   if (existsSync(publicDir)) server.use('/dev', express.static(publicDir));
@@ -265,6 +311,20 @@ async function bootstrap() {
     await app.get(ChannelsService).ensureBuiltinLocalChannel();
   } catch (err) {
     console.warn(`[local-channel] 内置本地存储渠道初始化失败：${(err as Error).message}`);
+  }
+
+  /*
+   * 访问记录：晚绑定服务引用（见文件顶部 accessSvc 说明），
+   * 并在启动时 + 每 6 小时按「保留天数」清理一次历史数据（默认 90 天，设置项可改）。
+   */
+  try {
+    const svc = app.get(AccessService);
+    accessSvc = svc;
+    void svc.cleanup();
+    const timer = setInterval(() => void svc.cleanup(), 6 * 3600 * 1000);
+    timer.unref?.();
+  } catch (err) {
+    console.warn(`[access] 访问记录服务初始化失败：${(err as Error).message}`);
   }
 
   /*

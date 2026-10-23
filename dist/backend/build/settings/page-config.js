@@ -76,17 +76,6 @@ exports.PAGE_CONFIG_DEFAULTS = {
             "category_en": "Global Settings"
         },
         {
-            "id": "autoDarkMode",
-            "label": "夜间/白天强制切换",
-            "label_en": "Force Day/Night Theme",
-            "type": "boolean",
-            "default": false,
-            "tooltip": "开启后按时间强制切换：19:00—07:00 为夜间、07:00—19:00 为白天，同时隐藏右上角主题按钮（用户无法覆盖）。关闭后以右上角按钮为准，按钮的「自动」模式同样按 19:00—07:00 切换",
-            "tooltip_en": "When on, the theme is forced by time: night 19:00-07:00, day 07:00-19:00, and the top-right toggle is hidden. When off, the toggle decides; its auto mode also uses 19:00-07:00",
-            "category": "全局设置",
-            "category_en": "Global Settings"
-        },
-        {
             "id": "bkInterval",
             "label": "背景切换间隔",
             "label_en": "Background Interval",
@@ -195,8 +184,8 @@ exports.PAGE_CONFIG_DEFAULTS = {
             "label_en": "Default Compression",
             "type": "boolean",
             "default": true,
-            "tooltip": "上传前在本地进行压缩，仅对图片文件生效",
-            "tooltip_en": "Compress locally before upload, only for images",
+            "tooltip": "开启后：前端上传页默认压缩；API Token / WebDAV 上传的文件同样走压缩。支持图片（jpg/png/webp，png 保持透明）、视频与音频（需服务器安装 ffmpeg）；gif 等无法压缩的格式会自动跳过，压缩失败也会跳过直接上传",
+            "tooltip_en": "When on: uploads from the web UI, API tokens and WebDAV are all compressed. Supports images (jpg/png/webp, PNG keeps transparency), video and audio (requires ffmpeg). GIF and other unsupported formats are skipped, and failures fall back to the original file",
             "category": "客户端设置",
             "category_en": "Client Settings"
         },

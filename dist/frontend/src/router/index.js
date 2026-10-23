@@ -6,38 +6,78 @@ import i18n from '@/locales'
 import { OverlayScrollbars } from 'overlayscrollbars'
 
 /**
- * 两步验证门禁（v202610221824）。
+ * 两步验证门禁（v202610221824，v2.3.0 扩展）。
  *
  * 触发时机：账户启用了 2FA，但本次会话尚未验证、或「后端会话有效期」已过。
- * 此时登录态仍然有效（前端页可正常用），只是进后台需要补一次动态码。
- * 验证通过后后端会重签会话（刷新 tva），这里同步清掉探测缓存。
+ * 此时登录态仍然有效（前端页可正常用），只是进后台需要补一次验证。
+ *
+ * v2.3.0 变化：
+ *   · 输入框同时接受三种凭证 —— 6 位邮箱验证码 / 6 位 2FA 动态码 / 恢复码（XXXX-XXXXX）；
+ *   · 输错只提示错误并重新弹框，**绝不跳登录页**（登录态一直有效）；
+ *   · 用户取消输入 → 回到来源页（next(false) 撤销本次导航），也不是登录页。
  */
+const TOTP_CODE_PATTERN = /^(\d{6}|[A-Za-z]{4}-[A-Za-z]{5})$/
+
 const promptTotp = async () => {
-  try {
-    const { value } = await ElMessageBox.prompt(
-      i18n.global.t('login.totpPrompt'),
-      i18n.global.t('login.totpTitle'),
-      {
-        confirmButtonText: i18n.global.t('common.confirm'),
-        cancelButtonText: i18n.global.t('common.cancel'),
-        inputPattern: /^\d{6}$/,
-        inputErrorMessage: i18n.global.t('login.totpInvalid'),
-        closeOnClickModal: false,
-      },
-    )
-    await axios.post('/api/auth/totp/verify', { code: value }, { withCredentials: true })
-    sessionProbeCache.at = 0
-    sessionProbeCache.data = null
-    return true
-  } catch (e) {
-    return false
+  // 最多 5 次机会：每次输错都重新弹框，不打断登录态
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    let value = ''
+    try {
+      const res = await ElMessageBox.prompt(
+        i18n.global.t('login.totpPrompt'),
+        i18n.global.t('login.totpTitle'),
+        {
+          confirmButtonText: i18n.global.t('common.confirm'),
+          cancelButtonText: i18n.global.t('common.cancel'),
+          inputPattern: TOTP_CODE_PATTERN,
+          inputErrorMessage: i18n.global.t('login.totpFormatHint'),
+          inputPlaceholder: i18n.global.t('login.totpPlaceholder'),
+          closeOnClickModal: false,
+        },
+      )
+      value = res.value
+    } catch (e) {
+      // 取消 / 关闭弹窗：交给调用方决定「回来源页」
+      return { ok: false, canceled: true }
+    }
+    try {
+      await axios.post('/api/auth/totp/verify', { code: value }, { withCredentials: true })
+      sessionProbeCache.at = 0
+      sessionProbeCache.data = null
+      return { ok: true, canceled: false }
+    } catch (e) {
+      // 关键：这里不清会话、不跳登录页，只提示 + 重新弹框
+      const msg = e?.response?.data?.message || i18n.global.t('login.totpInvalid')
+      ElMessage.error(msg)
+    }
   }
+  return { ok: false, canceled: false }
 }
 
-/** 若需要 2FA，则弹框；返回是否放行 */
+/**
+ * 2FA 结果落地到导航：
+ *   通过       → 放行
+ *   取消       → 回到来源页（没有来源页时给一个合理落点，反正不去登录页）
+ *   多次输错   → 停在当前页，登录态保留
+ */
+const settleTotp = (result, to, from, next) => {
+  if (result.ok) return next()
+  if (!result.canceled) return next(false)
+  if (from && from.name) return next(false)
+  // 直接输地址进来的（没有来源页）：后台页回文件管理，文件管理回首页
+  if (to && to.name === 'dashboard') return next({ path: '/' })
+  return next({ name: 'dashboard' })
+}
+
+/** 若需要 2FA，则弹框；返回 { ok, canceled } */
 const ensureTotp = async (data) => {
-  if (!data?.valid || !data?.totpRequired) return true
+  if (!data?.valid || !data?.totpRequired) return { ok: true, canceled: false }
   return promptTotp()
+}
+
+/** 守卫里统一的收口：既要 2FA 结果，也要正确的重定向语义 */
+const guardWithTotp = (data, to, from, next) => {
+  ensureTotp(data).then(result => settleTotp(result, to, from, next))
 }
 
 /**
@@ -170,8 +210,8 @@ const manageAuthGuard = (to, from, next) => {
     const info = applySession(data)
 
     if (info.valid) {
-      // 后台页需要 2FA：先补动态码，通过后再放行
-      ensureTotp(data).then(ok => (ok ? next() : next({ name: 'login' })))
+      // 后台页需要 2FA：先补验证码，通过后再放行
+      guardWithTotp(data, to, from, next)
       return
     }
 
@@ -207,7 +247,7 @@ const adminAuthGuard = (to, from, next) => {
 
     if (info.role === 'super') return next({ name: 'superAdmin' })
     if (info.role === 'admin') {
-      ensureTotp(data).then(ok => (ok ? next() : next({ name: 'login' })))
+      guardWithTotp(data, to, from, next)
       return
     }
 
@@ -262,7 +302,7 @@ const userManageGuard = (to, from, next) => {
     // 超级管理员专用页优先
     if (info.role === 'super') return next({ name: 'superAdmin' })
     if (info.valid) {
-      ensureTotp(data).then(ok => (ok ? next() : next({ name: 'login' })))
+      guardWithTotp(data, to, from, next)
       return
     }
 
@@ -316,6 +356,14 @@ const routes = [
     name: 'history',
     component: () => import('../views/HistoryPage.vue'),
     beforeEnter: manageAuthGuard
+  },
+  {
+    // 访问记录管理（v2.3.0）：系统状态页的「访问记录」块与「访问次数」统计块
+    // 都以新标签打开本页；仅管理员可进。
+    path: '/manage/access',
+    name: 'accessLog',
+    component: () => import('../views/AccessLogPage.vue'),
+    beforeEnter: adminAuthGuard
   },
   {
     path: '/superAdmin',

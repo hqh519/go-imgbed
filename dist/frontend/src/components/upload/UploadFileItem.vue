@@ -63,13 +63,39 @@
                 </div>
             </div>
             <div class="upload-list-item-progress" v-else>
+                <!--
+                    v2.3.0：「压缩中」标识放在进度条前面。
+                    字节发完（100%）到后端返回之间，压缩（图片/视频/音频）和分块合并都在这一段空窗里，
+                    不提示的话用户只看到一个卡在 100% 的进度条，会以为卡死了。
+                -->
+                <span v-if="showsCompressing" class="upload-item-compressing">
+                    <font-awesome-icon icon="spinner" spin />
+                    {{ $t('uploadForm.compressing') }}
+                </span>
                 <el-progress class="upload-item-bar" :percentage="file.progreess" :status="file.status" :show-text="false"/>
                 <!-- 文件大小：进度条旁直接展示，无需额外读取（来自本地 File 对象），不增加等待 -->
                 <span v-if="fileSizeText" class="upload-item-size">{{ fileSizeText }}</span>
             </div>
         </div>
         <div class="upload-list-item-action">
-            <button class="modern-file-action-btn modern-file-action-btn-primary" @click="$emit('copy', file)">
+            <!--
+                手动上传模式 + 图片：把「复制链接」换成「裁剪」（v2.3.0）。
+                待上传的图片此时还没有链接可复制，裁剪才是当前真正有用的动作；
+                其余情况（非图片 / 自动上传 / 已上传完成）保持原样。
+            -->
+            <button
+                v-if="canCrop"
+                class="modern-file-action-btn modern-file-action-btn-primary"
+                :title="$t('uploadCrop.openCrop')"
+                @click="$emit('crop', file)"
+            >
+                <font-awesome-icon icon="cut" />
+            </button>
+            <button
+                v-else
+                class="modern-file-action-btn modern-file-action-btn-primary"
+                @click="$emit('copy', file)"
+            >
                 <el-icon><Link /></el-icon>
             </button>
             <button class="modern-file-action-btn modern-file-action-btn-danger" @click="$emit('remove', file)">
@@ -90,13 +116,26 @@ const IMAGE_EXTENSIONS = [
 ]
 const VIDEO_EXTENSIONS = ['mp4', 'webm', 'ogg', 'mkv']
 
+/**
+ * 会被后端压缩的格式（与 backend/src/common/compress.ts 的 SKIP 集合取反保持一致）：
+ * 图片 jpg/jpeg/png/webp/avif，视频 mp4/webm/mov/m4v/mkv，音频 mp3/m4a/aac/wav/flac/ogg/opus。
+ * gif 故意不在内（sharp 压缩会丢帧），svg/heic/tiff/bmp/ico/psd 同理跳过。
+ */
+const COMPRESSIBLE_EXTENSIONS = [
+    'jpg', 'jpeg', 'jfif', 'png', 'webp', 'avif',
+    'mp4', 'webm', 'mov', 'm4v', 'mkv',
+    'mp3', 'm4a', 'aac', 'wav', 'flac', 'ogg', 'opus'
+]
+
 export default {
     name: 'UploadFileItem',
     components: { Link, Delete },
     props: {
-        file: { type: Object, required: true }
+        file: { type: Object, required: true },
+        /** 手动上传模式（待上传列表）：图片会显示「裁剪」按钮而不是「复制链接」 */
+        manualMode: { type: Boolean, default: false }
     },
-    emits: ['copy', 'remove', 'preview-error', 'detail'],
+    emits: ['copy', 'remove', 'preview-error', 'detail', 'crop'],
     data() {
         return {
             /**
@@ -111,8 +150,38 @@ export default {
         }
     },
     computed: {
+        /**
+         * 是否显示「裁剪」按钮：
+         *   手动上传（还没开始传）+ 图片 + 本地还留着原始 File。
+         * 自动上传模式下一进来就开始传了，裁剪会打乱进度，因此不出现。
+         */
+        canCrop() {
+            const f = this.file || {}
+            if (!this.manualMode) return false
+            if (f.status !== 'waiting') return false
+            if (!f.rawFile) return false
+            return this.isImage(String(f.name || ''))
+        },
         urlSize() {
             return window.innerWidth < 768 ? 'small' : 'default'
+        },
+        /**
+         * 是否显示「压缩中」：
+         *   1) 明确置位（前端本地压缩 / 分块合并阶段自己标记）；
+         *   2) 单请求上传且进度已 100%、文件属于可压缩媒体 —— 此时字节发完了，
+         *      后端正在压（图片走 sharp、视频音频走 ffmpeg），进度条会静止不动。
+         * 分块上传不走第 2 条：它的 100% 之后是「合并分块」，不是压缩。
+         */
+        showsCompressing() {
+            const f = this.file || {}
+            if (f.compressing) return true
+            if (f.status !== 'uploading') return false
+            if (f.chunkedUpload) return false
+            if (Number(f.progreess) < 100) return false
+            // v2.4.0：只有「文件压缩」开关开启、确实会进行服务端压缩的条目（serverCompress=true）
+            // 才显示「压缩中」—— 开关关闭时上传全程不再出现该提示
+            if (f.serverCompress !== true) return false
+            return this.isCompressible(String(f.name || ''))
         },
         /** 文件大小文案：优先取压缩/转码前的初始大小，其次本地 File 对象大小 */
         fileSizeText() {
@@ -166,6 +235,14 @@ export default {
         isImage(fileName) {
             const ext = fileName.split('.').pop().toLowerCase()
             return IMAGE_EXTENSIONS.includes(ext)
+        },
+        /**
+         * 后端 common/compress.ts 能压的格式（gif 会丢帧、svg/heic/tiff/bmp 等一律跳过）。
+         * 只有这些格式在 100% 之后才可能停在「压缩中」，其它文件按原样落库。
+         */
+        isCompressible(fileName) {
+            const ext = String(fileName || '').split('.').pop().toLowerCase()
+            return COMPRESSIBLE_EXTENSIONS.includes(ext)
         },
         onThumbError() {
             const url = (this.file && this.file.url) || ''
@@ -357,6 +434,21 @@ export default {
     color: var(--el-text-color-secondary);
     white-space: nowrap;
     font-variant-numeric: tabular-nums;
+}
+/* 「压缩中」标识：进度条前面，胶囊状，带旋转图标 */
+.upload-item-compressing {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 1px 7px;
+    border-radius: 999px;
+    font-size: 11px;
+    line-height: 16px;
+    font-weight: 500;
+    white-space: nowrap;
+    color: var(--el-color-primary);
+    background: color-mix(in srgb, var(--el-color-primary) 12%, transparent);
 }
 .upload-list-item-progress :deep(.el-progress) {
     --el-color-primary: var(--primary-color);
@@ -594,6 +686,15 @@ html.dark .upload-list-item-url :deep(.el-input-group__prepend) {
     }
     .upload-list-item-progress :deep(.el-progress-bar__outer) {
         height: 6px !important;
+    }
+    .upload-item-compressing {
+        font-size: 10px;
+        padding: 0 5px;
+        gap: 3px;
+    }
+    .upload-item-compressing svg {
+        width: 9px;
+        height: 9px;
     }
     .upload-list-item-url :deep(.el-input__wrapper) {
         border-radius: 7px;

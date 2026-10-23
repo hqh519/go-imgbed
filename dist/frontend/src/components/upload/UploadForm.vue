@@ -173,7 +173,7 @@
                                             @click="copyAll()"
                                         >
                                             <font-awesome-icon icon="copy" />
-                                            <span class="copy-format-badge" aria-hidden="true">{{ defaultCopyFormat.initial }}</span>
+                                            <!-- v2.3.0：复制按钮上的格式角标（Url / M / H / B）已移除 -->
                                         </button>
                                         <template #dropdown>
                                             <el-dropdown-menu class="modern-dropdown-menu">
@@ -233,9 +233,11 @@
                         v-for="file in fileList.slice().reverse()"
                         :key="file.uid"
                         :file="file"
+                        :manualMode="!autoUpload"
                         @copy="handleCopy"
                         @remove="handleRemove"
                         @detail="handleDetail"
+                        @crop="handleCrop"
                         @preview-error="handlePreviewError"
                     />
                 </el-scrollbar>
@@ -254,6 +256,14 @@
             @deleted="handleDetailDeleted"
             @fileRenamed="handleDetailFileRenamed"
         />
+
+        <!-- 裁剪（v2.3.0）：手动上传模式下点列表里的剪刀按钮打开 -->
+        <ImageCropDialog
+            v-model="showCrop"
+            :file="cropTarget?.rawFile || null"
+            :fileName="cropTarget?.name || ''"
+            @done="applyCrop"
+        />
     </div>
 </template>
 
@@ -269,6 +279,7 @@ import {
     joinUploadFolder
 } from '@/utils/upload/directoryTraversal'
 import UploadFileItem from '@/components/upload/UploadFileItem.vue'
+import ImageCropDialog from '@/components/upload/ImageCropDialog.vue'
 import FileDetailUnified from '@/components/dashboard/FileDetailUnified.vue'
 import { loadFileDetail } from '@/utils/fileDetailLoader'
 import { copyText } from '@/utils/clipboard'
@@ -285,6 +296,7 @@ export default {
 name: 'UploadForm',
 components: {
     UploadFileItem,
+    ImageCropDialog,
     FileDetailUnified
 },
 props: {
@@ -435,6 +447,9 @@ data() {
         // 文件详情弹窗（点击上传列表里的文件名打开）
         showDetail: false,
         detailFile: null,
+        // 裁剪（v2.3.0）：手动上传模式下，点待上传图片右侧剪刀按钮打开裁剪页
+        showCrop: false,
+        cropTarget: null,
     }
 },
 watch: {
@@ -1176,6 +1191,8 @@ methods: {
             if (fileItem) {
                 fileItem.totalChunks = totalChunks
                 fileItem.uploadId = uploadId
+                // 分块上传：100% 之后是「合并」而不是压缩，进度条不要误报「压缩中」
+                fileItem.chunkedUpload = true
             }
 
             // 第二步：并发上传所有分块
@@ -1286,6 +1303,9 @@ methods: {
                 message: this.$t('uploadForm.chunkMerging'),
                 duration: 0 // 不自动关闭
             })
+            // 合并阶段后端会顺带压缩（仅「文件压缩」开关开启 + 视频/音频）：
+            // v2.4.0 只在真的会压缩时才打「压缩中」标识，开关关闭不再误显
+            if (fileItem && needServerCompress) fileItem.compressing = true
 
             const mergeFormData = new FormData()
             mergeFormData.append('uploadId', uploadId)
@@ -1344,6 +1364,9 @@ methods: {
         } finally {
             // 清理 AbortController
             this.abortControllers.delete(file.file.uid)
+            // 合并/压缩结束（成功或失败）都撤掉「压缩中」标识
+            const item = this.fileList.find(i => i.uid === file.file.uid)
+            if (item) item.compressing = false
             // 调用并发控制的完成回调
             this.onUploadComplete()
         }
@@ -1397,6 +1420,48 @@ methods: {
     handleDetailFileRenamed(oldFileId, newFileId) {
         const item = this.fileList.find(i => i.srcID === oldFileId)
         if (item) item.srcID = newFileId
+    },
+
+    /**
+     * 手动上传模式下点「剪刀」（v2.3.0）：
+     * 图片来源是待上传列表里的本地 File，打开裁剪弹窗，裁剪结果直接替换待上传文件。
+     */
+    handleCrop(file) {
+        if (!file || !file.rawFile) return
+        if (file.status !== 'waiting') {
+            this.$message({ type: 'info', message: this.$t('uploadCrop.onlyWaiting') })
+            return
+        }
+        this.cropTarget = file
+        this.showCrop = true
+    },
+    /**
+     * 裁剪完成：用裁后的 File 顶掉原来那条待上传项（原图不会上传）。
+     *  - uid 必须沿用原条目，uploadFile 里的进度/目录查找都靠 uid 定位
+     *  - name 保留「子目录前缀」，只替换文件名，避免文件夹批量上传时丢失层级
+     *  - originalSize 记成裁剪后的体积：它表示「将要上传的文件」的初始大小，
+     *    这样详情里的「原文件大小 / 压缩后大小」对比才准确
+     */
+    applyCrop(cropped) {
+        const target = this.cropTarget
+        this.cropTarget = null
+        if (!target || !cropped) return
+        const oldRaw = target.rawFile
+        const oldName = String(target.name || '')
+        const dir = oldName.includes('/') ? oldName.slice(0, oldName.lastIndexOf('/') + 1) : ''
+        const displayName = dir + cropped.name
+        if (target.url && String(target.url).startsWith('blob:')) {
+            URL.revokeObjectURL(target.url)
+        }
+        cropped.uid = oldRaw?.uid || target.uid || this.createLocalUid()
+        cropped.uploadFolder = oldRaw?.uploadFolder ?? target.uploadFolder
+        cropped.uploadRelativePath = displayName
+        target.rawFile = cropped
+        target.name = displayName
+        target.originalSize = cropped.size
+        target.url = URL.createObjectURL(cropped)
+        target.cropped = true
+        this.$message({ type: 'success', message: this.$t('uploadCrop.done') })
     },
 
     handleRemove(file) {
@@ -1611,6 +1676,10 @@ methods: {
             // 注意：GIF 动图不压缩（压缩会丢失动画）
             const isGif = processedFile.type === 'image/gif'
             const needCustomCompress = processedFile.type.includes('image') && !isGif && this.customerCompress && processedFile.size / 1024 / 1024 > this.compressBar
+            // v2.4.0：服务端压缩旗标 —— 「文件压缩」开关开启时才压缩。
+            // 图片走客户端压缩（或原图直传），不再二次压缩；
+            // 视频 / 音频客户端压不了，开关开启时交给后端（合并阶段）处理。
+            const serverCompressFlag = this.customerCompress && !processedFile.type.includes('image')
 
             // 扩展名白名单 + magic bytes 双重校验（先按最终文件校验）
             const extCheck = await this.checkFileAcceptable(processedFile)
@@ -1702,11 +1771,11 @@ methods: {
                     // 压缩失败不应阻断上传：直接上传原图（修复「图片压缩导致上传失败」）
                     console.warn('本地压缩失败，改为上传原图:', err)
                     this.uploading = true
-                    pushFileToQueue(processedFile, false, trueOriginalSize)
+                    pushFileToQueue(processedFile, serverCompressFlag, trueOriginalSize)
                 })
             } else if (isLtLim) {
                 this.uploading = true
-                pushFileToQueue(processedFile, false, trueOriginalSize)
+                pushFileToQueue(processedFile, serverCompressFlag, trueOriginalSize)
             } else {
                 // 超出上限：引导使用对象存储渠道
                 this.$message.error(`${processedFile.name} 超过 ${MAX_UPLOAD_MB}MB 上限，请改用「腾讯云 COS / MinIO / S3 兼容存储 / R2」等对象存储渠道上传`)
@@ -2958,6 +3027,24 @@ html.dark .el-upload__text :deep(em) {
         flex-shrink: 1;
     }
 
+    /* v2.4.0：移动端链接模式按钮行（上传/转存/外链）居中——
+       卡片固定高 + body 垂直居中会把剩余空间全堆在按钮行下方，
+       看起来「贴着输入框」。改为顶对齐 + 输入框 flex 撑满，
+       按钮行上方 8px（margin-top）、下方 8px（margin-bottom 2px + 卡片 padding 6px），上下对称 */
+    .paste-card :deep(.el-card__body) {
+        justify-content: flex-start;
+    }
+    .paste-card .upload-card-textarea {
+        flex: 1 1 auto;
+        height: auto;
+    }
+    .paste-card-actions {
+        margin-bottom: 2px;
+    }
+    .upload-card-busy.paste-card .paste-card-actions {
+        margin-bottom: 2px;
+    }
+
     .upload-card-textarea :deep(.el-textarea__inner) {
         height: 100%;
         min-height: 0 !important;
@@ -2970,7 +3057,7 @@ html.dark .el-upload__text :deep(em) {
     .paste-card-actions {
         flex: 0 0 auto;
         width: 100% !important;
-        margin-top: 6px;
+        margin-top: 8px;
         gap: 6px;
     }
 
@@ -2991,7 +3078,7 @@ html.dark .el-upload__text :deep(em) {
     }
 
     .upload-card-busy .paste-card-actions {
-        margin-top: 6px;
+        margin-top: 8px;
     }
 
     .paste-card-method-group {
@@ -3296,6 +3383,8 @@ html.dark .el-upload__text :deep(em) {
     .upload-list-dashboard {
         padding: 0 6px;
         gap: 4px;
+        /* v2.4.0：移动端顶部栏取消粘滞，跟随列表内容一起滚动 */
+        position: static;
     }
     /* 标题块可收缩,避免挤爆操作按钮 */
     .upload-list-dashboard-title {

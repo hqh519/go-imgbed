@@ -101,7 +101,7 @@ let UploadController = class UploadController {
             uploadChannel: q.uploadChannel,
             channelId: q.channelId ?? q.channelName,
             uploadNameType: q.uploadNameType,
-            serverCompress: q.serverCompress === 'true' || q.serverCompress === '1',
+            serverCompress: q.serverCompress === undefined ? undefined : q.serverCompress === 'true' || q.serverCompress === '1',
             uploadFolder: q.uploadFolder || '',
             uploader,
             ip: this.clientIp(req),

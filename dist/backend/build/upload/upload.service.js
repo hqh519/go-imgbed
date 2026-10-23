@@ -1,43 +1,10 @@
 "use strict";
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
 var __decorate = (this && this.__decorate) || function (decorators, target, key, desc) {
     var c = arguments.length, r = c < 3 ? target : desc === null ? desc = Object.getOwnPropertyDescriptor(target, key) : desc, d;
     if (typeof Reflect === "object" && typeof Reflect.decorate === "function") r = Reflect.decorate(decorators, target, key, desc);
     else for (var i = decorators.length - 1; i >= 0; i--) if (d = decorators[i]) r = (c < 3 ? d(r) : c > 3 ? d(target, key, r) : d(target, key)) || r;
     return c > 3 && r && Object.defineProperty(target, key, r), r;
 };
-var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function (o) {
-            var ar = [];
-            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
-            return ar;
-        };
-        return ownKeys(o);
-    };
-    return function (mod) {
-        if (mod && mod.__esModule) return mod;
-        var result = {};
-        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
-        __setModuleDefault(result, mod);
-        return result;
-    };
-})();
 var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
@@ -58,6 +25,8 @@ const local_adapter_1 = require("../adapters/local.adapter");
 const file_view_1 = require("../common/file-view");
 const app_log_1 = require("../common/app-log");
 const path_template_1 = require("../common/path-template");
+const compress_1 = require("../common/compress");
+const COMPRESS_MAX_BYTES = 512 * 1024 * 1024;
 let UploadService = class UploadService {
     static { UploadService_1 = this; }
     settings;
@@ -598,18 +567,21 @@ let UploadService = class UploadService {
         }
     }
     async compress(buffer, mime, percent) {
-        const sharp = (await Promise.resolve().then(() => __importStar(require('sharp')))).default;
-        sharp.cache({ memory: 32 });
-        sharp.concurrency(2);
-        const ratio = Math.min(1, Math.max(0.1, (percent || 80) / 100));
-        const target = Math.max(1024, Math.round(buffer.length * ratio));
-        let quality = 82;
-        let out = await sharp(buffer, { limitInputPixels: 25_000_000 }).rotate().webp({ quality }).toBuffer();
-        for (let i = 0; i < 4 && out.length > target && quality > 20; i++) {
-            quality = Math.max(20, Math.round(quality * Math.sqrt(target / out.length)));
-            out = await sharp(buffer, { limitInputPixels: 25_000_000 }).rotate().webp({ quality }).toBuffer();
+        const ext = mime.split('/')[1] || '';
+        const r = await (0, compress_1.compressMedia)(buffer, mime, ext, percent);
+        if (r.compressed)
+            return { buffer: r.buffer, mime: r.mime || mime, ext: r.ext || `.${ext}` };
+        return { buffer, mime, ext: ext ? `.${ext}` : '' };
+    }
+    async defaultServerCompress() {
+        try {
+            const page = await this.sysConfig.get('page');
+            const item = (page?.config || []).find((x) => x.id === 'defaultCustomerCompress');
+            return item ? item.value === true || item.value === 'true' : true;
         }
-        return { buffer: out, mime: 'image/webp', ext: '.webp' };
+        catch {
+            return true;
+        }
     }
     async upload(input, opts) {
         this.activeUploads += 1;
@@ -634,18 +606,29 @@ let UploadService = class UploadService {
             return { id: '', error: rejected };
         const uploadIp = opts.ip || '';
         const uploadAddress = await this.cachedAddress(uploadIp);
-        if (opts.serverCompress && mime.startsWith('image/') && mime !== 'image/gif') {
-            try {
-                const pct = opts.compressPercent && opts.compressPercent > 0 ? opts.compressPercent : await this.defaultCompressPercent();
-                const c = await this.compress(buffer, mime, pct);
-                buffer = c.buffer;
-                mime = c.mime;
-                originalName = originalName.replace(/\.[^.]+$/, '') + c.ext;
+        const wantCompress = opts.serverCompress ?? (await this.defaultServerCompress());
+        if (wantCompress) {
+            const srcExt = originalName.includes('.') ? String(originalName.split('.').pop() || '') : '';
+            const pct = opts.compressPercent && opts.compressPercent > 0 ? opts.compressPercent : await this.defaultCompressPercent();
+            if (buffer.length > COMPRESS_MAX_BYTES) {
+                console.log(`[upload] 跳过压缩：文件 ${(buffer.length / 1024 / 1024).toFixed(1)}MB 超过压缩上限`);
             }
-            catch (err) {
-                console.warn('[upload] 压缩失败，使用原图:', err.message);
+            else {
+                const r = await (0, compress_1.compressMedia)(buffer, mime, srcExt, pct);
+                if (r.compressed) {
+                    const before = buffer.length;
+                    buffer = r.buffer;
+                    mime = r.mime || mime;
+                    if (r.ext)
+                        originalName = originalName.replace(/\.[^.]+$/, '') + r.ext;
+                    app_log_1.appLog.info('upload', `已压缩：${before}B → ${buffer.length}B（${Math.round((1 - buffer.length / before) * 100)}%）`, `${originalName} ｜ 期望 ${pct}%`, uploadIp);
+                }
+                else if (r.reason) {
+                    app_log_1.appLog.info('upload', `跳过压缩：${r.reason}`, originalName, uploadIp);
+                }
             }
         }
+        const dims = await (0, compress_1.readDimensions)(buffer, mime, mime.split('/')[1] || '');
         let main = null;
         try {
             main = await this.resolveMainChannel({
@@ -747,6 +730,8 @@ let UploadService = class UploadService {
         const record = await prisma_1.prisma.fileRecord.create({
             data: {
                 name: fileId,
+                firstName: fileId,
+                prevName: '',
                 originalName,
                 size: buffer.length,
                 originalSize,
@@ -758,7 +743,10 @@ let UploadService = class UploadService {
                 ip: uploadIp,
                 uploadStartedAt: opts.uploadStartedAt || new Date(startedAt),
                 uploadFinishedAt: new Date(),
-                metas: JSON.stringify({ UploadAddress: uploadAddress }),
+                metas: JSON.stringify({
+                    UploadAddress: uploadAddress,
+                    ...(dims.width && dims.height ? { Width: dims.width, Height: dims.height } : {}),
+                }),
                 copies: {
                     create: {
                         channelId: usedChannel.id,
