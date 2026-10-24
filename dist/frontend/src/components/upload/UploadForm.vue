@@ -284,6 +284,8 @@ import FileDetailUnified from '@/components/dashboard/FileDetailUnified.vue'
 import { loadFileDetail } from '@/utils/fileDetailLoader'
 import { copyText } from '@/utils/clipboard'
 import { fileLink, getLinkPrefix } from '@/utils/fileLink'
+// v2.5.0（v20261023-2）：链接模式输入框自动从脏文本中提取有效 URL
+import { extractUrlsFromText } from '@/utils/urlExtract'
 
 const COPY_FORMATS = [
     { value: 'url', label: 'URL', initial: 'Url', icon: 'link' },
@@ -1930,11 +1932,19 @@ methods: {
     },
     handleUploadPasteUrls() {
         // 用于上传在上传文本框中粘贴的外链
-        const urls = this.pastedUrls.split('\n');
-        // 处理空行和首尾空字符，链接须符合URL规范
-        const validUrls = urls.map(url => url.trim()).
-            filter(url => url !== '').
-            filter(url => /^(https?:\/\/[^\s$.?#].[^\s]*)$/.test(url));
+        /*
+         * v2.5.0（v20261023-2）：输入内容不再要求「整行都是链接」——
+         * 文案 / 表情 / HTML 代码混排时自动过滤非链接内容，提取出全部有效 URL。
+         * （类似去水印软件：只挑出真实的链接地址参与处理）
+         */
+        const validUrls = extractUrlsFromText(this.pastedUrls);
+        if (!validUrls.length) {
+            this.$message({
+                type: 'warning',
+                message: this.$t('upload.noValidUrlFound')
+            });
+            return;
+        }
 
         // 根据粘贴上传方式进行上传
         if (this.pasteUploadMethod === 'save') {
@@ -1986,10 +1996,17 @@ methods: {
         for (let i = 0; i < items.length; i++) {
             if (items[i].kind === 'string') {
                 items[i].getAsString((text) => {
-                    const urlPattern = /^(https?:\/\/[^\s$.?#].[^\s]*)$/;
+                    /*
+                     * v2.5.0：剪贴板字符串同样改为「脏文本自动提取 URL」——
+                     * 复制到的内容带有文案/表情/HTML 时也能挑出链接；若文本是
+                     * 视频播放页（B 站 / 知乎 / og:video 页面等），后端 fetchRes
+                     * 会自动解析出真实视频地址再回传字节流。
+                     */
+                    const extractedUrls = extractUrlsFromText(text);
                     let fileName = '';
-                    if (urlPattern.test(text)) {
-                        axios.post('/api/fetchRes', { url: text }, {
+                    for (let ui = 0; ui < extractedUrls.length; ui++) {
+                        const pastedUrl = extractedUrls[ui];
+                        axios.post('/api/fetchRes', { url: pastedUrl }, {
                             responseType: 'blob',
                             withAuthCode: true
                         }).then(response => {
@@ -2021,13 +2038,13 @@ methods: {
                                 }
                                 // 尝试从URL中提取文件名
                                 if (fileName === '') {
-                                    const url = new URL(text);
+                                    const url = new URL(pastedUrl);
                                     fileName = url.pathname.split('/').pop();
                                 }
                                 // 未提取到文件名，使用默认文件名
                                 if (fileName === '') {
                                     // 获取文件后缀
-                                    const url = new URL(text);
+                                    const url = new URL(pastedUrl);
                                     let extension = url.pathname.split('.').pop();
                                     // 未能从URL提取有效后缀，使用bin作为默认后缀
                                     if (!extension || extension === '' || extension.length > 10) {
@@ -2039,7 +2056,8 @@ methods: {
                                 // 读取文件内容
                                 const blob = response.data;
                                 const file = new File([blob], fileName, { type: blob.type });
-                                file.uid = Date.now() + i;
+                                // uid 唯一性：一次粘贴提取出多条链接时叠加 ui 偏移，避免同毫秒撞 key
+                                file.uid = Date.now() + i * 10000 + ui;
                                 // 接收beforeUpload的Promise对象
                                 const checkResult = this.beforeUpload(file);
                                 if (checkResult instanceof Promise) {

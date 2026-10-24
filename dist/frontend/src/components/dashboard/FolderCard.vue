@@ -1,40 +1,60 @@
 <template>
-    <el-card 
-        class="img-card folder-card"
+    <!--
+        v2.5.0（v20261023-2）：文件夹卡片同样改为「上下两部分」：
+          上 = 文件夹图标（悬浮时右上角选择圆圈 + 操作按钮）
+          下 = 文件夹名称 + 子文件夹 / 文件数量统计
+        行为不变：点击进入文件夹；批量选择仍走页面下方操作栏。
+    -->
+    <div
+        class="folder-card"
+        :class="{ 'is-selected': localSelected }"
         @touchstart="$emit('touchstart', $event)"
         @touchend="$emit('touchend', $event)"
         @touchmove="$emit('touchmove', $event)"
     >
-        <el-checkbox v-model="localSelected" @change="$emit('update:selected', localSelected)"></el-checkbox>
-        <div class="folder-icon" @click="$emit('enter')">
+        <!-- 上半部分：文件夹图标 -->
+        <div class="folder-preview" @click="$emit('enter')">
             <font-awesome-icon icon="folder-open" class="folder-icon-svg"/>
-        </div>
-        <div class="card-bottom-overlay">
-            <div class="file-name-row">
-                <span class="file-name">{{ folderName }}</span>
-            </div>
-            <div v-if="showActions" class="action-bar">
-                <div class="action-bar-left"></div>
-                <div class="action-bar-right">
-                    <el-tooltip :disabled="disableTooltip" :content="$t('dashboard.copyLink')" placement="top" :show-after="1000">
-                        <button class="action-btn" @click.stop="$emit('copy')">
+            <!-- 悬浮层：选择 / 操作 -->
+            <div class="folder-overlay">
+                <div class="overlay-top">
+                    <span></span>
+                    <el-checkbox
+                        v-model="localSelected"
+                        class="card-select"
+                        @click.stop
+                        @change="$emit('update:selected', localSelected)"
+                    ></el-checkbox>
+                </div>
+                <div v-if="showActions" class="overlay-actions" @click.stop>
+                    <el-tooltip :disabled="disableTooltip" :content="$t('dashboard.copyLink')" placement="top" :show-after="600">
+                        <button class="overlay-btn" @click.stop="$emit('copy')">
                             <font-awesome-icon icon="copy"></font-awesome-icon>
                         </button>
                     </el-tooltip>
-                    <el-tooltip :disabled="disableTooltip" :content="$t('dashboard.moveFile')" placement="top" :show-after="1000">
-                        <button class="action-btn" @click.stop="$emit('move')">
+                    <el-tooltip :disabled="disableTooltip" :content="$t('dashboard.moveFile')" placement="top" :show-after="600">
+                        <button class="overlay-btn" @click.stop="$emit('move')">
                             <font-awesome-icon icon="file-export"></font-awesome-icon>
                         </button>
                     </el-tooltip>
-                    <el-tooltip :disabled="disableTooltip" :content="$t('dashboard.delete')" placement="top" :show-after="1000">
-                        <button class="action-btn action-btn-danger" @click.stop="$emit('delete')">
+                    <el-tooltip :disabled="disableTooltip" :content="$t('dashboard.delete')" placement="top" :show-after="600">
+                        <button class="overlay-btn is-danger" @click.stop="$emit('delete')">
                             <font-awesome-icon icon="trash-alt"></font-awesome-icon>
                         </button>
                     </el-tooltip>
                 </div>
             </div>
         </div>
-    </el-card>
+
+        <!-- 下半部分：名称 + 数量统计 -->
+        <div class="card-info" @click="$emit('enter')">
+            <div class="file-name" :title="folderName">{{ folderName }}</div>
+            <div class="folder-stats">
+                <template v-if="statsText">{{ statsText }}</template>
+                <template v-else>-</template>
+            </div>
+        </div>
+    </div>
 </template>
 
 <script>
@@ -44,7 +64,9 @@ export default {
         name: { type: String, required: true },
         selected: { type: Boolean, default: false },
         showActions: { type: Boolean, default: true },
-        disableTooltip: { type: Boolean, default: false }
+        disableTooltip: { type: Boolean, default: false },
+        /** v2.5.0：该文件夹的统计 { folders, files }（后端 /list 的 directoryStats 下发） */
+        folderStats: { type: Object, default: null }
     },
     emits: ['update:selected', 'enter', 'copy', 'move', 'delete', 'touchstart', 'touchend', 'touchmove'],
     data() {
@@ -56,6 +78,15 @@ export default {
         folderName() {
             const parts = this.name.split('/').filter(Boolean);
             return parts[parts.length - 1] || this.name;
+        },
+        /** 「X 个子文件夹 · Y 个文件」；统计缺失时显示占位 */
+        statsText() {
+            const s = this.folderStats;
+            if (!s || (s.folders === undefined && s.files === undefined)) return '';
+            return this.$t('dashboard.folderStat', {
+                folders: Number(s.folders || 0),
+                files: Number(s.files || 0)
+            });
         }
     },
     watch: {
@@ -67,165 +98,151 @@ export default {
 </script>
 
 <style scoped>
-.img-card {
+/* ── 卡片整体：与 FileCard 同构 ───────────────────────────────── */
+.folder-card {
     box-sizing: border-box;
     width: 100%;
-    height: 22vh;
+    background: var(--toolbar-button-bg-color);
+    border-radius: 12px;
+    overflow: hidden;
+    border: 1px solid var(--glass-border);
+    box-shadow: var(--toolbar-button-shadow);
+    transition: box-shadow 0.3s ease;
     content-visibility: auto;
     contain: layout paint style;
-    contain-intrinsic-size: 260px;
-    background-color: var(--glass-bg) !important;
-    backdrop-filter: blur(20px) saturate(1.4);
-    -webkit-backdrop-filter: blur(20px) saturate(1.4);
-    border: 1px solid var(--glass-border);
-    border-radius: 8px;
-    box-shadow: var(--admin-dashboard-imgcard-shadow);
-    overflow: hidden;
-    position: relative;
-    transition: transform 0.3s ease;
-}
-.img-card :deep(.el-card__body) {
-    padding: 0;
-    height: 100%;
-    overflow: hidden;
-}
-.img-card :deep(.el-checkbox) {
-    position: absolute;
-    top: 10px;
-    right: 10px;
-    transform: scale(1.5);
-    z-index: 10;
-}
-
-.img-card :deep(.el-checkbox__inner) {
-    width: 14px !important;
-    min-width: 14px;
-    height: 14px !important;
-    min-height: 14px;
-    border-radius: 50% !important;
-}
-.img-card:hover {
-    transform: scale(1.05);
-}
-.folder-card {
+    contain-intrinsic-size: 220px;
     cursor: pointer;
 }
-.folder-icon {
+.folder-card:hover {
+    box-shadow: var(--toolbar-button-shadow-hover);
+}
+.folder-card.is-selected {
+    border-color: var(--el-color-primary);
+    box-shadow: 0 0 0 1px var(--el-color-primary);
+}
+
+/* ── 上半部分：文件夹图标 ─────────────────────────────────────── */
+.folder-preview {
+    height: 150px;
+    position: relative;
+    background: var(--el-fill-color-light);
     display: flex;
-    justify-content: center;
     align-items: center;
-    width: 100%;
-    height: 100%;
+    justify-content: center;
+    overflow: hidden;
     color: var(--el-color-primary);
 }
 .folder-icon-svg {
     font-size: clamp(40px, 4vw, 64px);
     transition: transform 0.4s ease;
+    opacity: 0.85;
 }
-.img-card:hover .folder-icon-svg {
-    transform: scale(1.03);
+.folder-card:hover .folder-icon-svg {
+    transform: scale(1.06);
 }
-.card-bottom-overlay {
+
+/* 悬浮层 */
+.folder-overlay {
     position: absolute;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    background: linear-gradient(to top, rgba(0, 0, 0, 0.55) 0%, rgba(0, 0, 0, 0.25) 50%, transparent 100%);
-    padding: clamp(15px, 2.5vh, 30px) clamp(6px, 1vw, 12px) clamp(5px, 0.8vh, 10px);
+    inset: 0;
     display: flex;
     flex-direction: column;
-    gap: clamp(3px, 0.5vh, 6px);
-    z-index: 10;
+    justify-content: space-between;
+    opacity: 0;
+    transition: opacity 0.25s ease;
+    pointer-events: none;
 }
-.file-name-row {
+.folder-card:hover .folder-overlay,
+.folder-card:focus-within .folder-overlay {
+    opacity: 1;
+    pointer-events: auto;
+}
+.overlay-top {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    padding: 6px 8px;
+}
+.card-select {
+    flex-shrink: 0;
+}
+.card-select :deep(.el-checkbox__inner) {
+    width: 16px !important;
+    min-width: 16px;
+    height: 16px !important;
+    min-height: 16px;
+    border-radius: 50% !important;
+}
+.overlay-actions {
     display: flex;
     align-items: center;
     justify-content: center;
+    gap: 10px;
+    padding-bottom: 12px;
 }
-.file-name {
-    color: white;
-    font-size: clamp(10px, 1.1vw, 14px);
-    text-align: center;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    max-width: 100%;
-    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
-}
-.action-bar {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    opacity: 0;
-    transform: translateY(4px);
-    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-    pointer-events: none;
-}
-.el-card:hover .action-bar {
-    opacity: 1;
-    transform: translateY(0);
-    pointer-events: auto;
-}
-.action-bar-left, .action-bar-right {
-    display: flex;
-    align-items: center;
-    gap: clamp(3px, 0.4vw, 6px);
-}
-.action-btn {
-    width: clamp(24px, 2.5vw, 28px);
-    height: clamp(24px, 2.5vw, 28px);
+.overlay-btn {
+    width: 32px;
+    height: 32px;
     border: none;
-    border-radius: clamp(5px, 0.6vw, 8px);
-    background: rgba(255, 255, 255, 0.15);
+    border-radius: 50%;
+    background: var(--el-color-primary);
     color: white;
     cursor: pointer;
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: all 0.2s ease;
-    font-size: clamp(11px, 1.1vw, 14px);
+    font-size: 13px;
+    transition: transform 0.2s ease, background 0.2s ease;
 }
-.action-btn:hover {
-    background: rgba(255, 255, 255, 0.25);
-    transform: scale(1.08);
+.overlay-btn.is-danger {
+    background: var(--el-color-danger);
 }
-.action-btn:active {
+.overlay-btn:hover {
+    transform: scale(1.1);
+    filter: brightness(1.1);
+}
+.overlay-btn:active {
     transform: scale(0.95);
 }
-.action-btn-danger:hover {
-    background: rgba(239, 68, 68, 0.6);
+
+/* ── 下半部分：名称 + 统计 ────────────────────────────────────── */
+.card-info {
+    padding: 10px 12px;
+    background: var(--toolbar-button-bg-color);
 }
+.file-name {
+    font-size: 13px;
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-bottom: 6px;
+    color: var(--upload-text-color);
+}
+.folder-stats {
+    font-size: 12px;
+    opacity: 0.65;
+    color: var(--upload-text-color);
+}
+
+/* ── 移动端：无 hover —— 选择常显，操作隐藏 ───────────────────── */
 @media (max-width: 768px) {
-    .img-card {
-        height: 148px;
-        border-radius: 7px;
-        contain-intrinsic-size: 148px;
+    .folder-preview {
+        height: 130px;
     }
-
-    .img-card :deep(.el-checkbox) {
-        top: 6px;
-        right: 6px;
-        transform: scale(1.1);
+    .folder-card {
+        contain-intrinsic-size: 190px;
     }
-
-    .img-card:hover {
-        transform: none;
+    .folder-overlay {
+        opacity: 1;
+        pointer-events: none;
+        justify-content: flex-start;
     }
-
-    .folder-icon-svg {
-        font-size: 36px;
+    .overlay-actions {
+        display: none;
     }
-
-    .card-bottom-overlay {
-        padding: 22px 6px 6px;
-    }
-
-    .file-name {
-        font-size: 11px;
-    }
-
-    .action-bar {
-        display: none !important;
+    .card-info {
+        padding: 8px 10px;
     }
 }
 </style>

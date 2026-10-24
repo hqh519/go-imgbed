@@ -107,7 +107,9 @@
                 </div>
               </div>
               <div class="grid-info">
-                <div class="file-name" :title="item.metadata?.FileName">{{ item.metadata?.FileName || item.name }}</div>
+                <div class="file-name" :title="item.metadata?.FileName">
+                  <span class="name-start">{{ nameParts(item).start }}</span><span class="name-end">{{ nameParts(item).end }}</span>
+                </div>
                 <div class="grid-meta">
                   <span class="upload-time">{{ formatTime(item.metadata?.TimeStamp) }}</span>
                   <span class="upload-size">{{ item.metadata?.FileSize }}</span>
@@ -131,7 +133,9 @@
                 </div>
               </div>
               <div class="list-info">
-                <div class="file-name" :title="item.metadata?.FileName">{{ item.metadata?.FileName || item.name }}</div>
+                <div class="file-name" :title="item.metadata?.FileName">
+                  <span class="name-start">{{ nameParts(item).start }}</span><span class="name-end">{{ nameParts(item).end }}</span>
+                </div>
                 <div class="file-url" :title="urlOf(item)">{{ urlOf(item) }}</div>
               </div>
               <div class="list-meta">
@@ -334,6 +338,16 @@ export default {
       if (!Number.isFinite(d.getTime())) return '-';
       const p = (n) => String(n).padStart(2, '0');
       return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+    },
+    /**
+     * v2.5.0：文件名「中间省略」—— 保留头部与尾部（含扩展名），
+     * 中段交给 CSS 双 span（start 可收缩省略、end 固定不换行），
+     * 宽度不足时呈现 `cover-2…10-18.png` 效果，且随容器宽度自适应。
+     */
+    nameParts(item) {
+      const full = String(item?.metadata?.FileName || item?.name || '');
+      if (full.length <= 24) return { start: full, end: '' };
+      return { start: full.slice(0, -12), end: full.slice(-12) };
     },
     /** 文件外链：全站统一出口（自定义访问域名优先）+ File_ID + 原扩展名 */
     urlOf(item) {
@@ -762,10 +776,23 @@ export default {
 .file-name {
   font-size: 13px;
   font-weight: 500;
-  white-space: nowrap;
+  margin-bottom: 6px;
+  /* v2.5.0：中间省略 —— start 可收缩出省略号，end（含扩展名）固定可见 */
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
+}
+
+.name-start {
+  flex-shrink: 1;
   overflow: hidden;
   text-overflow: ellipsis;
-  margin-bottom: 6px;
+  white-space: nowrap;
+}
+
+.name-end {
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .grid-meta {

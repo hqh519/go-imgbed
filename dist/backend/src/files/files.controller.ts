@@ -971,6 +971,19 @@ export class ManageController {
       directories = Array.from(set).sort();
     }
 
+    // v2.5.0：每个直接子目录的统计（子文件夹数 / 直接文件数）—— 文件管理文件夹卡片展示用
+    const directoryStats: Record<string, { folders: number; files: number }> = {};
+    if (!recursive) {
+      for (const d of directories) {
+        const prefix = `${d}/`;
+        let sub = 0;
+        for (const f of allFolders) {
+          if (f.startsWith(prefix) && !f.slice(prefix.length).includes('/')) sub += 1;
+        }
+        directoryStats[d] = { folders: sub, files: files.filter((r) => (r.folder || '') === d).length };
+      }
+    }
+
     const totalCount = files.length;
     if (sumOnly) return { sum: totalCount, indexLastUpdated: Date.now() };
 
@@ -980,6 +993,7 @@ export class ManageController {
     return {
       files: paged.map((r) => serializeFile(r, r.copies, { tags: r.tags.map((t) => t.tag.name), resolveDirectUrl })),
       directories,
+      directoryStats,
       totalCount,
       directFileCount: files.length,
       directFolderCount: directories.length,
@@ -2030,6 +2044,8 @@ export class ManageController {
    */
   private async persistSysConfig(section: string, body: Record<string, unknown>, res: Response) {
     const out = await this.sysConfig.save(section, body);
+    // v2.5.0：设置保存动作入系统日志（便于排查「保存失败」类问题）
+    appLog.info('settings', `系统配置已保存：${section} 分区`);
     if (section === 'security' && (out as { adminPasswordChanged?: boolean })?.adminPasswordChanged) {
       res.clearCookie(SESSION_COOKIE, { path: '/' });
     }

@@ -76,16 +76,6 @@ exports.PAGE_CONFIG_DEFAULTS = {
             "category_en": "Global Settings"
         },
         {
-            "id": "bkInterval",
-            "label": "背景切换间隔",
-            "label_en": "Background Interval",
-            "placeholder": "3000",
-            "tooltip": "单位：毫秒 ms",
-            "tooltip_en": "Unit: milliseconds (ms)",
-            "category": "全局设置",
-            "category_en": "Global Settings"
-        },
-        {
             "id": "bkOpacity",
             "label": "背景图透明度",
             "label_en": "Background Opacity",

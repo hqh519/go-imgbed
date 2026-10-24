@@ -332,10 +332,11 @@
                 <!-- 文件夹和文件列表 -->
                 <template v-else v-for="(item, index) in paginatedTableData" :key="`${item.isFolder ? 'folder' : 'file'}:${item.name}`">
                     <!-- 文件夹卡片 -->
-                    <FolderCard 
+                    <FolderCard
                         v-if="isFolder(item)"
                         :name="item.name"
                         v-model:selected="item.selected"
+                        :folderStats="item.metadata?.folderStats || null"
                         :showActions="!isSearchMode"
                         :disableTooltip="disableTooltip"
                         @enter="enterFolder(item.name)"
@@ -376,25 +377,10 @@
                 @touchend.passive="handlePageSwipeEnd"
                 @touchcancel.passive="resetPageSwipe"
             >
-                <div class="list-header">
-                    <div class="list-col list-col-checkbox">
-                        <el-checkbox
-                            :model-value="isSelectAll"
-                            :indeterminate="isIndeterminate"
-                            @click.stop
-                            @change="handleSelectAllPage"
-                        />
-                    </div>
-                    <div class="list-col list-col-preview">{{ $t('dashboard.preview') }}</div>
-                    <div class="list-col list-col-name">{{ $t('dashboard.fileName') }}</div>
-                    <div class="list-col list-col-views">{{ $t('dashboard.views') }}</div>
-                    <div class="list-col list-col-channel">{{ $t('dashboard.storageChannel') }}</div>
-                    <div class="list-col list-col-backup">{{ $t('dashboard.backupChannel') }}</div>
-                    <div class="list-col list-col-size">{{ $t('dashboard.fileSize') }}</div>
-                    <div class="list-col list-col-user">{{ $t('dashboard.uploadUser') }}</div>
-                    <div class="list-col list-col-date">{{ $t('dashboard.uploadTime') }}</div>
-                    <div class="list-col list-col-actions">{{ $t('dashboard.actions') }}</div>
-                </div>
+                <!--
+                    v2.5.0：列表视图改为「历史记录列表」样式（圆角卡片行、无表头）——
+                    表头整行移除，全选入口保留在面包屑左侧的「本页全选」复选框。
+                -->
                 <!-- 列表骨架屏 -->
                 <SkeletonLoader v-if="loading" type="list" :count="pageSize" />
                 <!-- 空状态 -->
@@ -418,6 +404,7 @@
                         @move="handleMove(index, item.name)"
                         @delete="handleDelete(index, item.name)"
                         @download="handleDownload(item.name)"
+                        @openLink="handleOpenLink(item.name)"
                         @touchstart="isFolder(item) ? handleFolderTouchStart(item, index) : handleTouchStart(item, index)"
                         @touchend="handleTouchEnd"
                         @touchmove="handleTouchEnd"
@@ -712,7 +699,7 @@ data() {
         searchIconPressStart: null,
         searchIconLongPressed: false,
         currentPage: 1,
-        pageSize: 18,
+        pageSize: 24, // v2.5.0：卡片视图每行 8 个 × 3 行 = 24（与历史记录封面样式对齐）
         selectedFiles: [],
         sortField: getStoredOption('sortField', SORT_FIELDS, 'time'),
         sortOrder: getStoredOption('sortOrder', SORT_ORDERS, 'desc'),
@@ -799,7 +786,7 @@ setup() {
 
     const { isDragging, selectionRect } = useDragSelect({
         modes: {
-            card: { containerRef: cardContainerRef, itemSelector: '.img-card' },
+            card: { containerRef: cardContainerRef, itemSelector: '.file-card, .folder-card' },
             list: { containerRef: listContainerRef, itemSelector: '.list-item' },
         },
         viewMode: viewModeRef,
@@ -2614,12 +2601,13 @@ methods: {
             const folders = new Set(this.recursiveSearchResults ? [] : data.directories || []);
             const files = data.files || [];
 
-            // 处理文件夹数据
+            // 处理文件夹数据（v2.5.0：附带后端 directoryStats 的子文件夹/文件数量统计）
+            const folderStatsMap = data.directoryStats || {};
             const folderItems = Array.from(folders).map(folder => ({
                 name: folder,
                 isFolder: true,
                 selected: selectedKeys.has(`folder:${folder}`),
-                metadata: { FileName: folder.split('/').pop() }
+                metadata: { FileName: folder.split('/').pop(), folderStats: folderStatsMap[folder] || null }
             }));
 
             // 处理文件数据
@@ -3628,13 +3616,15 @@ beforeUnmount() {
 
 .content {
     display: grid;
-    grid-template-columns: repeat(5, 1fr);
-    grid-template-rows: repeat(3, 1fr);
-    gap: 20px;
+    /* v2.5.0：卡片改为历史记录封面样式 —— 每行 8 个 × 每页 3 行（pageSize=24） */
+    grid-template-columns: repeat(8, 1fr);
+    grid-template-rows: none;
+    gap: 16px;
     padding: 10px;
     padding-bottom: 0px;
     flex-grow: 1;
     min-height: 80vh;
+    align-content: start;
 }
 
 .content.is-drag-selecting,
@@ -3642,10 +3632,13 @@ beforeUnmount() {
     cursor: crosshair;
 }
 
+.content.is-drag-selecting :deep(.file-card:hover),
+.content.is-drag-selecting :deep(.folder-card:hover),
 .content.is-drag-selecting :deep(.img-card:hover) {
     transform: none;
 }
 
+.content.is-drag-selecting :deep(.file-card:hover .image-preview),
 .content.is-drag-selecting :deep(.img-card:hover .image-preview),
 .content.is-drag-selecting :deep(.img-card:hover .video-preview),
 .content.is-drag-selecting :deep(.img-card:hover .file-icon),
@@ -3726,25 +3719,18 @@ beforeUnmount() {
     }
 }
 
-/* 平板端卡片视图：按可用宽度递减列数，避免卡片被压扁（桌面档仍为 5 列） */
+/* 平板端卡片视图：按可用宽度递减列数（桌面档 8 列 × 3 行 = 24） */
 @media (min-width: 1024px) and (max-width: 1199px) {
     .content {
-        grid-template-columns: repeat(4, minmax(0, 1fr));
+        grid-template-columns: repeat(6, minmax(0, 1fr));
         gap: 14px;
     }
 }
 
 @media (min-width: 769px) and (max-width: 1023px) {
     .content {
-        grid-template-columns: repeat(3, minmax(0, 1fr));
+        grid-template-columns: repeat(4, minmax(0, 1fr));
         gap: 12px;
-    }
-}
-
-/* 超宽屏：用满横向空间，避免卡片过大留白过多 */
-@media (min-width: 1600px) {
-    .content {
-        grid-template-columns: repeat(6, minmax(0, 1fr));
     }
 }
 
@@ -3755,68 +3741,14 @@ beforeUnmount() {
     }
 }
 
-/* 列表视图样式 - 仅保留容器和表头 */
+/* 列表视图样式 —— v2.5.0：改为「历史记录列表」的圆角卡片行（无外框容器、无表头） */
 .list-view {
     display: flex;
     flex-direction: column;
-    gap: 0;
-    background: var(--admin-dashboard-imgcard-bg-color);
-    border: 1px solid var(--glass-border);
-    border-radius: 12px;
+    gap: 10px;
+    margin-top: 15px;
     overflow-x: auto;
     overflow-y: visible;
-    box-shadow: var(--admin-dashboard-imgcard-shadow);
-    margin-top: 15px;
-}
-
-.list-header {
-    display: grid;
-    /* 复选框 / 预览 / 文件名 / 访问次数 / 存储渠道 / 备份渠道 / 大小 / 上传用户 / 时间 / 操作
-       —— 必须与 FileListItem.vue 的 .list-item grid-template-columns 完全一致，
-       多一列或少一列都会导致表头与内容错位（历史 bug）。 */
-    grid-template-columns: 50px 60px minmax(180px, 1fr) 70px 110px 110px 80px 120px 100px 120px;
-    padding: 12px 20px;
-    background: var(--admin-dashboard-stats-bg);
-    font-weight: 600;
-    font-size: 13px;
-    color: var(--el-text-color-secondary);
-    border-bottom: 1px solid var(--el-border-color-lighter);
-    min-width: fit-content;
-}
-
-.list-col {
-    display: flex;
-    align-items: center;
-}
-
-.list-col-checkbox {
-    justify-content: center;
-    min-width: 40px;
-}
-
-.list-col-checkbox :deep(.el-checkbox) {
-    --el-checkbox-input-width: 16px;
-    --el-checkbox-input-height: 16px;
-}
-
-/* 移动端列表视图 */
-@media (max-width: 768px) {
-    .list-header {
-        display: none;
-    }
-}
-
-/* 平板端列表视图：与行保持同一套列宽（10 列），避免整表横向滚动 */
-@media (min-width: 769px) and (max-width: 1199px) {
-    .list-header {
-        grid-template-columns: 40px 52px minmax(150px, 1fr) 56px 92px 92px 72px 96px 92px 104px;
-        padding: 10px 16px;
-    }
-
-    .list-header .list-col-tags,
-    .list-header .list-col-address {
-        display: none;
-    }
 }
 
 .question-icon {

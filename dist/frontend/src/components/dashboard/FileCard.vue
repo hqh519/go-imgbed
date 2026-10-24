@@ -1,121 +1,135 @@
 <template>
-    <el-card 
-        class="img-card"
+    <!--
+        v2.5.0（v20261023-2）：卡片改为「上下两部分」结构，样式对齐历史记录页封面：
+          上 = 缩略图（悬浮时：左上渠道/备份简称、右上选择圆圈、中间 复制/打开/移动、下方中间 访问次数）
+          下 = 文件信息（文件名 + 时间/大小 + 上传用户）
+        行为不变：点击封面 / 文件名 = 打开文件详情；批量选择仍走页面下方操作栏。
+    -->
+    <div
+        class="file-card"
+        :class="{ 'is-selected': localSelected }"
         @touchstart="$emit('touchstart', $event)"
         @touchend="$emit('touchend', $event)"
         @touchmove="$emit('touchmove', $event)"
     >
-        <el-checkbox v-model="localSelected" @change="$emit('update:selected', localSelected)"></el-checkbox>
-        <!-- 访问次数：鼠标悬浮卡片时在卡片上方显示 -->
-        <div class="card-views-badge" :title="$t('dashboard.views')">
-            <font-awesome-icon icon="eye" class="card-views-icon"></font-awesome-icon>
-            <span>{{ viewsCount }}</span>
-        </div>
-        <div class="file-short-info">
-            <div v-if="item.metadata?.ListType === 'White'" class="success-tag">{{ channelTag }}</div>
-            <div v-else-if="item.metadata?.ListType === 'Block' || item.metadata?.Label === 'adult'" class="fail-tag">{{ channelTag }}</div>
-            <div v-else class="success-tag">{{ channelTag }}</div>
-            <!-- 备份渠道标识：紧挨存储渠道标识右侧，有备份才显示 -->
-            <div
-                v-for="(bk, i) in backupTags"
-                :key="'backup-' + i"
-                class="backup-tag"
-                :title="bk.full"
-            >{{ bk.short }}</div>
-            <!-- 封面不再显示标签（标签在文件详情 / 列表视图的标签列里看） -->
-
-        </div>
-        
-        <!-- 视频预览 -->
-        <template v-if="isVideo">
-            <div v-if="videoLoading" class="skeleton-wrapper"></div>
-            <div v-else-if="videoError" class="error-wrapper" @click="$emit('detail')">
-                <font-awesome-icon icon="exclamation-triangle" class="error-icon"/>
-                <span class="error-text">{{ $t('dashboard.loadFailed') }}</span>
-            </div>
-            <video 
-                v-show="!videoLoading && !videoError"
-                :src="fileLink" 
-                muted 
-                loop 
-                preload="metadata" 
-                class="video-preview" 
-                @click.stop="$emit('detail')"
-                @mouseenter="handleVideoHover($event, true)" 
-                @mouseleave="handleVideoHover($event, false)"
-                @loadeddata="videoLoading = false"
-                @error="handleVideoError"
-            ></video>
-        </template>
-        
-        <!-- 音频预览 -->
-        <div v-else-if="isAudio" class="file-preview audio-card-preview" @click="$emit('detail')">
-            <font-awesome-icon icon="music" class="file-icon audio-icon"/>
-        </div>
-        
-        <!-- 图片预览 -->
-        <!-- 封面点击 = 打开文件详情（原来点击是图片预览，会盖住详情弹窗；
-             查看大图的入口已统一收敛到详情弹窗内） -->
-        <el-image 
-            v-else-if="isImage"
-            :preview-teleported="true" 
-            :src="fileLink" 
-            fit="cover" 
-            lazy 
-            decoding="async"
-            class="image-preview"
-            @click.stop="$emit('detail')"
-        >
-            <template #placeholder>
-                <div class="skeleton-wrapper"></div>
-            </template>
-            <template #error>
-                <div class="error-wrapper" @click.stop="$emit('detail')">
-                    <font-awesome-icon icon="image" class="error-icon"/>
+        <!-- 上半部分：缩略图 -->
+        <div class="card-preview" @click="$emit('detail')">
+            <!-- 视频预览 -->
+            <template v-if="isVideo">
+                <div v-if="videoLoading" class="skeleton-wrapper"></div>
+                <div v-else-if="videoError" class="error-wrapper">
+                    <font-awesome-icon icon="exclamation-triangle" class="error-icon"/>
                     <span class="error-text">{{ $t('dashboard.loadFailed') }}</span>
                 </div>
+                <video
+                    v-show="!videoLoading && !videoError"
+                    :src="fileLink"
+                    muted
+                    loop
+                    preload="metadata"
+                    class="video-preview"
+                    @mouseenter="handleVideoHover($event, true)"
+                    @mouseleave="handleVideoHover($event, false)"
+                    @loadeddata="videoLoading = false"
+                    @error="handleVideoError"
+                ></video>
             </template>
-        </el-image>
-        
-        <!-- 其他文件 -->
-        <div v-else class="file-preview">
-            <font-awesome-icon icon="file" class="file-icon"/>
-        </div>
-        
-        <!-- 底部覆盖层 -->
-        <div class="card-bottom-overlay">
-            <div class="file-name-row">
-                <span class="file-name" :title="fullName">{{ displayName }}</span>
+
+            <!-- 音频预览 -->
+            <div v-else-if="isAudio" class="file-preview audio-card-preview">
+                <font-awesome-icon icon="music" class="file-icon audio-icon"/>
             </div>
-            <div class="action-bar">
-                <!-- 左下角：打开文件链接（原「详情」按钮；详情改由点击封面进入） -->
-                <div class="action-bar-left">
-                    <el-tooltip :disabled="disableTooltip" :content="$t('dashboard.openLink')" placement="top" :show-after="1000">
-                        <button class="action-btn" @click.stop="$emit('openLink')">
-                            <font-awesome-icon icon="external-link-alt"></font-awesome-icon>
-                        </button>
-                    </el-tooltip>
+
+            <!-- 图片预览 -->
+            <el-image
+                v-else-if="isImage"
+                :src="fileLink"
+                fit="cover"
+                lazy
+                decoding="async"
+                class="image-preview"
+            >
+                <template #placeholder>
+                    <div class="skeleton-wrapper"></div>
+                </template>
+                <template #error>
+                    <div class="error-wrapper">
+                        <font-awesome-icon icon="image" class="error-icon"/>
+                        <span class="error-text">{{ $t('dashboard.loadFailed') }}</span>
+                    </div>
+                </template>
+            </el-image>
+
+            <!-- 其他文件 -->
+            <div v-else class="file-preview">
+                <div class="file-icon-wrapper">
+                    <font-awesome-icon icon="file" class="file-icon"/>
+                    <span class="file-ext">{{ item.metadata?.FileExt || 'file' }}</span>
                 </div>
-                <div class="action-bar-right">
-                    <el-tooltip :disabled="disableTooltip" :content="$t('dashboard.moveFile')" placement="top" :show-after="1000">
-                        <button class="action-btn" @click.stop="$emit('move')">
-                            <font-awesome-icon icon="file-export"></font-awesome-icon>
-                        </button>
-                    </el-tooltip>
-                    <el-tooltip :disabled="disableTooltip" :content="$t('dashboard.downloadFile')" placement="top" :show-after="1000">
-                        <button class="action-btn" @click.stop="$emit('download')">
-                            <font-awesome-icon icon="download"></font-awesome-icon>
-                        </button>
-                    </el-tooltip>
-                    <el-tooltip :disabled="disableTooltip" :content="$t('dashboard.copyLink')" placement="top" :show-after="1000">
-                        <button class="action-btn" @click.stop="$emit('copy')">
+            </div>
+
+            <!-- 悬浮层：渠道标识 / 选择 / 操作 / 访问次数 -->
+            <div class="card-overlay">
+                <div class="overlay-top">
+                    <div class="card-tags">
+                        <span
+                            class="channel-tag"
+                            :class="{ 'is-block': item.metadata?.ListType === 'Block' || item.metadata?.Label === 'adult' }"
+                            :title="channelTag"
+                        >{{ channelTag }}</span>
+                        <span
+                            v-for="(bk, i) in backupTags"
+                            :key="'backup-' + i"
+                            class="backup-tag"
+                            :title="bk.full"
+                        >{{ bk.short }}</span>
+                    </div>
+                    <el-checkbox
+                        v-model="localSelected"
+                        class="card-select"
+                        @click.stop
+                        @change="$emit('update:selected', localSelected)"
+                    ></el-checkbox>
+                </div>
+
+                <div class="overlay-actions" @click.stop>
+                    <el-tooltip :disabled="disableTooltip" :content="$t('dashboard.copyLink')" placement="top" :show-after="600">
+                        <button class="overlay-btn" @click.stop="$emit('copy')">
                             <font-awesome-icon icon="copy"></font-awesome-icon>
                         </button>
                     </el-tooltip>
+                    <el-tooltip :disabled="disableTooltip" :content="$t('dashboard.openLink')" placement="top" :show-after="600">
+                        <button class="overlay-btn" @click.stop="$emit('openLink')">
+                            <font-awesome-icon icon="external-link-alt"></font-awesome-icon>
+                        </button>
+                    </el-tooltip>
+                    <el-tooltip :disabled="disableTooltip" :content="$t('dashboard.moveFile')" placement="top" :show-after="600">
+                        <button class="overlay-btn" @click.stop="$emit('move')">
+                            <font-awesome-icon icon="file-export"></font-awesome-icon>
+                        </button>
+                    </el-tooltip>
+                </div>
+
+                <div class="card-views-badge" :title="$t('dashboard.views')">
+                    <font-awesome-icon icon="eye" class="card-views-icon"></font-awesome-icon>
+                    <span>{{ viewsCount }}</span>
                 </div>
             </div>
         </div>
-    </el-card>
+
+        <!-- 下半部分：文件信息（与历史记录卡片一致） -->
+        <div class="card-info" @click="$emit('detail')">
+            <div class="file-name" :title="fullName">{{ displayName }}</div>
+            <div class="card-meta">
+                <span class="upload-time">{{ uploadDate }}</span>
+                <span class="upload-size">{{ fileSizeDisplay }}</span>
+            </div>
+            <div v-if="uploadUser" class="upload-user" :title="$t('dashboard.uploadUser')">
+                <font-awesome-icon icon="user" />
+                {{ uploadUser }}
+            </div>
+        </div>
+    </div>
 </template>
 
 <script>
@@ -182,8 +196,8 @@ export default {
             if (fileType.includes('image')) return true;
             // 再通过文件后缀判断
             const name = this.item.name?.toLowerCase() || '';
-            return name.endsWith('.jpg') || name.endsWith('.jpeg') || name.endsWith('.png') || 
-                   name.endsWith('.gif') || name.endsWith('.webp') || name.endsWith('.svg') || 
+            return name.endsWith('.jpg') || name.endsWith('.jpeg') || name.endsWith('.png') ||
+                   name.endsWith('.gif') || name.endsWith('.webp') || name.endsWith('.svg') ||
                    name.endsWith('.bmp') || name.endsWith('.avif') || name.endsWith('.heic') || name.endsWith('.heif');
         },
         /** 完整文件名（仅取最后一段），用于 title 悬浮提示 */
@@ -194,8 +208,7 @@ export default {
         },
         /**
          * 卡片上显示的文件名：太长时**保留头尾、中间省略**
-         * （`cover-2026-10-18.png` → `cover-2…10-18.png`），
-         * 这样扩展名和文件名开头的辨识部分都还在。
+         * （`cover-2026-10-18.png` → `cover-2…10-18.png`）。
          */
         displayName() {
             const full = this.fullName;
@@ -205,6 +218,31 @@ export default {
             const keepStart = max - keepEnd - 1; // 中间省略号占 1 个字符
             if (keepStart <= 3) return `${full.slice(0, max - 1)}…`;
             return `${full.slice(0, keepStart)}…${full.slice(-keepEnd)}`;
+        },
+        /** 上传日期（与历史记录一致：年-月-日） */
+        uploadDate() {
+            const ts = this.item.metadata?.TimeStamp;
+            if (!ts) return '-';
+            const d = new Date(Number(ts));
+            if (!Number.isFinite(d.getTime())) return '-';
+            const p = (n) => String(n).padStart(2, '0');
+            return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+        },
+        /** 文件大小展示（与列表视图同一口径） */
+        fileSizeDisplay() {
+            const sizeBytes = this.item.metadata?.FileSizeBytes;
+            const sizeMB = this.item.metadata?.FileSize;
+            if (sizeBytes) {
+                if (sizeBytes < 1024) return `${sizeBytes} B`;
+                if (sizeBytes < 1024 * 1024) return `${(sizeBytes / 1024).toFixed(1)} KB`;
+                return `${(sizeBytes / 1024 / 1024).toFixed(2)} MB`;
+            }
+            if (sizeMB) return `${sizeMB} MB`;
+            return '-';
+        },
+        /** 上传用户（账户名；未登录上传为空） */
+        uploadUser() {
+            return this.item.metadata?.UploadUser || '';
         }
     },
     watch: {
@@ -236,154 +274,133 @@ export default {
 </script>
 
 <style scoped>
-.img-card {
+/* ── 卡片整体：上下两部分（对齐历史记录 grid-item）────────────────── */
+.file-card {
     box-sizing: border-box;
     width: 100%;
-    height: 22vh;
+    background: var(--toolbar-button-bg-color);
+    border-radius: 12px;
+    overflow: hidden;
+    border: 1px solid var(--glass-border);
+    box-shadow: var(--toolbar-button-shadow);
+    transition: box-shadow 0.3s ease;
     content-visibility: auto;
     contain: layout paint style;
-    contain-intrinsic-size: 260px;
-    background-color: var(--glass-bg) !important;
-    backdrop-filter: blur(20px) saturate(1.4);
-    -webkit-backdrop-filter: blur(20px) saturate(1.4);
-    border: 1px solid var(--glass-border);
-    border-radius: 8px;
-    box-shadow: var(--admin-dashboard-imgcard-shadow);
-    overflow: hidden;
-    position: relative;
-    transition: transform 0.3s ease;
+    contain-intrinsic-size: 220px;
+    cursor: pointer;
 }
-/* 顶部标签区柔和遮罩(从顶部往下淡出) */
-.img-card::before {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    height: 45%;
-    background: linear-gradient(to bottom, rgba(0, 0, 0, 0.35) 0%, rgba(0, 0, 0, 0.12) 50%, transparent 100%);
-    pointer-events: none;
-    z-index: 5;
+.file-card:hover {
+    box-shadow: var(--toolbar-button-shadow-hover);
 }
-.img-card :deep(.el-card__body) {
-    padding: 0;
-    height: 100%;
-    overflow: hidden;
-}
-.img-card :deep(.el-checkbox) {
-    position: absolute;
-    top: 10px;
-    right: 10px;
-    transform: scale(1.5);
-    z-index: 10;
+.file-card.is-selected {
+    border-color: var(--el-color-primary);
+    box-shadow: 0 0 0 1px var(--el-color-primary);
 }
 
-.img-card :deep(.el-checkbox__inner) {
-    width: 14px !important;
-    min-width: 14px;
-    height: 14px !important;
-    min-height: 14px;
-    border-radius: 50% !important;
+/* ── 上半部分：缩略图 ──────────────────────────────────────────── */
+.card-preview {
+    height: 150px;
+    position: relative;
+    background: var(--el-fill-color-light);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
 }
-.img-card:hover {
-    transform: scale(1.05);
-}
-.image-preview, .video-preview {
+.image-preview,
+.video-preview {
     width: 100%;
     height: 100%;
     object-fit: cover;
-    transition: transform 0.4s ease, opacity 0.3s ease;
+    display: block;
     filter: var(--image-preview-filter);
 }
 .video-preview {
     cursor: pointer;
 }
-.img-card:hover .image-preview,
-.img-card:hover .video-preview,
-.img-card:hover .file-icon {
-    transform: scale(1.03);
+.file-preview {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    width: 100%;
+    height: 100%;
 }
-.image-preview:hover {
+.file-icon-wrapper {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    font-size: 42px;
+    color: var(--theme-toggle-color);
+    opacity: 0.6;
+}
+.file-ext {
+    font-size: 12px;
+    text-transform: uppercase;
+}
+.file-icon {
+    opacity: 0.6;
+    font-size: clamp(40px, 4vw, 64px);
+    transition: transform 0.4s ease;
+}
+.audio-icon {
+    color: var(--el-color-primary);
     opacity: 0.8;
 }
-/* 封面（图片 / 视频 / 其他文件 / 加载失败占位）统一手型光标：
-   点击封面 = 打开文件详情，光标需明确表达「可点击」 */
-.img-card :deep(.el-image),
-.image-preview,
-.video-preview,
-.file-preview,
-.audio-card-preview,
-.error-wrapper {
-    cursor: pointer;
-}
-.file-short-info {
+
+/* ── 悬浮层 ───────────────────────────────────────────────────── */
+.card-overlay {
     position: absolute;
-    z-index: 10;
-    top: 3px;
-    left: 3px;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.45);
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    opacity: 0;
+    transition: opacity 0.25s ease;
+    pointer-events: none;
+}
+.file-card:hover .card-overlay,
+.file-card:focus-within .card-overlay {
+    opacity: 1;
+    pointer-events: auto;
+}
+.overlay-top {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 6px;
+    padding: 6px 8px;
+}
+.card-tags {
     display: flex;
     gap: 5px;
-    align-items: start;
+    align-items: center;
+    min-width: 0;
+    flex-wrap: wrap;
 }
-.success-tag {
+/* 渠道简称角标：沿用原卡片配色（绿=主渠道，橙=备份，红=拦截） */
+.channel-tag {
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 20px;
+    padding: 0 8px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 500;
+    line-height: 1;
+    white-space: nowrap;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
     background-color: rgba(34, 139, 34, 0.6);
     color: rgba(255, 255, 255, 0.95);
     border: 1px solid rgba(34, 139, 34, 0.7);
-    padding: 3px 8px;
-    border-radius: 6px;
-    font-size: 11px;
-    font-weight: 500;
-    height: auto;
-    line-height: 1.2;
-    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
 }
-.fail-tag {
+.channel-tag.is-block {
     background-color: rgba(220, 53, 69, 0.6);
-    color: rgba(255, 255, 255, 0.95);
-    border: 1px solid rgba(220, 53, 69, 0.7);
-    padding: 3px 8px;
-    border-radius: 6px;
-    font-size: 11px;
-    font-weight: 500;
-    height: auto;
-    line-height: 1.2;
-    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+    border-color: rgba(220, 53, 69, 0.7);
 }
-.primary-tag {
-    background-color: rgba(250, 82, 194, 0.6);
-    color: rgba(255, 255, 255, 0.95);
-    border: 1px solid rgba(250, 82, 194, 0.7);
-    padding: 3px 8px;
-    border-radius: 6px;
-    font-size: 11px;
-    font-weight: 500;
-    display: flex;
-    align-items: center;
-    height: auto;
-    line-height: 1.2;
-    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
-}
-
-/* 备份渠道标识：紧挨存储渠道标识右侧 */
-.backup-tag {
-    background-color: rgba(230, 162, 60, 0.62);
-    color: rgba(255, 255, 255, 0.96);
-    border: 1px solid rgba(230, 162, 60, 0.72);
-    padding: 3px 8px;
-    border-radius: 6px;
-    font-size: 11px;
-    font-weight: 500;
-    height: auto;
-    line-height: 1.2;
-    white-space: nowrap;
-    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
-}
-
-/* 主渠道 / 备份渠道角标：**统一盒模型**（高度、内边距、行高、边框都一致）。
-   之前只写了 padding + font-size，实际高度受各自 line-height/内容影响，
-   备份角标看起来会比主渠道大一圈。这里显式锁死高度，两者视觉完全对齐。 */
-.success-tag,
-.fail-tag,
 .backup-tag {
     box-sizing: border-box;
     display: inline-flex;
@@ -397,14 +414,53 @@ export default {
     line-height: 1;
     white-space: nowrap;
     text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+    background-color: rgba(230, 162, 60, 0.62);
+    color: rgba(255, 255, 255, 0.96);
+    border: 1px solid rgba(230, 162, 60, 0.72);
 }
-
-/* 访问次数：鼠标悬浮卡片时显示在卡片上方 */
+/* 选择圆圈：右上角 */
+.card-select {
+    flex-shrink: 0;
+}
+.card-select :deep(.el-checkbox__inner) {
+    width: 16px !important;
+    min-width: 16px;
+    height: 16px !important;
+    min-height: 16px;
+    border-radius: 50% !important;
+    border-color: rgba(255, 255, 255, 0.8);
+}
+/* 中间：复制 / 打开 / 移动 */
+.overlay-actions {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+}
+.overlay-btn {
+    width: 32px;
+    height: 32px;
+    border: none;
+    border-radius: 50%;
+    background: var(--el-color-primary);
+    color: white;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    transition: transform 0.2s ease, background 0.2s ease;
+}
+.overlay-btn:hover {
+    transform: scale(1.1);
+    filter: brightness(1.1);
+}
+.overlay-btn:active {
+    transform: scale(0.95);
+}
+/* 下方中间：访问次数（小眼睛 + 数字） */
 .card-views-badge {
-    position: absolute;
-    z-index: 11;
-    top: 6px;
-    left: 50%;
+    align-self: center;
     display: inline-flex;
     align-items: center;
     gap: 4px;
@@ -419,174 +475,51 @@ export default {
     backdrop-filter: blur(8px);
     -webkit-backdrop-filter: blur(8px);
     white-space: nowrap;
-    opacity: 0;
-    pointer-events: none;
-    transform: translateX(-50%) translateY(-6px);
-    transition: opacity 0.2s ease, transform 0.2s ease;
 }
-
 .card-views-icon {
     font-size: 10px;
     opacity: 0.9;
 }
 
-.img-card:hover .card-views-badge,
-.img-card:focus-within .card-views-badge {
-    opacity: 1;
-    transform: translateX(-50%) translateY(0);
-}
-.file-preview {
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    width: 100%;
-    height: 100%;
-}
-.file-icon {
-    opacity: 0.6;
-    font-size: clamp(40px, 4vw, 64px);
-    transition: transform 0.4s ease;
-}
-.audio-icon {
-    color: var(--el-color-primary);
-    opacity: 0.8;
-}
-.audio-card-preview {
-    cursor: pointer;
-}
-.card-bottom-overlay {
-    position: absolute;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    background: linear-gradient(to top, rgba(0, 0, 0, 0.55) 0%, rgba(0, 0, 0, 0.25) 50%, transparent 100%);
-    padding: clamp(15px, 2.5vh, 30px) clamp(6px, 1vw, 12px) clamp(5px, 0.8vh, 10px);
-    display: flex;
-    flex-direction: column;
-    gap: clamp(3px, 0.5vh, 6px);
-    z-index: 10;
-}
-.file-name-row {
-    display: flex;
-    align-items: center;
-    justify-content: center;
+/* ── 下半部分：文件信息（对齐历史记录 grid-info）────────────────── */
+.card-info {
+    padding: 10px 12px;
+    background: var(--toolbar-button-bg-color);
 }
 .file-name {
-    color: white;
-    font-size: clamp(10px, 1.1vw, 14px);
-    text-align: center;
+    font-size: 13px;
+    font-weight: 500;
+    white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    white-space: nowrap;
-    max-width: 100%;
-    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+    margin-bottom: 6px;
+    color: var(--upload-text-color);
 }
-.action-bar {
+.card-meta {
     display: flex;
     justify-content: space-between;
+    gap: 8px;
+    font-size: 12px;
+    opacity: 0.65;
+    color: var(--upload-text-color);
+}
+.upload-user {
+    display: inline-flex;
     align-items: center;
-    opacity: 0;
-    transform: translateY(4px);
-    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-    pointer-events: none;
-}
-.el-card:hover .action-bar {
-    opacity: 1;
-    transform: translateY(0);
-    pointer-events: auto;
-}
-.action-bar-left, .action-bar-right {
-    display: flex;
-    align-items: center;
-    gap: clamp(3px, 0.4vw, 6px);
-}
-.action-btn {
-    width: clamp(24px, 2.5vw, 28px);
-    height: clamp(24px, 2.5vw, 28px);
-    border: none;
-    border-radius: clamp(5px, 0.6vw, 8px);
-    background: rgba(255, 255, 255, 0.15);
-    color: white;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: all 0.2s ease;
-    font-size: clamp(11px, 1.1vw, 14px);
-}
-.action-btn:hover {
-    background: rgba(255, 255, 255, 0.25);
-    transform: scale(1.08);
-}
-.action-btn:active {
-    transform: scale(0.95);
-}
-.action-btn-danger:hover {
-    background: rgba(239, 68, 68, 0.6);
-}
-@media (max-width: 768px) {
-    .img-card {
-        height: 148px;
-        border-radius: 7px;
-        contain-intrinsic-size: 148px;
-    }
-
-    .img-card :deep(.el-checkbox) {
-        top: 6px;
-        right: 6px;
-        transform: scale(1.1);
-    }
-
-    .img-card:hover {
-        transform: none;
-    }
-
-    .file-short-info {
-        gap: 3px;
-        max-width: calc(100% - 38px);
-    }
-
-    .success-tag,
-    .fail-tag,
-    .primary-tag,
-    .backup-tag {
-        max-width: 72px;
-        height: 16px;
-        padding: 0 5px;
-        border-radius: 5px;
-        font-size: 9px;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-    }
-
-    .card-bottom-overlay {
-        padding: 22px 6px 6px;
-    }
-
-    .file-name {
-        font-size: 11px;
-    }
-
-    .file-icon {
-        font-size: 34px;
-    }
-
-    .action-bar {
-        display: none !important;
-    }
+    gap: 4px;
+    font-size: 12px;
+    opacity: 0.7;
+    margin-top: 4px;
+    max-width: 100%;
+    overflow: hidden;
+    color: var(--upload-text-color);
 }
 
 /* 骨架图加载动画 */
 @keyframes skeleton-shimmer {
-    0% {
-        background-position: -200% 0;
-    }
-    100% {
-        background-position: 200% 0;
-    }
+    0% { background-position: -200% 0; }
+    100% { background-position: 200% 0; }
 }
-
 .skeleton-wrapper {
     width: 100%;
     height: 100%;
@@ -599,7 +532,6 @@ export default {
     background-size: 200% 100%;
     animation: skeleton-shimmer 1.5s ease-in-out infinite;
 }
-
 /* 加载失败提示 */
 .error-wrapper {
     width: 100%;
@@ -609,7 +541,6 @@ export default {
     align-items: center;
     justify-content: center;
     background: var(--skeleton-bg-color);
-    cursor: pointer;
     gap: 8px;
 }
 .error-icon {
@@ -620,5 +551,41 @@ export default {
 .error-text {
     font-size: 12px;
     color: var(--el-text-color-secondary);
+}
+
+/* ── 移动端：无 hover —— 标识/选择常显，操作与访问次数隐藏 ────────── */
+@media (max-width: 768px) {
+    .card-preview {
+        height: 130px;
+    }
+    .file-card {
+        contain-intrinsic-size: 190px;
+    }
+    .card-overlay {
+        opacity: 1;
+        background: transparent;
+        pointer-events: none;
+        justify-content: flex-start;
+    }
+    .overlay-actions,
+    .card-views-badge {
+        display: none;
+    }
+    .overlay-top {
+        padding: 4px 6px;
+    }
+    .channel-tag,
+    .backup-tag {
+        max-width: 64px;
+        height: 16px;
+        padding: 0 5px;
+        border-radius: 5px;
+        font-size: 9px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    .card-info {
+        padding: 8px 10px;
+    }
 }
 </style>

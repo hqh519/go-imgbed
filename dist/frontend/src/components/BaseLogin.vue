@@ -2,7 +2,7 @@
     <div class="login" :style="viewportStyle">
         <ToggleDark class="toggle-dark"/>
         <LanguageSwitcher class="language-switcher"/>
-        <Logo />
+        <!-- v2.5.0：登录页不再显示左上角 LOGO（需求 v20261023-2；其余前端页面照常显示） -->
         <div class="login-container">
             <h1 class="login-title" tabindex="0">{{ title }}</h1>
             
@@ -52,7 +52,6 @@
 import Footer from '@/components/Footer.vue';
 import ToggleDark from '@/components/ToggleDark.vue';
 import LanguageSwitcher from '@/components/LanguageSwitcher.vue';
-import Logo from '@/components/Logo.vue';
 import { mapGetters } from 'vuex';
 import backgroundManager from '@/mixins/backgroundManager';
 
@@ -130,8 +129,7 @@ export default {
     components: {
         Footer,
         ToggleDark,
-        LanguageSwitcher,
-        Logo
+        LanguageSwitcher
     },
     mounted() {
         // 初始化表单数据

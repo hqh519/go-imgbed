@@ -70,18 +70,23 @@
                 </div>
             </div>
 
-            <!-- v2.4.0：备用库预览（只读）—— 自定义访问域名的上一行 -->
+            <!-- v2.4.0：备用库预览（只读，可展开下拉查看）—— 自定义访问域名的上一行 -->
             <div class="storage-row">
                 <div class="mb-item domain-item">
                     <span class="mb-label">备用库预览</span>
+                    <!--
+                        v2.5.0：去掉 disabled —— 冻结状态下拉无法展开，用户看不到池内渠道。
+                        仍保持只读语义：选择动作会被还原并提示真正的设置入口（key 强制重渲染）。
+                    -->
                     <el-select
+                        :key="poolPreviewKey"
                         :model-value="backupPoolIds"
                         multiple
                         collapse-tags
                         size="small"
-                        disabled
                         class="domain-input pool-preview-select"
                         placeholder="未设置备用库"
+                        @change="onPoolPreviewChange"
                     >
                         <el-option
                             v-for="c in backupPoolChannels"
@@ -586,6 +591,9 @@ export default {
             showDetailDialog: false,
             showEditDialog: false,
 
+            // v2.5.0：备用库预览下拉还原用的重渲染 key（只读预览，误选后强制复位）
+            poolPreviewKey: 0,
+
             currentChannelType: '',
             currentChannel: null,
             editChannel: { name: '', enabled: true, config: {} },
@@ -648,8 +656,7 @@ export default {
         },
         backupPoolIds() {
             return this.backupPoolChannels.map((c) => c.id);
-        },
-        currentFields() {
+        },        currentFields() {
             const type = this.showAddDialog ? this.newChannel.type : this.currentChannelType;
             return type ? fieldsOf(type) : [];
         },
@@ -662,6 +669,18 @@ export default {
         }
     },
     methods: {
+        /**
+         * v2.5.0：备用库预览下拉只读 —— 用户误点选项时还原选中态并提示真正入口。
+         * 下拉本身可展开查看池内渠道（v2.4.0 的 disabled 冻结态无法展开，已移除）。
+         */
+        onPoolPreviewChange() {
+            this.poolPreviewKey += 1
+            this.$message({
+                type: 'info',
+                message: '备用库为只读预览；设置入口：渠道卡片操作菜单里的「设为备用库 / 取消备用库」',
+                duration: 2500
+            })
+        },
         /** 渠道分类折叠 / 展开 */
         isGroupCollapsed(type) {
             return this.collapsedGroups[type] === true

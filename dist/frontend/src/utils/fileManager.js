@@ -40,6 +40,8 @@ class FileManager {
             ...fileList,
             files: [...(fileList.files || [])],
             directories: [...(fileList.directories || [])],
+            // v2.5.0：每个直接子目录的统计（{ folders, files }）—— 文件夹卡片展示用
+            directoryStats: { ...(fileList.directoryStats || {}) },
         };
     }
 

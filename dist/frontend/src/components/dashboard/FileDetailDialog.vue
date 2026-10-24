@@ -178,6 +178,10 @@
             <el-descriptions-item :label="$t('fileDetail.backupChannels')">
                 <div v-if="backupChannelList.length > 0" style="display: flex; flex-wrap: wrap; gap: 6px;">
                     <div v-for="(b, idx) in backupChannelList" :key="idx" class="channel-row">
+                        <!--
+                            v2.5.0：备份渠道格式与「存储渠道」统一 ——
+                            渠道类型保持原有带背景块的 tag（warning 底色不变），渠道名改为纯文本。
+                        -->
                         <a
                             class="channel-link"
                             :href="channelFileUrl(b.id, b.url)"
@@ -185,7 +189,8 @@
                             rel="noopener noreferrer"
                             :title="channelFileUrl(b.id, b.url) || ''"
                         >
-                            <el-tag size="small" type="warning">{{ b.label }} / {{ b.name }}</el-tag>
+                            <el-tag size="small" type="warning">{{ b.label }}</el-tag>
+                            <span class="channel-name">{{ b.name || '-' }}</span>
                         </a>
                         <el-button
                             v-if="channelFileUrl(b.id, b.url)"

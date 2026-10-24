@@ -6,6 +6,8 @@ import { OptionalAuthGuard, currentSession } from '../auth/auth.guard';
 import { UploadService } from './upload.service';
 import { SettingsService } from '../settings/settings.service';
 import { NO_BACKUP_VALUES } from '../storage/storage-channel.service';
+import { resolveVideoFromHtml } from './video-resolve';
+import { appLog } from '../common/app-log';
 
 /**
  * 分块上传的内存暂存（单实例 SQLite 部署形态下够用；大并发场景可换落盘）。
@@ -292,6 +294,9 @@ export class UploadController {
    * 契约：**返回文件字节流（blob）+ Content-Disposition 文件名**，而不是上传结果。
    * 前端拿到 blob 后会自己构造 File 再走 /upload 正常上传（因此这里只做安全拉取）。
    *
+   * v2.5.0（v20261023-2）：支持「视频播放页」链接 —— 拉到的内容是网页时，
+   * 自动解析出真实视频地址（B 站 API / og:video / <video> 标签等）再回传视频字节流。
+   *
    * ⚠️ 必须显式 @HttpCode(200)：NestJS 对 POST 默认返回 201，而前端判定的是
    * `response.status == 200`，此前「转存模式」报「粘贴板中的URL地址请求失败」正是这个原因。
    */
@@ -311,11 +316,52 @@ export class UploadController {
     if (isBlockedFetchHost(parsed.hostname)) {
       return res.status(400).json({ success: false, message: '禁止访问该地址（云元数据/组播地址）' });
     }
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 15000);
+
+    const UA =
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+    const firstCtrl = new AbortController();
+    const firstTimer = setTimeout(() => firstCtrl.abort(), 15000);
     try {
-      const resp = await fetch(url, { signal: ctrl.signal, redirect: 'follow' });
+      // 第一次抓取：判断内容类型 —— 网页（HTML）→ 视频解析；其余 → 原样转存
+      let resp = await fetch(url, {
+        signal: firstCtrl.signal,
+        redirect: 'follow',
+        headers: { 'user-agent': UA },
+      });
       if (!resp.ok) return res.status(400).json({ success: false, message: `拉取失败 HTTP ${resp.status}` });
+      const firstMime = resp.headers.get('content-type')?.split(';')[0]?.trim() || '';
+
+      /*
+       * v2.5.0（v20261023-2）：网页 → 播放页解析。
+       * B 站 API / og:video / <video> 标签等；解析失败给出明确错误。
+       * 非 HTML（图片 / 直链视频 / 音频等）保持原有行为，完全不受影响。
+       */
+      let referer: string | undefined;
+      let suggestedName = '';
+      if (/^text\/html/i.test(firstMime)) {
+        const html = await resp.text();
+        const r = await resolveVideoFromHtml(url, html);
+        if (!r.ok) {
+          appLog.warn('video', `视频解析失败：${url.slice(0, 120)}`, r.message);
+          return res.status(400).json({ success: false, message: r.message });
+        }
+        referer = r.video.referer;
+        suggestedName = r.video.name || '';
+        // 视频文件通常较大，下载放宽到 2 分钟
+        const secondCtrl = new AbortController();
+        const secondTimer = setTimeout(() => secondCtrl.abort(), 120000);
+        try {
+          resp = await fetch(r.video.directUrl, {
+            signal: secondCtrl.signal,
+            redirect: 'follow',
+            headers: { 'user-agent': UA, ...(referer ? { referer } : {}) },
+          });
+        } finally {
+          clearTimeout(secondTimer);
+        }
+        if (!resp.ok) return res.status(400).json({ success: false, message: `视频拉取失败 HTTP ${resp.status}` });
+      }
+
       const buf = Buffer.from(await resp.arrayBuffer());
       // 兜底上限放宽到 512MB：真正的「单文件大小上限」由后台设置（默认 150MB）决定，
       // 这里只防极端大文件把内存撑爆。
@@ -323,12 +369,14 @@ export class UploadController {
         return res.status(400).json({ success: false, message: '文件超过 512MB 上限' });
       }
       // 文件名：优先 URL 末段（解码），其次按 MIME 猜扩展名
-      let name = decodeURIComponent(parsed.pathname.split('/').pop() || '');
+      let name = decodeURIComponent(safeTargetUrl(resp.url || url).pathname.split('/').pop() || '');
       const mime = resp.headers.get('content-type')?.split(';')[0]?.trim() || 'application/octet-stream';
       if (!name || !name.includes('.')) {
         const ext = UploadController.MIME_EXT[mime] || 'bin';
         name = `${name || 'PastedFile' + Date.now()}.${ext}`;
       }
+      // 视频解析场景：页面标题给出的文件名优先（比 CDN 随机串可读）
+      if (suggestedName) name = suggestedName;
       res.setHeader('Content-Type', mime);
       res.setHeader('Content-Length', String(buf.length));
       // 同时给出 filename 与 RFC5987 的 filename*，前端两种正则都能解析
@@ -340,7 +388,16 @@ export class UploadController {
     } catch (err) {
       return res.status(400).json({ success: false, message: `拉取失败: ${(err as Error).message}` });
     } finally {
-      clearTimeout(timer);
+      clearTimeout(firstTimer);
     }
+  }
+}
+
+/** 安全解析（parse 失败时兜底返回空路径对象，避免抛异常中断响应） */
+function safeTargetUrl(u: string): URL {
+  try {
+    return new URL(u);
+  } catch {
+    return new URL('http://invalid.local/');
   }
 }

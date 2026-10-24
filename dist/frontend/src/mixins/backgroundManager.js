@@ -281,14 +281,11 @@ export default {
     },
 
     /**
-     * 设置自定义壁纸轮播
+     * 设置自定义壁纸（v2.5.0：多张改为「每次刷新随机加载一张」，不再定时轮播）
      */
     setupCustomWallpaperCarousel(bg1, bg2, wallpapers, containerSelector) {
-      this.loadBackgroundImage(bg1, wallpapers[this.customWallPaperIndex], containerSelector, true)
-      
-      this.backgroundInterval = setInterval(() => {
-        this.switchCustomWallpaper(bg1, bg2, wallpapers, containerSelector)
-      }, this.bkInterval)
+      const pick = wallpapers[Math.floor(Math.random() * wallpapers.length)]
+      this.loadBackgroundImage(bg1, pick, containerSelector)
     },
 
     /**
@@ -436,49 +433,9 @@ export default {
     },
 
     /**
-     * 切换自定义壁纸
+     * 【v2.5.0 移除】switchCustomWallpaper（自定义壁纸定时轮播）——
+     * 多张背景图改为刷新时随机加载一张，轮播逻辑不再使用。
      */
-    switchCustomWallpaper(bg1, bg2, wallpapers, containerSelector) {
-      const isBg1Current = bg1.style.opacity != 0
-      const curBg = isBg1Current ? bg1 : bg2
-      const nextBg = isBg1Current ? bg2 : bg1
-      
-      this.customWallPaperIndex = (this.customWallPaperIndex + 1) % wallpapers.length
-      const nextUrl = wallpapers[this.customWallPaperIndex]
-      const loadGeneration = this.backgroundLoadGeneration
-      if (!nextUrl) return
-
-      const preload = new Image()
-      preload.onload = () => {
-        if (!this.isBackgroundLoadCurrent(loadGeneration)) return
-
-        // 新图成功加载后再调整层级，失败时继续显示当前壁纸
-        curBg.style.zIndex = -2
-        nextBg.style.zIndex = -1
-        this.prepareBackgroundMotion(nextBg, true)
-        nextBg.src = nextUrl
-        
-        setTimeout(() => {
-          if (!this.isBackgroundLoadCurrent(loadGeneration)) return
-
-          nextBg.style.opacity = this.bkOpacity
-          nextBg.style.transform = 'scale(1.045)'
-          this.setWallpaperActive(true, document.querySelector(containerSelector))
-          
-          setTimeout(() => { 
-            if (!this.isBackgroundLoadCurrent(loadGeneration)) return
-            curBg.style.opacity = 0 
-            this.prepareBackgroundMotion(curBg, true)
-          }, 1200)
-        }, 50)
-      }
-      preload.onerror = () => {
-        if (this.isBackgroundLoadCurrent(loadGeneration)) {
-          console.warn('下一张自定义壁纸加载失败，继续显示当前壁纸')
-        }
-      }
-      preload.src = nextUrl
-    },
 
     /**
      * 清除背景轮播定时器

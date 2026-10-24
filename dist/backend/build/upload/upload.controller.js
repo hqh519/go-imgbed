@@ -21,6 +21,8 @@ const auth_guard_1 = require("../auth/auth.guard");
 const upload_service_1 = require("./upload.service");
 const settings_service_1 = require("../settings/settings.service");
 const storage_channel_service_1 = require("../storage/storage-channel.service");
+const video_resolve_1 = require("./video-resolve");
+const app_log_1 = require("../common/app-log");
 const chunkStore = new Map();
 function isBlockedFetchHost(hostname) {
     const h = hostname.toLowerCase();
@@ -171,22 +173,56 @@ let UploadController = class UploadController {
         if (isBlockedFetchHost(parsed.hostname)) {
             return res.status(400).json({ success: false, message: '禁止访问该地址（云元数据/组播地址）' });
         }
-        const ctrl = new AbortController();
-        const timer = setTimeout(() => ctrl.abort(), 15000);
+        const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+        const firstCtrl = new AbortController();
+        const firstTimer = setTimeout(() => firstCtrl.abort(), 15000);
         try {
-            const resp = await fetch(url, { signal: ctrl.signal, redirect: 'follow' });
+            let resp = await fetch(url, {
+                signal: firstCtrl.signal,
+                redirect: 'follow',
+                headers: { 'user-agent': UA },
+            });
             if (!resp.ok)
                 return res.status(400).json({ success: false, message: `拉取失败 HTTP ${resp.status}` });
+            const firstMime = resp.headers.get('content-type')?.split(';')[0]?.trim() || '';
+            let referer;
+            let suggestedName = '';
+            if (/^text\/html/i.test(firstMime)) {
+                const html = await resp.text();
+                const r = await (0, video_resolve_1.resolveVideoFromHtml)(url, html);
+                if (!r.ok) {
+                    app_log_1.appLog.warn('video', `视频解析失败：${url.slice(0, 120)}`, r.message);
+                    return res.status(400).json({ success: false, message: r.message });
+                }
+                referer = r.video.referer;
+                suggestedName = r.video.name || '';
+                const secondCtrl = new AbortController();
+                const secondTimer = setTimeout(() => secondCtrl.abort(), 120000);
+                try {
+                    resp = await fetch(r.video.directUrl, {
+                        signal: secondCtrl.signal,
+                        redirect: 'follow',
+                        headers: { 'user-agent': UA, ...(referer ? { referer } : {}) },
+                    });
+                }
+                finally {
+                    clearTimeout(secondTimer);
+                }
+                if (!resp.ok)
+                    return res.status(400).json({ success: false, message: `视频拉取失败 HTTP ${resp.status}` });
+            }
             const buf = Buffer.from(await resp.arrayBuffer());
             if (buf.length > 512 * 1024 * 1024) {
                 return res.status(400).json({ success: false, message: '文件超过 512MB 上限' });
             }
-            let name = decodeURIComponent(parsed.pathname.split('/').pop() || '');
+            let name = decodeURIComponent(safeTargetUrl(resp.url || url).pathname.split('/').pop() || '');
             const mime = resp.headers.get('content-type')?.split(';')[0]?.trim() || 'application/octet-stream';
             if (!name || !name.includes('.')) {
                 const ext = UploadController_1.MIME_EXT[mime] || 'bin';
                 name = `${name || 'PastedFile' + Date.now()}.${ext}`;
             }
+            if (suggestedName)
+                name = suggestedName;
             res.setHeader('Content-Type', mime);
             res.setHeader('Content-Length', String(buf.length));
             res.setHeader('Content-Disposition', `attachment; filename="${name.replace(/[^\x20-\x7e]/g, '_')}"; filename*=UTF-8''${encodeURIComponent(name)}`);
@@ -196,7 +232,7 @@ let UploadController = class UploadController {
             return res.status(400).json({ success: false, message: `拉取失败: ${err.message}` });
         }
         finally {
-            clearTimeout(timer);
+            clearTimeout(firstTimer);
         }
     }
 };
@@ -228,3 +264,11 @@ exports.UploadController = UploadController = UploadController_1 = __decorate([
     __metadata("design:paramtypes", [upload_service_1.UploadService,
         settings_service_1.SettingsService])
 ], UploadController);
+function safeTargetUrl(u) {
+    try {
+        return new URL(u);
+    }
+    catch {
+        return new URL('http://invalid.local/');
+    }
+}

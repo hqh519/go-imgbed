@@ -1,15 +1,18 @@
 <template>
-    <!-- v2.4.0：未登录状态不显示左上角 logo（例如登录页 / 匿名上传页） -->
+    <!--
+        v2.5.0：仅登录页（BaseLogin 内部使用处）不渲染 —— 由父组件控制显隐；
+        本组件自身恒显示（v2.4.0 的 isLoggedIn 判断会让会话未就绪时整个 LOGO 消失，
+        移动端首屏尤其明显，故移除）。
+    -->
     <a
-        v-if="isLoggedIn"
         :href="logoHref"
         :target="target"
         class="logo-link"
         rel="noopener noreferrer"
     >
-    <img 
+    <img
         :class="logoClasses"
-        :alt="alt" 
+        :alt="alt"
         :src="logoUrl"
     />
   </a>
@@ -68,21 +71,17 @@ export default {
   },
   computed: {
     ...mapGetters(['userConfig']),
-    /** 是否已登录（会话里有账户才算；sessionCheck 探测完成前保持隐藏，避免闪现） */
-    isLoggedIn() {
-      return !!this.$store?.state?.sessionUser
-    },
     logoUrl() {
       /*
-       * 优先级（v202610221824）：
-       *   customSrc（组件显式传入）> 当前登录用户头像 > 网页设置里的自定义 logo > 内置 logo。
-       * 头像优先是需求要求：用户设置过头像后，左上角 logo 直接变成自己的头像，
-       * 一眼能看出当前登录的是谁；没设置头像的账户完全不受影响。
+       * 优先级（v2.5.0 定稿，v20261023-2 需求）：
+       *   当前登录用户头像 > 网页设置里的自定义 logo > 组件显式传入 customSrc > 内置 logo。
+       * 头像最高优先：用户设置过头像后，左上角 logo 直接变成自己的头像；
+       * 没设置头像时回落图床 Logo 设置，再回落内置默认图。
        */
       const avatar = this.$store?.state?.sessionAvatar || ''
-      return this.customSrc ||
-             avatar ||
-             this.userConfig?.logoUrl || 
+      return avatar ||
+             this.userConfig?.logoUrl ||
+             this.customSrc ||
              defaultLogo
     },
     logoHref() {

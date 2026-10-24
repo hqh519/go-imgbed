@@ -80,16 +80,12 @@ export const PAGE_CONFIG_DEFAULTS: any = {
      * 需求取消该功能 —— 主题一律由页面右上角的切换按钮控制。
      * 老库存量配置里即使还有 autoDarkMode=true，前端也不再读取它。
      */
-    {
-      "id": "bkInterval",
-      "label": "背景切换间隔",
-      "label_en": "Background Interval",
-      "placeholder": "3000",
-      "tooltip": "单位：毫秒 ms",
-      "tooltip_en": "Unit: milliseconds (ms)",
-      "category": "全局设置",
-      "category_en": "Global Settings"
-    },
+    /*
+     * 【v2.5.0 移除】bkInterval（背景切换间隔）：
+     * 多张自定义背景图改为「每次刷新随机加载一张」（不再定时轮播），
+     * 该配置项失去意义；Bing 壁纸轮播改用内置默认间隔。
+     * 老库存量里残留的 bkInterval 值前端不再读取。
+     */
     {
       "id": "bkOpacity",
       "label": "背景图透明度",

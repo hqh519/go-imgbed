@@ -1,8 +1,8 @@
 <template>
-<div class="sidebar-container" ref="sidebar" :class="{ 'is-collapsed': isCollapse, 'is-scroll-hidden': scrollHidden }" :style="sidebarStyle">
+<div class="sidebar-container" ref="sidebar" :class="{ 'is-collapsed': isCollapse, 'is-mobile-open': mobileOpen }" :style="sidebarStyle">
     <div class="menu-list">
-        <div 
-            v-for="item in menuItems" 
+        <div
+            v-for="item in menuItems"
             :key="item.index"
             class="menu-item"
             :class="{ 'is-active': activeIndex === item.index }"
@@ -19,6 +19,23 @@
         <font-awesome-icon :icon="isCollapse ? 'angle-double-right' : 'angle-double-left'"></font-awesome-icon>
     </div>
 </div>
+
+<!--
+    v2.5.0（v20261023-2）：移动端边缘小按钮 ——
+    导航条默认整体藏在屏幕外，屏幕左缘只露 15px 宽的小按钮（垂直居中）；
+    点击小按钮 → 导航条滑入；点击屏幕任意位置 / 滚动页面 → 导航条收回。
+    小按钮自身：默认显示；页面向上滚动时隐藏、向下滚动时显示（页面顶部恒显示）。
+-->
+<button
+    v-if="isMobileViewport"
+    type="button"
+    class="mobile-edge-handle"
+    :class="{ 'is-hidden': handleHidden || mobileOpen }"
+    :aria-label="$t('sysConfigTabs.systemStatus')"
+    @click.stop="openMobileNav"
+>
+    <font-awesome-icon icon="angle-double-right" class="edge-handle-icon"></font-awesome-icon>
+</button>
 </template>
 
 <script>
@@ -37,7 +54,11 @@ props: {
 data() {
     return {
         expandedWidth: null,
-        scrollHidden: false, // 移动端：页面下滑时隐藏悬浮菜单，上滑时显示
+        isMobileViewport: false,
+        // v2.5.0：移动端导航条展开态（默认收起到屏幕外）
+        mobileOpen: false,
+        // v2.5.0：移动端边缘小按钮隐藏态（上滚隐藏、下滚显示，页面顶部恒显示）
+        handleHidden: false,
         lastScrollY: 0,
         menuItems: [
             { index: 'status', icon: 'chart-bar', titleKey: 'sysConfigTabs.systemStatus' },
@@ -63,6 +84,14 @@ computed: {
 watch: {
     '$i18n.locale'() {
         this.$nextTick(() => this.measureWidth());
+    },
+    mobileOpen(val) {
+        // 展开期间绑定「点击任意处关闭」；收起时解绑
+        if (val) {
+            document.addEventListener('pointerdown', this.onDocPointerDown, true);
+        } else {
+            document.removeEventListener('pointerdown', this.onDocPointerDown, true);
+        }
     }
 },
 methods: {
@@ -74,21 +103,41 @@ methods: {
         // 769–1023（平板竖屏/小平板）：内容区过窄，同样默认折叠以让出约 100px
         const isNarrow = window.innerWidth <= 1023;
         this.$emit('update:isCollapse', isNarrow);
+        this.isMobileViewport = window.innerWidth <= 768;
+        if (!this.isMobileViewport) {
+            this.mobileOpen = false;
+            this.handleHidden = false;
+        }
+    },
+    /** v2.5.0：移动端点边缘小按钮 → 导航条滑入 */
+    openMobileNav() {
+        this.mobileOpen = true;
+    },
+    /** v2.5.0：导航条展开期间，点击屏幕任意位置（导航条之外）→ 收回 */
+    onDocPointerDown(e) {
+        const sidebar = this.$refs.sidebar;
+        if (sidebar && (sidebar === e.target || sidebar.contains(e.target))) return;
+        this.mobileOpen = false;
     },
     handleSelect(index) {
         this.$emit('update:activeIndex', index);
+        // 移动端：选中后立即收回导航条
+        if (this.isMobileViewport) this.mobileOpen = false;
     },
     handlePageScroll() {
-        // 仅移动端启用滚动显隐：纯按方向 —— 向下滚隐藏、向上滚显示（不再「到底部强制显示」）
         if (window.innerWidth > 768) {
-            this.scrollHidden = false;
+            this.handleHidden = false;
             this.lastScrollY = window.scrollY;
             return;
         }
         const y = window.scrollY;
         const delta = y - this.lastScrollY;
-        if (Math.abs(delta) < 2) return;
-        this.scrollHidden = !(y <= 40 || delta < 0);
+        // 滚动页面 → 导航条收回
+        if (this.mobileOpen && Math.abs(delta) >= 2) this.mobileOpen = false;
+        // 边缘小按钮：页面向下滚动 → 显示；向上滚动 → 隐藏；页面顶部恒显示
+        if (Math.abs(delta) >= 2 || y <= 40) {
+            this.handleHidden = !(y <= 40 || delta > 0);
+        }
         this.lastScrollY = y;
     },
     measureWidth() {
@@ -125,6 +174,7 @@ mounted() {
 beforeUnmount() {
     window.removeEventListener('resize', this.checkMobile);
     window.removeEventListener('scroll', this.handlePageScroll);
+    document.removeEventListener('pointerdown', this.onDocPointerDown, true);
 }
 };
 </script>
@@ -150,12 +200,7 @@ beforeUnmount() {
     overflow: hidden;
 }
 
-/* 移动端滚动显隐：页面下滑时整体滑出屏幕左侧 */
-.sidebar-container.is-scroll-hidden {
-    transform: translateY(-50%) translateX(-130%);
-    pointer-events: none;
-}
-
+/* 移动端滚动显隐（v2.5.0 起由 .is-mobile-open / 边缘小按钮机制取代） */
 .sidebar-container.is-collapsed {
     width: 56px;
 }
@@ -265,36 +310,86 @@ html.dark .toggle-button:hover {
     background: color-mix(in srgb, var(--el-text-color-primary) 6%, transparent);
 }
 
-/* 移动端：整体缩小并悬浮在内容之上（内容区不再为它让出宽度） */
+/* 移动端：默认整体滑出屏幕外（.is-mobile-open 时滑入），由边缘小按钮唤起 */
 @media (max-width: 768px) {
     .sidebar-container {
         left: 2px;
         max-width: 150px;
         border-radius: 12px;
-    }
-    
-    .sidebar-container.is-collapsed {
-        width: 42px;
+        transform: translateY(-50%) translateX(calc(-100% - 24px));
+        pointer-events: none;
     }
 
-    .menu-list {
-        padding: 5px;
+    .sidebar-container.is-mobile-open {
+        transform: translateY(-50%) translateX(0);
+        pointer-events: auto;
     }
 
-    .menu-item {
-        height: 36px;
-        padding: 0 6px 0 0;
-        border-radius: 8px;
+    /* 展开时强制显示文字（忽略折叠态），并用自然宽度 */
+    .sidebar-container.is-mobile-open {
+        width: auto !important;
+        max-width: 160px;
     }
-    
-    .menu-icon {
+
+    .sidebar-container.is-mobile-open .menu-text {
+        opacity: 1;
+        max-width: 120px;
+    }
+
+    .sidebar-container.is-mobile-open .menu-item {
+        justify-content: flex-start;
+        padding: 0 10px 0 0;
+    }
+
+    .sidebar-container.is-mobile-open .menu-icon {
         width: 30px;
         min-width: 30px;
     }
 
+    /* 折叠按钮在移动端无意义（导航条由小按钮唤起/自动收回） */
     .toggle-button {
-        padding: 8px;
-        font-size: 13px;
+        display: none;
     }
+}
+
+/* ── 移动端边缘小按钮：贴屏幕左缘，露 15px 宽，垂直居中 ───────────── */
+.mobile-edge-handle {
+    display: none;
+}
+
+@media (max-width: 768px) {
+    .mobile-edge-handle {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        position: fixed;
+        top: 50%;
+        left: 0;
+        width: 15px;
+        height: 64px;
+        padding: 0;
+        transform: translateY(-50%);
+        z-index: 2002;
+        border: 1px solid var(--glass-border);
+        border-left: none;
+        border-radius: 0 10px 10px 0;
+        background: var(--glass-bg);
+        backdrop-filter: blur(12px) saturate(1.4);
+        -webkit-backdrop-filter: blur(12px) saturate(1.4);
+        color: var(--admin-container-color, #333);
+        cursor: pointer;
+        transition: transform 0.25s ease, opacity 0.25s ease;
     }
+
+    .mobile-edge-handle .edge-handle-icon {
+        font-size: 10px;
+    }
+
+    /* 上滚隐藏（或导航条展开期间） */
+    .mobile-edge-handle.is-hidden {
+        transform: translateY(-50%) translateX(-110%);
+        opacity: 0;
+        pointer-events: none;
+    }
+}
 </style>

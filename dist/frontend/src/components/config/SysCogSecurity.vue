@@ -1390,20 +1390,10 @@ methods: {
         // 所有表单的Promise数组
         let validationPromises = [];
 
-        // 验证用户密码表单
-        validationPromises.push(new Promise((resolve) => {
-            this.$refs.userPassForm.validate((valid) => {
-                resolve(valid);
-            });
-        }));
-
-        // 验证管理密码表单
-        validationPromises.push(new Promise((resolve) => {
-            this.$refs.adminPassForm.validate((valid) => {
-                resolve(valid);
-            });
-        }));
-
+        // v2.5.0 修复：认证字段（上传密码 / 管理员账号密码）已下线，
+        // userPassForm / adminPassForm 两个表单随之移除 —— 这里再 validate 不存在的
+        // ref 会抛 TypeError 被 catch 捕获，表现为「保存失败，请重试」假报错。
+        // 现在只校验仍然存在的「会话安全策略」表单。
         // 验证会话安全策略表单
         validationPromises.push(new Promise((resolve) => {
             this.$refs.accessForm.validate((valid) => {

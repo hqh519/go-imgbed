@@ -1,11 +1,18 @@
 <template>
-    <div 
+    <!--
+        v2.5.0（v20261023-2）：列表项改为「历史记录列表」样式（圆角卡片行，无表头）。
+        列依次：选择按钮 / 缩略图 / 文件名（上行）+ 存储·备份渠道简称（下行）/
+        文件大小（上）+ 上传用户（中）+ 上传时间（下）/ 复制·打开·移动。
+        行为不变：点击封面 / 文件名 = 打开文件详情（文件夹进入）；批量选择仍走页面下方操作栏。
+    -->
+    <div
         class="list-item"
+        :class="{ 'is-selected': localSelected }"
         @touchstart="$emit('touchstart', $event)"
         @touchend="$emit('touchend', $event)"
         @touchmove="$emit('touchmove', $event)"
     >
-        <!-- 复选框 -->
+        <!-- 1. 选择按钮 -->
         <div class="list-col list-col-checkbox">
             <el-checkbox
                 v-model="localSelected"
@@ -13,7 +20,7 @@
                 @change="handleSelectChange"
             />
         </div>
-        <!-- 预览 -->
+        <!-- 2. 缩略图 -->
         <div class="list-col list-col-preview" @click="handlePreviewClick">
             <template v-if="isFolder">
                 <font-awesome-icon icon="folder-open" class="list-folder-icon"/>
@@ -28,55 +35,36 @@
                 <font-awesome-icon icon="file" class="list-file-icon"/>
             </template>
         </div>
-        <!-- 文件名 -->
+        <!-- 3. 文件名（上行）+ 渠道简称（下行） -->
         <div class="list-col list-col-name" @click="handlePreviewClick">
-            <span class="filename-ellipsis" :title="displayName">
-                <span class="filename-start">{{ fileNameStart }}</span>
-                <span class="filename-end">{{ fileNameEnd }}</span>
-            </span>
+            <div class="name-line" :title="displayName">
+                <span class="filename-start">{{ fileNameStart }}</span><span class="filename-end">{{ fileNameEnd }}</span>
+            </div>
+            <div v-if="!isFolder" class="channel-line">
+                <span class="channel-short" :title="storageChannelText">{{ storageChannelShort || '-' }}</span>
+                <template v-if="backupTags.length">
+                    <span
+                        v-for="(bk, i) in backupTags"
+                        :key="'bk-' + i"
+                        class="channel-short is-backup"
+                        :title="bk.full"
+                    >{{ bk.short }}</span>
+                </template>
+            </div>
         </div>
-        <!-- 访问次数（紧随文件名之后） -->
-        <div class="list-col list-col-views">
-            <span v-if="!isFolder" class="views-count" :title="String(viewsCount)">{{ viewsCount }}</span>
-            <span v-else class="list-empty">-</span>
-        </div>
-        <!-- 标签 / 上传地址 / 删除按钮：按需求不在列表视图展示（卡片视图与详情页仍保留） -->
-        <!-- 存储渠道：只显示「渠道简称图标」（品牌色徽标，如 COS / ALI / EI），完整值放 title -->
-        <div class="list-col list-col-channel">
-            <span v-if="!isFolder && storageChannelType" class="channel-badge-wrap" :title="storageChannelText">
-                <ChannelIcon :type="storageChannelType" class="channel-badge-icon"/>
-            </span>
-            <span v-else-if="!isFolder" class="channel-combined" :title="storageChannelText">{{ storageChannelShort || '-' }}</span>
-            <span v-else class="list-empty">-</span>
-        </div>
-        <!-- 备份渠道：同样只显示简称图标（可多个，橙色调区分） -->
-        <div class="list-col list-col-backup">
-            <template v-if="!isFolder && backupTags.length">
-                <span
-                    v-for="(bk, i) in backupTags"
-                    :key="'bk-' + i"
-                    class="channel-badge-wrap is-backup"
-                    :title="bk.full"
-                >
-                    <ChannelIcon :type="bk.type" class="channel-badge-icon"/>
+        <!-- 4. 大小（上）/ 上传用户（中）/ 上传时间（下） -->
+        <div class="list-col list-col-meta">
+            <template v-if="!isFolder">
+                <span class="meta-size">{{ fileSizeDisplay }}</span>
+                <span v-if="uploadUser" class="meta-user" :title="uploadUser">
+                    <font-awesome-icon icon="user" />
+                    {{ uploadUser }}
                 </span>
+                <span class="meta-time">{{ uploadDate }}</span>
             </template>
             <span v-else class="list-empty">-</span>
         </div>
-        <!-- 大小 -->
-        <div class="list-col list-col-size">
-            {{ isFolder ? '-' : fileSizeDisplay }}
-        </div>
-        <!-- 上传用户（紧随大小之后） -->
-        <div class="list-col list-col-user">
-            <span v-if="!isFolder && uploadUser" class="upload-user-text" :title="uploadUser">{{ uploadUser }}</span>
-            <span v-else class="list-empty">-</span>
-        </div>
-        <!-- 上传时间 -->
-        <div class="list-col list-col-date">
-            {{ uploadDate }}
-        </div>
-        <!-- 操作 -->
+        <!-- 5. 操作：复制 / 打开 / 移动 -->
         <div class="list-col list-col-actions">
             <template v-if="!isFolder">
                 <el-tooltip :content="$t('dashboard.copyLink')" placement="top" :show-after="1000">
@@ -84,9 +72,9 @@
                         <font-awesome-icon icon="copy"/>
                     </button>
                 </el-tooltip>
-                <el-tooltip :content="$t('dashboard.downloadFile')" placement="top" :show-after="1000">
-                    <button class="list-action-btn" @click.stop="$emit('download')">
-                        <font-awesome-icon icon="download"/>
+                <el-tooltip :content="$t('dashboard.openLink')" placement="top" :show-after="1000">
+                    <button class="list-action-btn" @click.stop="$emit('openLink')">
+                        <font-awesome-icon icon="external-link-alt"/>
                     </button>
                 </el-tooltip>
                 <el-tooltip :content="$t('dashboard.moveFile')" placement="top" :show-after="1000">
@@ -112,21 +100,17 @@
 </template>
 
 <script>
-import ChannelIcon from '@/components/icons/ChannelIcon.vue';
-
 export default {
     name: 'FileListItem',
-    components: { ChannelIcon },
     props: {
         item: { type: Object, required: true },
         selected: { type: Boolean, default: false },
         fileLink: { type: String, default: '' }
     },
-    emits: ['update:selected', 'enter', 'detail', 'copy', 'folderCopy', 'move', 'delete', 'download', 'touchstart', 'touchend', 'touchmove'],
+    emits: ['update:selected', 'enter', 'detail', 'copy', 'folderCopy', 'move', 'delete', 'download', 'openLink', 'touchstart', 'touchend', 'touchmove'],
     data() {
         return {
-            localSelected: this.selected,
-            tagColors: ['#f472b6', '#a78bfa', '#60a5fa', '#34d399']
+            localSelected: this.selected
         }
     },
     computed: {
@@ -156,7 +140,7 @@ export default {
         isImage() {
             if (this.fileTypeName.includes('image')) return true;
             const name = this.realName;
-            return name.endsWith('.jpg') || name.endsWith('.jpeg') || name.endsWith('.png') || 
+            return name.endsWith('.jpg') || name.endsWith('.jpeg') || name.endsWith('.png') ||
                    name.endsWith('.gif') || name.endsWith('.webp') || name.endsWith('.svg') || name.endsWith('.bmp');
         },
         displayName() {
@@ -166,6 +150,10 @@ export default {
             }
             return this.item.metadata?.FileName || this.getFileName(this.item.name);
         },
+        /**
+         * 文件名中间省略：CSS 双 span（start 可收缩省略，end 固定），
+         * 保证「头部 + 尾部(含扩展名)」始终可见，中间段按宽度自动省略。
+         */
         fileNameStart() {
             const name = this.displayName;
             if (name.length <= 20) return name;
@@ -176,14 +164,14 @@ export default {
             if (name.length <= 20) return '';
             return name.slice(-8);
         },
+        /** 上传日期（年-月-日，与历史记录一致） */
         uploadDate() {
-            if (this.item.uploaded) {
-                return new Date(this.item.uploaded).toLocaleDateString();
-            }
-            if (this.item.metadata?.TimeStamp) {
-                return new Date(this.item.metadata.TimeStamp).toLocaleDateString();
-            }
-            return '-';
+            const ts = this.item.uploaded || this.item.metadata?.TimeStamp;
+            if (!ts) return '-';
+            const d = new Date(ts);
+            if (!Number.isFinite(d.getTime())) return '-';
+            const p = (n) => String(n).padStart(2, '0');
+            return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
         },
         /** 被访问次数（外链真实访问累计；管理端预览不计） */
         viewsCount() {
@@ -196,11 +184,7 @@ export default {
             if (type && name) return `${type} / ${name}`;
             return type || name || '';
         },
-        /** 存储渠道的渠道类型（渲染简称图标用；历史数据缺失时退回用简称判断） */
-        storageChannelType() {
-            return this.item.metadata?.ChannelType || this.guessTypeByShort(this.item.metadata?.ChannelShort);
-        },
-        /** 存储渠道简称（无类型时兜底显示文字） */
+        /** 存储渠道简称（COS / ALI / EI …） */
         storageChannelShort() {
             return this.item.metadata?.ChannelShort || '';
         },
@@ -219,14 +203,6 @@ export default {
                     };
                 })
                 .filter((b) => b.type || b.short);
-        },
-        /** 备份渠道纯文本（无类型时兜底） */
-        backupChannelText() {
-            return this.backupTags
-                .filter((b) => !b.type)
-                .map((b) => b.short)
-                .filter(Boolean)
-                .join('，');
         },
         /** 上传用户（账户名；未登录上传为空） */
         uploadUser() {
@@ -269,44 +245,36 @@ export default {
         getFileName(name) {
             const parts = (name || '').split('/');
             return parts[parts.length - 1];
-        },
-        /** 简称 → 渠道类型（仅历史数据没有 metadata.ChannelType 时兜底） */
-        guessTypeByShort(short) {
-            const map = {
-                COS: 'cos', ALI: 'aliyun', MI: 'minio', R2: 'r2', S3: 's3',
-                EI: 'easyimages', LS: 'lsky', WD: 'webdav', IM: 'immich',
-                DIY: 'custom', LCL: 'local', LOCAL: 'local',
-            };
-            return map[String(short || '').toUpperCase()] || '';
-        },
-        getTagColor(index) {
-            return this.tagColors[index % this.tagColors.length];
         }
     }
 }
 </script>
 
 <style scoped>
+/* ── 历史记录风格的圆角卡片行（无表头、纵向留缝）────────────────── */
 .list-item {
     display: grid;
-    /* 复选框 / 预览 / 文件名 / 访问次数 / 存储渠道 / 备份渠道 / 大小 / 上传用户 / 时间 / 操作
-       （标签列、上传地址列已按需求移除；渠道列改为简称图标，宽度收窄，给「上传用户」腾位）
-       —— 表头（AdminDashBoard.vue 的 .list-header）必须与此处完全一致，否则列会错位 */
-    grid-template-columns: 50px 60px minmax(180px, 1fr) 70px 110px 110px 80px 120px 100px 120px;
+    /* 选择 / 缩略图 / 文件名+渠道 / 大小+用户+时间 / 操作 */
+    grid-template-columns: 40px 48px minmax(200px, 1fr) 180px auto;
+    gap: 14px;
+    align-items: center;
+    padding: 10px 14px;
+    background: var(--toolbar-button-bg-color);
+    border-radius: 12px;
+    border: 1px solid var(--glass-border);
+    box-shadow: var(--toolbar-button-shadow);
+    transition: box-shadow 0.2s ease;
     content-visibility: auto;
     contain: layout paint style;
-    contain-intrinsic-size: 65px;
-    padding: 12px 20px;
-    align-items: center;
-    transition: background 0.2s ease;
-    border-bottom: 1px solid var(--el-border-color-lighter);
+    contain-intrinsic-size: 70px;
     min-width: fit-content;
 }
-.list-item:last-child {
-    border-bottom: none;
+.list-item.is-selected {
+    border-color: var(--el-color-primary);
+    box-shadow: 0 0 0 1px var(--el-color-primary);
 }
 .list-item:hover {
-    background: var(--el-fill-color-light);
+    box-shadow: var(--toolbar-button-shadow-hover);
 }
 .list-col {
     display: flex;
@@ -314,9 +282,7 @@ export default {
 }
 .list-col-checkbox {
     justify-content: center;
-    min-width: 40px;
 }
-
 .list-col-checkbox :deep(.el-checkbox) {
     --el-checkbox-input-width: 16px;
     --el-checkbox-input-height: 16px;
@@ -325,20 +291,39 @@ export default {
     justify-content: center;
     cursor: pointer;
 }
+.list-preview-img {
+    width: 48px;
+    height: 48px;
+    object-fit: cover;
+    border-radius: 8px;
+}
+.list-folder-icon {
+    font-size: 28px;
+    color: var(--el-color-primary);
+}
+.list-file-icon {
+    font-size: 24px;
+    color: var(--el-text-color-secondary);
+}
+
+/* 3. 文件名 + 渠道简称（上下两行） */
 .list-col-name {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
     cursor: pointer;
-    overflow: hidden;
-    padding-right: 16px;
     min-width: 0;
+    color: var(--upload-text-color);
 }
 .list-col-name:hover {
     color: var(--primary-color-accent);
 }
-.filename-ellipsis {
+.name-line {
     display: flex;
     max-width: 100%;
     overflow: hidden;
-    align-items: center;
+    font-size: 13px;
+    font-weight: 500;
 }
 .filename-start {
     flex-shrink: 1;
@@ -350,120 +335,57 @@ export default {
     flex-shrink: 0;
     white-space: nowrap;
 }
-.list-col-size, .list-col-date, .list-col-channel, .list-col-backup, .list-col-views, .list-col-user {
-    font-size: 13px;
-    color: var(--el-text-color-secondary);
-}
-/* 渠道简称图标（复用 ChannelIcon 的品牌色徽标）：整列居中，鼠标悬浮看完整渠道名 */
-.list-col-channel, .list-col-backup {
-    gap: 4px;
-}
-.channel-badge-wrap {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 17px;
-    line-height: 1;
-}
-/* 备份渠道图标：略小 + 橙色虚线外圈，与主渠道一眼区分（列名已写明是备份渠道） */
-.channel-badge-wrap.is-backup {
-    font-size: 15px;
-    outline: 1px dashed color-mix(in srgb, var(--el-color-warning) 55%, transparent);
-    outline-offset: 2px;
-    border-radius: 4px;
-}
-.channel-badge-icon {
-    display: inline-flex;
-}
-/* 上传用户：单行省略，避免长账户名把列撑破 */
-.upload-user-text {
-    display: inline-block;
-    max-width: 100%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-.list-col-address {
-    font-size: 13px;
-}
-.address-box, .channel-name-box, .channel-combined {
-    background: var(--el-fill-color-light);
-    border: 1px solid var(--el-border-color-lighter);
-    border-radius: 4px;
-    padding: 4px 8px;
-    font-size: 12px;
-    color: var(--el-text-color-secondary);
-    max-width: 100%;
-    overflow-x: auto;
-    overflow-y: hidden;
-    white-space: nowrap;
-    scrollbar-width: none;
-    -ms-overflow-style: none;
-}
-.address-box { width: 85px; font-family: 'Consolas', 'Monaco', monospace; }
-.channel-name-box { width: 70px; }
-.channel-combined { width: 100%; box-sizing: border-box; text-overflow: ellipsis; }
-.channel-combined.is-backup { color: var(--el-color-warning); border-color: color-mix(in srgb, var(--el-color-warning) 30%, transparent); background: color-mix(in srgb, var(--el-color-warning) 8%, transparent); }
-.address-box::-webkit-scrollbar, .channel-name-box::-webkit-scrollbar, .channel-combined::-webkit-scrollbar { display: none; }
-.list-col-views {
-    justify-content: flex-start;
-    font-variant-numeric: tabular-nums;
-}
-.views-count {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 34px;
-    padding: 2px 7px;
-    border-radius: 8px;
-    font-size: 12px;
-    color: var(--el-text-color-secondary);
-    background: var(--el-fill-color-light);
-    border: 1px solid var(--el-border-color-lighter);
-}
-.list-col-tags {
+.channel-line {
     display: flex;
     align-items: center;
-    gap: 4px;
-    flex-wrap: nowrap;
-    overflow: hidden;
+    gap: 6px;
+    min-width: 0;
 }
-.color-tag {
-    padding: 2px 8px;
-    border-radius: 10px;
+/* 渠道简称徽标（沿用列表视图原来的品牌配色语义：备份渠道橙色调） */
+.channel-short {
+    display: inline-flex;
+    align-items: center;
+    height: 18px;
+    padding: 0 7px;
+    border-radius: 5px;
     font-size: 11px;
-    color: white;
+    font-weight: 500;
+    line-height: 1;
     white-space: nowrap;
-    max-width: 60px;
+    background: color-mix(in srgb, var(--el-color-success) 14%, transparent);
+    color: var(--el-color-success);
+    border: 1px solid color-mix(in srgb, var(--el-color-success) 35%, transparent);
+}
+.channel-short.is-backup {
+    background: color-mix(in srgb, var(--el-color-warning) 12%, transparent);
+    color: var(--el-color-warning);
+    border-color: color-mix(in srgb, var(--el-color-warning) 40%, transparent);
+}
+
+/* 4. 大小 / 用户 / 时间（三行，右对齐同历史记录 list-meta） */
+.list-col-meta {
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 2px;
+    font-size: 12px;
+    opacity: 0.7;
+    color: var(--upload-text-color);
+    min-width: 150px;
+}
+.meta-user {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    max-width: 100%;
     overflow: hidden;
     text-overflow: ellipsis;
-    text-shadow: 0 1px 2px rgba(0,0,0,0.2);
+    white-space: nowrap;
 }
-.color-tag-more {
-    min-width: 30px;
-    text-align: center;
-}
-.list-empty {
-    color: var(--el-text-color-placeholder);
-}
+
+/* 5. 操作按钮 */
 .list-col-actions {
-    display: flex;
     gap: 8px;
     justify-content: flex-end;
-}
-.list-preview-img {
-    width: 40px;
-    height: 40px;
-    object-fit: cover;
-    border-radius: 6px;
-}
-.list-folder-icon {
-    font-size: 28px;
-    color: var(--el-color-primary);
-}
-.list-file-icon {
-    font-size: 24px;
-    color: var(--el-text-color-secondary);
 }
 .list-action-btn {
     width: 32px;
@@ -482,52 +404,46 @@ export default {
     background: var(--primary-color);
     color: white;
 }
-.list-action-danger:hover {
-    background: var(--el-color-danger);
+.list-empty {
+    color: var(--el-text-color-placeholder);
 }
-/* 平板端：列宽收窄，避免整表横向滚动（列数与桌面端保持一致） */
+
+/* 平板端：列宽收窄 */
 @media (min-width: 769px) and (max-width: 1199px) {
     .list-item {
-        grid-template-columns: 40px 52px minmax(150px, 1fr) 56px 92px 92px 72px 96px 92px 104px;
-        padding: 10px 16px;
+        grid-template-columns: 36px 44px minmax(150px, 1fr) 150px auto;
+        gap: 10px;
+        padding: 8px 12px;
+    }
+    .list-col-meta {
+        min-width: 120px;
     }
 }
 
+/* 移动端：仅保留 选择 / 缩略图 / 文件名+渠道 / 操作 */
 @media (max-width: 768px) {
     .list-item {
-        grid-template-columns: 20px 34px 1fr auto;
-        padding: 8px 6px;
-        gap: 6px;
+        grid-template-columns: 22px 38px 1fr auto;
+        gap: 8px;
+        padding: 8px 8px;
         font-size: 12px;
     }
-    .list-col-size, .list-col-date, .list-col-tags, .list-col-views, .list-col-channel, .list-col-backup, .list-col-address, .list-col-user {
+    .list-col-meta {
         display: none;
-    }    .list-col-name {
-        padding-right: 8px;
-        line-height: 1.25;
     }
     .list-preview-img {
-        width: 34px;
-        height: 34px;
-        border-radius: 5px;
+        width: 38px;
+        height: 38px;
+        border-radius: 6px;
     }
-    .list-folder-icon {
-        font-size: 24px;
-    }
-    .list-file-icon {
-        font-size: 21px;
-    }
+    .list-folder-icon { font-size: 24px; }
+    .list-file-icon { font-size: 21px; }
     .list-col-actions { gap: 3px; }
     .list-action-btn {
         width: 26px;
         height: 26px;
         border-radius: 7px;
         font-size: 12px;
-    }
-    .list-col-checkbox { width: 18px; min-width: 18px; }
-    .list-col-checkbox :deep(.el-checkbox) {
-        --el-checkbox-input-width: 14px;
-        --el-checkbox-input-height: 14px;
     }
 }
 </style>

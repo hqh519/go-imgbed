@@ -1,5 +1,5 @@
 <template>
-    <el-dialog :title="$t('uploadSettings.title')" v-model="visible" :width="dialogWidth" :show-close="false" class="settings-dialog settings-dialog-scope upload-settings-dialog">
+    <el-dialog :title="$t('uploadSettings.title')" v-model="visible" :width="dialogWidth" class="settings-dialog settings-dialog-scope upload-settings-dialog">
         <!-- 上传渠道 -->
         <div class="dialog-section">
             <div class="section-header">
@@ -190,16 +190,9 @@
         </div>
 
         <!--
-            v2.3.0：所有设置项都通过 v-model 实时回写父组件（父组件 watch 里立刻持久化），
-            所以这里不再提供「保存」按钮 —— 关掉弹窗即已生效。只留一个「完成」关闭。
+            v2.5.0：移除底部「所有设置修改后立即生效，无需保存」提示与「完成」按钮
+            —— 自动保存早已生效，右上角关闭按钮（show-close 已恢复）即可关窗。
         -->
-        <div class="dialog-action">
-            <span class="autosave-hint">
-                <font-awesome-icon icon="check-circle" />
-                {{ $t('uploadSettings.autoSaveHint') }}
-            </span>
-            <el-button type="primary" @click="visible = false" class="confirm-btn">{{ $t('uploadSettings.done') }}</el-button>
-        </div>
     </el-dialog>
 </template>
 
@@ -400,33 +393,5 @@ export default {
     color: var(--el-text-color-secondary);
 }
 
-/* v2.3.0：设置项全部即时生效，底部提示 + 单个「完成」按钮 */
-.autosave-hint {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    margin-right: auto;
-    font-size: 12px;
-    color: var(--el-text-color-secondary);
-}
-
-.autosave-hint svg {
-    color: var(--el-color-success);
-}
-
-@media (max-width: 768px) {
-    .slider-wrapper {
-        gap: 8px;
-    }
-
-    .autosave-hint {
-        margin-right: 0;
-        margin-bottom: 8px;
-    }
-
-    .dialog-action {
-        flex-wrap: wrap;
-        justify-content: center;
-    }
-}
+/* v2.5.0：底部提示条与「完成」按钮已移除（自动保存），相关样式一并清理 */
 </style>

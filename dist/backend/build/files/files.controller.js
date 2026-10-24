@@ -773,6 +773,18 @@ let ManageController = class ManageController {
             }
             directories = Array.from(set).sort();
         }
+        const directoryStats = {};
+        if (!recursive) {
+            for (const d of directories) {
+                const prefix = `${d}/`;
+                let sub = 0;
+                for (const f of allFolders) {
+                    if (f.startsWith(prefix) && !f.slice(prefix.length).includes('/'))
+                        sub += 1;
+                }
+                directoryStats[d] = { folders: sub, files: files.filter((r) => (r.folder || '') === d).length };
+            }
+        }
         const totalCount = files.length;
         if (sumOnly)
             return { sum: totalCount, indexLastUpdated: Date.now() };
@@ -781,6 +793,7 @@ let ManageController = class ManageController {
         return {
             files: paged.map((r) => (0, file_view_1.serializeFile)(r, r.copies, { tags: r.tags.map((t) => t.tag.name), resolveDirectUrl })),
             directories,
+            directoryStats,
             totalCount,
             directFileCount: files.length,
             directFolderCount: directories.length,
@@ -1580,6 +1593,7 @@ let ManageController = class ManageController {
     }
     async persistSysConfig(section, body, res) {
         const out = await this.sysConfig.save(section, body);
+        app_log_1.appLog.info('settings', `系统配置已保存：${section} 分区`);
         if (section === 'security' && out?.adminPasswordChanged) {
             res.clearCookie(auth_guard_1.SESSION_COOKIE, { path: '/' });
         }
