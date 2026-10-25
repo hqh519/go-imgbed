@@ -594,9 +594,13 @@ export default {
   padding: 12px 24px;
   border-bottom: 1px solid var(--el-border-color-lighter);
   background: var(--admin-container-bg-color);
-  position: sticky;
-  top: 0;
-  z-index: 10;
+}
+
+/* v2.6.0 #302：移动端顶部操作栏取消粘滞固定（随页面滚动） */
+@media (max-width: 768px) {
+  .history-topbar {
+    position: static;
+  }
 }
 
 .topbar-left,

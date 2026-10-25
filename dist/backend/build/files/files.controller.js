@@ -33,6 +33,8 @@ const auth_guard_1 = require("../auth/auth.guard");
 const file_view_1 = require("../common/file-view");
 const app_log_1 = require("../common/app-log");
 const project_paths_1 = require("../common/project-paths");
+const qqwry_1 = require("../common/qqwry");
+const ip_query_1 = require("../common/ip-query");
 function splitCsv(v) {
     return v ? v.split(',').map((s) => s.trim()).filter(Boolean) : [];
 }
@@ -782,7 +784,23 @@ let ManageController = class ManageController {
                     if (f.startsWith(prefix) && !f.slice(prefix.length).includes('/'))
                         sub += 1;
                 }
-                directoryStats[d] = { folders: sub, files: files.filter((r) => (r.folder || '') === d).length };
+                let creator = '';
+                let createdAt = 0;
+                for (const r of matched) {
+                    if ((r.folder || '') !== d && !(r.folder || '').startsWith(prefix))
+                        continue;
+                    const t = r.createdAt ? new Date(r.createdAt).getTime() : 0;
+                    if (!createdAt || (t && t < createdAt)) {
+                        createdAt = t;
+                        creator = r.uploader || '';
+                    }
+                }
+                directoryStats[d] = {
+                    folders: sub,
+                    files: files.filter((r) => (r.folder || '') === d).length,
+                    creator,
+                    createdAt,
+                };
             }
         }
         const totalCount = files.length;
@@ -790,8 +808,26 @@ let ManageController = class ManageController {
             return { sum: totalCount, indexLastUpdated: Date.now() };
         const paged = count === -1 ? files.slice(start) : files.slice(start, start + count);
         const resolveDirectUrl = this.directUrlResolver();
+        const fileItems = paged.map((r) => (0, file_view_1.serializeFile)(r, r.copies, { tags: r.tags.map((t) => t.tag.name), resolveDirectUrl }));
+        try {
+            const fallback = new Map();
+            for (const item of fileItems) {
+                const m = item.metadata;
+                if (m?.UploadIP)
+                    fallback.set(String(m.UploadIP), String(m.UploadAddress || ''));
+            }
+            const displays = await (0, ip_query_1.ipDisplayBatch)(fileItems.map((i) => String(i.metadata?.UploadIP || '')), fallback, this.sysConfig);
+            for (const item of fileItems) {
+                const m = item.metadata;
+                const d = displays.get(String(m?.UploadIP || ''));
+                if (m && d)
+                    m.IpDisplay = d;
+            }
+        }
+        catch {
+        }
         return {
-            files: paged.map((r) => (0, file_view_1.serializeFile)(r, r.copies, { tags: r.tags.map((t) => t.tag.name), resolveDirectUrl })),
+            files: fileItems,
             directories,
             directoryStats,
             totalCount,
@@ -1209,6 +1245,17 @@ let ManageController = class ManageController {
             resolveDirectUrl: this.directUrlResolver(),
         }).metadata;
         metadata.LinkExpiresAt = rec.linkExpiresAt ? rec.linkExpiresAt.getTime() : 0;
+        try {
+            const m = metadata;
+            if (m.UploadIP) {
+                const r = await (0, ip_query_1.ipDisplayOf)(String(m.UploadIP), String(m.UploadAddress || ''), this.sysConfig);
+                m.IpDisplay = r.display;
+                if (r.address)
+                    m.UploadAddress = r.address;
+            }
+        }
+        catch {
+        }
         return {
             success: true,
             data: {
@@ -1498,6 +1545,39 @@ let ManageController = class ManageController {
         const v = body.enabled === true || body.enabled === 'true';
         await this.settings.set('securityEnabled', v ? 'true' : 'false');
         return { success: true };
+    }
+    async ipQueryDatStatus() {
+        return { success: true, data: (0, qqwry_1.qqwryStatus)() };
+    }
+    async ipQueryDatUpload(req) {
+        const chunks = [];
+        let total = 0;
+        const MAX = 64 * 1024 * 1024;
+        await new Promise((resolve, reject) => {
+            req.on('data', (c) => {
+                total += c.length;
+                if (total > MAX) {
+                    reject(new Error('文件超过 64MB 上限'));
+                    req.destroy();
+                    return;
+                }
+                chunks.push(c);
+            });
+            req.on('end', () => resolve());
+            req.on('error', reject);
+        });
+        const buf = Buffer.concat(chunks);
+        if (!buf.length)
+            return { success: false, message: '未收到数据包内容' };
+        try {
+            const r = (0, qqwry_1.saveQqwry)(buf);
+            console.log(`[security] qqwry.dat 上传成功：${r.records.toLocaleString()} 条，${(r.sizeBytes / 1048576).toFixed(1)} MB`);
+            return { success: true, data: r };
+        }
+        catch (err) {
+            console.error('[security] qqwry.dat 上传失败:', err?.message || err);
+            return { success: false, message: String(err?.message || '数据包解析失败') };
+        }
     }
     async readLists() {
         const parse = (raw) => {
@@ -1810,6 +1890,21 @@ __decorate([
     __metadata("design:returntype", Promise)
 ], ManageController.prototype, "setListsEnabled", null);
 __decorate([
+    (0, common_1.Get)('security/ip-query/dat'),
+    (0, common_1.UseGuards)(auth_guard_1.AdminGuard),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", []),
+    __metadata("design:returntype", Promise)
+], ManageController.prototype, "ipQueryDatStatus", null);
+__decorate([
+    (0, common_1.Post)('security/ip-query/dat'),
+    (0, common_1.UseGuards)(auth_guard_1.AdminGuard),
+    __param(0, (0, common_1.Req)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object]),
+    __metadata("design:returntype", Promise)
+], ManageController.prototype, "ipQueryDatUpload", null);
+__decorate([
     (0, common_1.Get)('webdav'),
     (0, common_1.UseGuards)(auth_guard_1.AdminGuard),
     __metadata("design:type", Function),
@@ -2029,7 +2124,7 @@ let UserConfigController = class UserConfigController {
             return res.status(403).json({ error: 'Public browse is disabled' });
         }
         const allowedDirs = String(cfg.allowedDir || '')
-            .split(',')
+            .split(/[\n\r,]+/)
             .map((d) => d.trim())
             .filter(Boolean);
         const recursive = q.recursive === 'true';
@@ -2101,7 +2196,7 @@ let UserConfigController = class UserConfigController {
                 : res.status(403).send('Random is disabled');
         }
         const allowedRandomDirs = String(randomCfg.allowedDir || '')
-            .split(',')
+            .split(/[\n\r,]+/)
             .map((d) => d.trim())
             .filter(Boolean);
         const count = Math.min(10, Math.max(1, Number(q.count || 1) || 1));

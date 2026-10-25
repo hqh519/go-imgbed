@@ -340,7 +340,13 @@ export class UploadController {
       let suggestedName = '';
       if (/^text\/html/i.test(firstMime)) {
         const html = await resp.text();
-        const r = await resolveVideoFromHtml(url, html);
+        /*
+         * v2.6.0（v20261024-1）：传【重定向后的最终地址】而不是原始 url ——
+         * b23.tv / v.douyin.com 等短链会 302 到正式域，B 站解析靠 hostname
+         * 判断平台，传 b23.tv 会直接跳过专用解析导致失败。
+         */
+        const finalUrl = resp.url || url;
+        const r = await resolveVideoFromHtml(finalUrl, html);
         if (!r.ok) {
           appLog.warn('video', `视频解析失败：${url.slice(0, 120)}`, r.message);
           return res.status(400).json({ success: false, message: r.message });

@@ -64,6 +64,33 @@ function isLoopback(req) {
     const ip = clientIp(req);
     return ip === '127.0.0.1' || ip === '::1' || ip === 'localhost';
 }
+function stripAnchor(s) {
+    return String(s || '').split('#')[0].trim();
+}
+function sourceAllowed(entry, sources) {
+    const e = stripAnchor(entry);
+    if (!e)
+        return false;
+    return sources.some((s) => {
+        const src = stripAnchor(s);
+        return src === e || src.includes(e);
+    });
+}
+function sourceAddressesOf(req) {
+    const list = [];
+    const referer = String(req.headers.referer || '').trim();
+    if (referer)
+        list.push(referer);
+    const host = String(req.headers.host || '').trim();
+    if (host) {
+        const proto = req.protocol || 'http';
+        list.push(`${proto}://${host}${req.originalUrl || req.url || ''}`);
+    }
+    const ip = clientIp(req);
+    if (ip)
+        list.push(ip);
+    return list;
+}
 async function ensureInitialAdmin() {
     const adminCount = await prisma_1.prisma.user.count({ where: { role: 'admin' } });
     if (adminCount > 0)
@@ -131,8 +158,12 @@ async function bootstrap() {
             const ip = clientIp(req);
             if (lists.block.includes(ip))
                 return res.status(403).send('Forbidden: IP blocked');
-            if (lists.white.length > 0 && !lists.white.includes(ip)) {
-                return res.status(403).send('Forbidden: IP not in whitelist');
+            if (lists.white.length > 0) {
+                const sources = sourceAddressesOf(req);
+                if (!lists.white.some((entry) => sourceAllowed(entry, sources))) {
+                    console.error(`[security] 白名单拦截 ip=${ip} referer=${String(req.headers.referer || '-')} path=${req.originalUrl || req.url}`);
+                    return res.status(403).send('Forbidden: source not in whitelist');
+                }
             }
             next();
         })

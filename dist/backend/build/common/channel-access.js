@@ -16,9 +16,10 @@ function parseAuthorizedUsers(raw) {
 function channelVisibleTo(raw, type, username, admin) {
     if (admin)
         return true;
-    if (type === 'local')
+    const list = parseAuthorizedUsers(raw);
+    if (type === 'local' && list.length === 0)
         return true;
     if (!username)
         return false;
-    return parseAuthorizedUsers(raw).includes(username);
+    return list.includes(username);
 }

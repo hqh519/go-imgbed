@@ -8,6 +8,7 @@
     <div
         class="folder-card"
         :class="{ 'is-selected': localSelected }"
+        @contextmenu.prevent
         @touchstart="$emit('touchstart', $event)"
         @touchend="$emit('touchend', $event)"
         @touchmove="$emit('touchmove', $event)"
@@ -46,12 +47,16 @@
             </div>
         </div>
 
-        <!-- 下半部分：名称 + 数量统计 -->
+        <!-- 下半部分：名称 + 数量统计 + 创建用户（v2.6.0 第三行） -->
         <div class="card-info" @click="$emit('enter')">
             <div class="file-name" :title="folderName">{{ folderName }}</div>
             <div class="folder-stats">
                 <template v-if="statsText">{{ statsText }}</template>
                 <template v-else>-</template>
+            </div>
+            <div class="folder-creator" :title="$t('dashboard.folderCreator')">
+                <font-awesome-icon icon="user" />
+                {{ creatorName || '-' }}
             </div>
         </div>
     </div>
@@ -87,6 +92,10 @@ export default {
                 folders: Number(s.folders || 0),
                 files: Number(s.files || 0)
             });
+        },
+        /** v2.6.0：创建用户名（后端 directoryStats.creator = 文件夹内最早文件的上传者） */
+        creatorName() {
+            return this.folderStats?.creator || '';
         }
     },
     watch: {
@@ -222,6 +231,18 @@ export default {
 .folder-stats {
     font-size: 12px;
     opacity: 0.65;
+    color: var(--upload-text-color);
+}
+/* v2.6.0：第三行 —— 创建用户名（与 FileCard 的 upload-user 同款样式，保证卡片等高） */
+.folder-creator {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 12px;
+    opacity: 0.7;
+    margin-top: 4px;
+    max-width: 100%;
+    overflow: hidden;
     color: var(--upload-text-color);
 }
 

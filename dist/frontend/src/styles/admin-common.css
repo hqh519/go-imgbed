@@ -235,3 +235,9 @@
         font-size: 11px;
     }
 }
+
+/* v2.6.0 #301：IP 归属地换行格式（用户管理 → IP 归集表格） */
+.ip-display-cell-multiline {
+    white-space: pre-line;
+    word-break: break-all;
+}

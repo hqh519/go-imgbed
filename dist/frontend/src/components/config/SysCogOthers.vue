@@ -51,7 +51,14 @@
                             <font-awesome-icon icon="question-circle" style="margin-left: 5px; cursor: pointer;"/>
                         </el-tooltip>
                     </template>
-                    <el-input v-model="settings.publicBrowse.allowedDir" :disabled="settings.publicBrowse.fixed" placeholder="wallpaper,photos,album"></el-input>
+                    <!-- v2.6.0：改多行文本框，一行一个目录 -->
+                    <el-input
+                        v-model="settings.publicBrowse.allowedDir"
+                        type="textarea"
+                        :rows="10"
+                        :disabled="settings.publicBrowse.fixed"
+                        placeholder="wallpaper&#10;photos&#10;album"
+                    ></el-input>
                 </el-form-item>
             </el-form>
 

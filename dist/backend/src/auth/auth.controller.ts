@@ -1,5 +1,6 @@
 import { Body, Controller, Get, HttpCode, Post, Req, Res } from '@nestjs/common';
 import { Request, Response } from 'express';
+import { randomBytes } from 'crypto';
 import { prisma } from '../common/prisma';
 import { CryptoService } from '../common/crypto.service';
 import { hashSecret, isHashedSecret, matchSecret, safeEqual } from '../common/secret';
@@ -315,11 +316,12 @@ export class AuthController {
   }
 
   /**
-   * 第二因子校验（v2.3.0）—— 一次输入框同时接受三种凭据：
+   * 第二因子校验（v2.3.0，v2.6.0 更新判别规则）—— 一次输入框同时接受三种凭据：
    *
-   *   1) 6 位数字 → 先按「验证器动态码（TOTP）」校验；
-   *      不通过再按「邮箱验证码」校验（同一输入框，用户不必先选类型）。
-   *   2) 其它形态（含 `-`，如 ABCD-EFGHJ） → 按「恢复码」校验，用掉即作废。
+   *   1) 含「-」 → 恢复码（新格式 xxxxxx-xxxxxx / 旧格式 xxxx-xxxxx 都认）；
+   *   2) 纯 6 位数字 → 先按「验证器动态码（TOTP）」校验，不通过再试邮箱验证码；
+   *   3) 其它（v2.6.0 起的 6 位字母数字邮箱验证码） → 先按「邮箱验证码」校验，
+   *      再兜底试一次恢复码（用户手输漏掉连字符的场景）。
    *
    * 三者都过不了才返回失败；日志里记录实际命中的方式，便于排查「为什么进不去」。
    */
@@ -330,8 +332,8 @@ export class AuthController {
     const raw = String(code || '').trim();
     if (!raw) return { ok: false, method: '', message: '请输入验证码' };
 
-    // —— 恢复码（非纯 6 位数字都当恢复码试一次）——
-    if (!/^\d{6}$/.test(raw)) {
+    // —— 恢复码（含连字符的输入优先按恢复码处理）——
+    if (raw.includes('-')) {
       const hit = consumeRecoveryCode(u.recoveryHashes, raw);
       if (!hit) return { ok: false, method: '', message: '恢复码无效或已被使用' };
       await prisma.user.update({
@@ -342,8 +344,8 @@ export class AuthController {
       return { ok: true, method: 'recovery' };
     }
 
-    // —— 6 位数字：先 TOTP ——
-    if (u.totpEnabled && u.totpSecret && this.checkTotpSecret(u.totpSecret, raw)) {
+    // —— 纯 6 位数字：先 TOTP ——
+    if (/^\d{6}$/.test(raw) && u.totpEnabled && u.totpSecret && this.checkTotpSecret(u.totpSecret, raw)) {
       await prisma.user.update({ where: { id: u.id }, data: { backVerifiedAt: new Date() } });
       return { ok: true, method: 'totp' };
     }
@@ -360,6 +362,17 @@ export class AuthController {
       if (!/请先获取验证码/.test(res.message)) {
         return { ok: false, method: '', message: res.message };
       }
+    }
+
+    // —— 兜底：恢复码（用户手输漏掉连字符）——
+    const hit = consumeRecoveryCode(u.recoveryHashes, raw);
+    if (hit) {
+      await prisma.user.update({
+        where: { id: u.id },
+        data: { recoveryHashes: JSON.stringify(hit.rest), backVerifiedAt: new Date() },
+      });
+      appLog.warn('auth', `账户「${u.username}」使用恢复码（无连字符）通过两步验证（剩余 ${hit.rest.length} 个）`);
+      return { ok: true, method: 'recovery' };
     }
 
     return { ok: false, method: '', message: '验证码不正确或已过期' };
@@ -437,7 +450,98 @@ export class AuthController {
     }
     const r = await this.mail.sendCode(u.email, 'login', u.nickname || u.username);
     if (!r.ok) return { success: false, message: r.message };
-    return { success: true, message: `验证码已发送至 ${maskEmail(u.email)}` };
+    // v2.6.0：data.email = 脱敏邮箱（abc***@126.com），前端弹窗提示语要用
+    return {
+      success: true,
+      message: `验证码已发送至 ${maskEmail(u.email)}`,
+      data: { email: maskEmail(u.email) },
+    };
+  }
+
+  /* ---------------- v2.6.0：忘记密码（邮件链接重置，10 分钟有效） ---------------- */
+
+  /** 重置令牌（进程内内存）：token → { username, expiresAt }；一次性，用完即删 */
+  private static passwordResetTokens = new Map<string, { username: string; expiresAt: number }>();
+  private static PASSWORD_RESET_TTL = 10 * 60 * 1000;
+
+  /**
+   * POST /api/auth/password/forgot  { username, email }
+   * 用户名 + 邮箱都匹配（且邮箱已验证）才发重置链接；无论是否匹配都返回同一句话，
+   * 避免成为账户/邮箱枚举接口。链接 10 分钟有效，一次性。
+   */
+  @Post('password/forgot')
+  @HttpCode(200)
+  async forgotPassword(@Body() body: { username?: string; email?: string }, @Req() req: Request) {
+    const generic = {
+      success: true,
+      message: '如果用户名与邮箱匹配，重置链接已发送，请前往邮箱查收（10 分钟内有效）',
+    };
+    const username = String(body?.username || '').trim();
+    const email = String(body?.email || '').trim().toLowerCase();
+    if (!username || !email) return generic;
+    const u = await prisma.user.findUnique({ where: { username } });
+    if (!u || !u.enabled) return generic;
+    if (!u.email || !u.emailVerified || u.email.trim().toLowerCase() !== email) return generic;
+    if (!(await this.mail.configured())) {
+      return { success: false, message: '管理员尚未配置发信邮箱，请联系管理员重置密码' };
+    }
+    // 60 秒内同一账户只发一次
+    for (const [, v] of AuthController.passwordResetTokens) {
+      if (v.username === u.username && v.expiresAt > Date.now() + AuthController.PASSWORD_RESET_TTL - 60 * 1000) {
+        return { success: false, message: '重置链接已发送，请 60 秒后再试或直接查收邮件' };
+      }
+    }
+    const token = randomBytes(24).toString('hex');
+    AuthController.passwordResetTokens.set(token, {
+      username: u.username,
+      expiresAt: Date.now() + AuthController.PASSWORD_RESET_TTL,
+    });
+    // 顺手清理过期令牌
+    if (AuthController.passwordResetTokens.size > 200) {
+      const now = Date.now();
+      for (const [k, v] of AuthController.passwordResetTokens) if (v.expiresAt < now) AuthController.passwordResetTokens.delete(k);
+    }
+    // 重置链接指向前端页面（后端与前端同源部署，直接用请求的 host）
+    const host = req.headers['x-forwarded-host'] || req.headers.host || 'localhost';
+    const proto = String(req.headers['x-forwarded-proto'] || req.protocol || 'http');
+    const link = `${proto}://${host}/reset-password?token=${token}`;
+    const html = buildForgotMail({ name: u.nickname || u.username, link, minutes: 10 });
+    try {
+      await this.mail.send(u.email, '【go-imgbed】重置密码', html);
+      appLog.warn('auth', `账户「${u.username}」申请了「忘记密码」重置链接 → ${maskEmail(u.email)}`);
+    } catch (e) {
+      AuthController.passwordResetTokens.delete(token);
+      return { success: false, message: `邮件发送失败：${(e as Error).message}` };
+    }
+    return generic;
+  }
+
+  /**
+   * POST /api/auth/password/reset  { token, password }
+   * 校验一次性令牌并设置新密码；令牌用完即删。
+   */
+  @Post('password/reset')
+  @HttpCode(200)
+  async resetPassword(@Body() body: { token?: string; password?: string }) {
+    const token = String(body?.token || '').trim();
+    const password = String(body?.password || '');
+    if (!token || !password) return { success: false, message: '参数不完整' };
+    if (password.length < 4) return { success: false, message: '密码至少 4 位' };
+    const entry = AuthController.passwordResetTokens.get(token);
+    if (!entry) return { success: false, message: '重置链接无效或已被使用' };
+    if (entry.expiresAt < Date.now()) {
+      AuthController.passwordResetTokens.delete(token);
+      return { success: false, message: '重置链接已过期（有效期 10 分钟），请重新申请' };
+    }
+    AuthController.passwordResetTokens.delete(token);
+    const u = await prisma.user.findUnique({ where: { username: entry.username } });
+    if (!u) return { success: false, message: '账户不存在' };
+    await prisma.user.update({
+      where: { id: u.id },
+      data: { passwordHash: CryptoService.hashPassword(password) },
+    });
+    appLog.warn('auth', `账户「${u.username}」通过「忘记密码」邮件链接重置了密码`);
+    return { success: true, message: '密码已重置，请使用新密码登录' };
   }
 
   /**
@@ -461,8 +565,9 @@ export class AuthController {
   }
 
   /**
-   * 用「邮箱验证码 + 恢复码」关闭某账户的 2FA —— 登录态与管理员改他人账户共用。
-   * 恢复码用掉即作废；关闭后清空 secret 与剩余恢复码。
+   * 用「邮箱验证码 或 恢复码（v2.6.0 起任选其一）」关闭某账户的 2FA
+   * —— 登录态与管理员改他人账户共用。
+   * 恢复码用掉即作废；关闭后清空 secret；用邮箱验证码关闭时恢复码原样保留。
    */
   async disableTotpWithProof(
     username: string,
@@ -473,26 +578,40 @@ export class AuthController {
     if (!u) return { ok: false, message: '账户不存在' };
     if (!u.totpEnabled) return { ok: true, message: '该账户未启用两步验证' };
     if (!u.email || !u.emailVerified) return { ok: false, message: '该账户邮箱未验证，无法通过邮箱验证码关闭两步验证' };
-    if (!String(emailCode || '').trim()) return { ok: false, message: '请输入邮箱验证码' };
-    if (!String(recoveryCode || '').trim()) return { ok: false, message: '请输入一枚恢复码' };
 
-    // 兼容两个入口签发的验证码：登录页「发送邮箱验证码」(login) 与
-    // 用户编辑页「发送关闭验证码」(disable-2fa)。
-    const mailRes = this.mail.consumeAnyCode(u.email, ['disable-2fa', 'login'], String(emailCode));
-    if (!mailRes.ok) return { ok: false, message: mailRes.message };
-    const hit = consumeRecoveryCode(u.recoveryHashes, String(recoveryCode));
-    if (!hit) return { ok: false, message: '恢复码无效或已被使用' };
+    /*
+     * v2.6.0（v20261024-1）：由「邮箱验证码 + 恢复码缺一不可」放宽为
+     * 「二者任一即可」—— 验证器丢失时用户往往两样只记得住一样。
+     */
+    const email = String(emailCode || '').trim();
+    const recovery = String(recoveryCode || '').trim();
+    if (!email && !recovery) return { ok: false, message: '请提供邮箱验证码或恢复码（任一即可）' };
+
+    let method = '';
+    let recoveryHashes = u.recoveryHashes;
+    if (email) {
+      // 兼容两个入口签发的验证码：登录页「发送邮箱验证码」(login) 与
+      // 用户编辑页「发送关闭验证码」(disable-2fa)。
+      const mailRes = this.mail.consumeAnyCode(u.email, ['disable-2fa', 'login'], email);
+      if (!mailRes.ok) return { ok: false, message: mailRes.message };
+      method = '邮箱验证码';
+    } else {
+      const hit = consumeRecoveryCode(u.recoveryHashes, recovery);
+      if (!hit) return { ok: false, message: '恢复码无效或已被使用' };
+      recoveryHashes = JSON.stringify(hit.rest);
+      method = '恢复码';
+    }
 
     await prisma.user.update({
       where: { id: u.id },
       data: {
         totpEnabled: false,
         totpSecret: '',
-        recoveryHashes: JSON.stringify(hit.rest),
+        recoveryHashes,
         backVerifiedAt: null,
       },
     });
-    appLog.warn('auth', `账户「${u.username}」通过「邮箱验证码 + 恢复码」关闭了两步验证`);
+    appLog.warn('auth', `账户「${u.username}」通过「${method}」关闭了两步验证`);
     return { ok: true, message: '两步验证已关闭，请尽快重新绑定验证器' };
   }
 
@@ -643,13 +762,49 @@ export class AuthController {
   }
 }
 
-/** 邮箱脱敏：abcd@gmail.com → a***@gmail.com（用于「验证码已发送至 …」提示） */
+/**
+ * 邮箱脱敏（v2.6.0 起统一格式）：abcdefg@126.com → abc***@126.com
+ * —— 只显示前 3 个字符 + *** + 域名（不足 3 个字符时全显示）。
+ * 用于「验证码已发送至 …」等提示语。
+ */
 export function maskEmail(raw: string): string {
   const s = String(raw || '').trim();
   const at = s.indexOf('@');
   if (at <= 0) return s;
   const name = s.slice(0, at);
   const domain = s.slice(at);
-  if (name.length <= 2) return `${name[0] || ''}***${domain}`;
-  return `${name[0]}***${name[name.length - 1]}${domain}`;
+  return `${name.slice(0, 3)}***${domain}`;
+}
+
+/** 「忘记密码」邮件模板（内联样式，与验证码邮件同风格） */
+function buildForgotMail(o: { name: string; link: string; minutes: number }): string {
+  return `<!DOCTYPE html>
+<html><body style="margin:0;padding:24px;background:#f5f7fa;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;">
+  <div style="max-width:520px;margin:0 auto;background:#fff;border-radius:14px;overflow:hidden;box-shadow:0 6px 24px rgba(0,0,0,.06);">
+    <div style="padding:20px 24px;background:linear-gradient(135deg,#3b82f6,#6366f1);color:#fff;">
+      <div style="font-size:16px;font-weight:600;">go-imgbed 重置密码</div>
+    </div>
+    <div style="padding:24px;color:#303133;font-size:14px;line-height:1.8;">
+      <p style="margin:0 0 12px;">你好，${escapeHtml(o.name)}：</p>
+      <p style="margin:0 0 18px;">我们收到了你的「忘记密码」请求。点击下面的按钮设置新密码（链接 ${o.minutes} 分钟内有效，且只能使用一次）：</p>
+      <div style="text-align:center;margin:0 0 18px;">
+        <a href="${o.link}" style="display:inline-block;padding:12px 28px;border-radius:10px;background:#1d4ed8;color:#fff;font-size:15px;font-weight:600;text-decoration:none;">重置密码</a>
+      </div>
+      <p style="margin:0 0 8px;color:#606266;">如果按钮无法点击，请复制下面的链接到浏览器打开：</p>
+      <p style="margin:0 0 18px;word-break:break-all;color:#1d4ed8;">${o.link}</p>
+      <p style="margin:0;color:#909399;font-size:12px;">如非本人操作，请忽略本邮件；账户密码不会被更改。</p>
+    </div>
+    <div style="padding:14px 24px;border-top:1px solid #f0f2f5;color:#a8abb2;font-size:12px;">
+      此邮件由 go-imgbed 自动发送，请勿直接回复。
+    </div>
+  </div>
+</body></html>`;
+}
+
+function escapeHtml(s: string): string {
+  return String(s || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }

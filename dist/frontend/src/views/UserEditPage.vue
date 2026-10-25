@@ -74,6 +74,56 @@
             <el-form-item :label="$t('userEdit.password')">
               <el-input v-model="form.password" type="password" show-password :placeholder="$t('userEdit.passwordPlaceholder')" />
             </el-form-item>
+            <!--
+              v2.6.0：修改密码必须验证身份
+              · 本人 → 原密码 / 邮箱验证码 / 2FA 动态码 三选一
+              · 管理员改他人 → 输入管理员自己的密码
+            -->
+            <el-form-item v-if="form.password" :label="$t('userEdit.pwdVerifyLabel')">
+              <template v-if="isAdminRole && !isSelf">
+                <el-input
+                  v-model="adminPassword"
+                  type="password"
+                  show-password
+                  :placeholder="$t('userEdit.adminPasswordPlaceholder')"
+                  class="pwd-verify-input"
+                />
+                <p class="hint">{{ $t('userEdit.adminPasswordHint') }}</p>
+              </template>
+              <template v-else>
+                <el-radio-group v-model="pwdVerifyMethod" class="pwd-verify-methods">
+                  <el-radio-button label="old">{{ $t('userEdit.pwdVerifyOld') }}</el-radio-button>
+                  <el-radio-button label="email">{{ $t('userEdit.pwdVerifyEmail') }}</el-radio-button>
+                  <el-radio-button label="totp">{{ $t('userEdit.pwdVerifyTotp') }}</el-radio-button>
+                </el-radio-group>
+                <el-input
+                  v-if="pwdVerifyMethod === 'old'"
+                  v-model="pwdOldPassword"
+                  type="password"
+                  show-password
+                  :placeholder="$t('userEdit.pwdVerifyOldPlaceholder')"
+                  class="pwd-verify-input"
+                />
+                <div v-else-if="pwdVerifyMethod === 'email'" class="code-row">
+                  <el-button size="small" :loading="pwdEmailBusy" :disabled="!mailReady" @click="sendPwdChangeCode">
+                    {{ $t('userEdit.pwdSendCode') }}
+                  </el-button>
+                  <el-input
+                    v-model="pwdEmailCode"
+                    maxlength="6"
+                    :placeholder="$t('userEdit.emailCodePlaceholder')"
+                    class="code-input"
+                  />
+                </div>
+                <el-input
+                  v-else
+                  v-model="pwdTotpCode"
+                  :placeholder="$t('userEdit.pwdVerifyTotpPlaceholder')"
+                  class="pwd-verify-input"
+                />
+                <p class="hint">{{ $t('userEdit.pwdVerifyHint') }}</p>
+              </template>
+            </el-form-item>
           </el-form>
         </el-card>
 
@@ -170,7 +220,8 @@
                 <el-button size="small" :loading="disableBusy" @click="sendDisableCode">
                   {{ $t('userEdit.sendDisableCode') }}
                 </el-button>
-                <el-input v-model="disableEmailCode" maxlength="6" placeholder="000000" class="code-input" />
+                <!-- v2.6.0：验证码为 6 位字母数字（不区分大小写），验证码/恢复码二选一 -->
+                <el-input v-model="disableEmailCode" maxlength="6" :placeholder="$t('userEdit.emailCodePlaceholder')" class="code-input" />
                 <el-input v-model="disableRecoveryCode" :placeholder="$t('userEdit.recoveryPlaceholder')" class="recovery-input" />
                 <el-button type="danger" plain size="small" :loading="disableBusy" @click="disableTotpByFallback">
                   {{ $t('userEdit.totpDisable') }}
@@ -262,7 +313,8 @@
         <code v-for="code in recoveryCodes" :key="code">{{ code }}</code>
       </div>
       <template #footer>
-        <el-button type="primary" @click="showRecoveryDialog = false">{{ $t('userEdit.recoverySaved') }}</el-button>
+        <!-- v2.6.0：「我已保存」改为「复制全部」—— 一键复制所有恢复码并关闭窗口 -->
+        <el-button type="primary" @click="copyRecoveryCodes">{{ $t('userEdit.recoveryCopyAll') }}</el-button>
       </template>
     </el-dialog>
   </div>
@@ -336,6 +388,13 @@ export default {
             emailCode: '',
             resendLeft: 0,
             resendTimer: null,
+            // v2.6.0：修改密码身份验证（本人三选一 / 管理员改他人需管理员密码）
+            pwdVerifyMethod: 'old',
+            pwdOldPassword: '',
+            pwdEmailCode: '',
+            pwdTotpCode: '',
+            pwdEmailBusy: false,
+            adminPassword: '',
         };
     },
     computed: {
@@ -551,6 +610,24 @@ export default {
             }
         },
 
+        /** v2.6.0：修改密码 —— 发送「修改密码验证码」到账户邮箱（本人或管理员） */
+        async sendPwdChangeCode() {
+            this.pwdEmailBusy = true;
+            try {
+                const res = await axios.post(
+                    `/api/manage/users/${encodeURIComponent(this.userId)}/password/send-code`,
+                    {},
+                    { withCredentials: true },
+                );
+                if (res.data?.success) this.$message.success(res.data.message || this.$t('userEdit.emailCodeSent'));
+                else this.$message.error(res.data?.message || this.$t('common.failed'));
+            } catch (e) {
+                this.$message.error(e?.response?.data?.message || this.$t('common.failed'));
+            } finally {
+                this.pwdEmailBusy = false;
+            }
+        },
+
         async save() {
             if (!String(this.form.username || '').trim()) {
                 this.$message.warning(this.$t('userManage.usernameRequired'));
@@ -559,6 +636,26 @@ export default {
             if (this.form.password && this.form.password.length < 4) {
                 this.$message.warning(this.$t('userManage.passwordTooShort'));
                 return;
+            }
+            // v2.6.0：改密必须带身份验证凭据
+            if (this.form.password) {
+                if (this.isAdminRole && !this.isSelf) {
+                    if (!String(this.adminPassword || '')) {
+                        this.$message.warning(this.$t('userEdit.adminPasswordPlaceholder'));
+                        return;
+                    }
+                } else {
+                    const v =
+                        this.pwdVerifyMethod === 'old'
+                            ? this.pwdOldPassword
+                            : this.pwdVerifyMethod === 'email'
+                                ? this.pwdEmailCode
+                                : this.pwdTotpCode;
+                    if (!String(v || '').trim()) {
+                        this.$message.warning(this.$t('userEdit.pwdVerifyRequired'));
+                        return;
+                    }
+                }
             }
             this.saving = true;
             try {
@@ -569,7 +666,18 @@ export default {
                     frontSessionDays: this.form.frontSessionDays,
                     backSessionDays: this.form.backSessionDays,
                 };
-                if (this.form.password) payload.password = this.form.password;
+                if (this.form.password) {
+                    payload.password = this.form.password;
+                    if (this.isAdminRole && !this.isSelf) {
+                        payload.adminPassword = this.adminPassword;
+                    } else if (this.pwdVerifyMethod === 'old') {
+                        payload.oldPassword = this.pwdOldPassword;
+                    } else if (this.pwdVerifyMethod === 'email') {
+                        payload.emailCode = this.pwdEmailCode;
+                    } else {
+                        payload.totpCode = this.pwdTotpCode;
+                    }
+                }
                 /*
                  * 主/备渠道：本人也能改（v2.3.0），后端会校验「只能选该账户已授权的渠道」，
                  * 'none'（不备份）是唯一不需要授权的例外值。
@@ -591,6 +699,11 @@ export default {
                     this.$message.success(this.$t('common.success'));
                     this.detail = { ...this.detail, ...this.form };
                     this.form.password = '';
+                    // v2.6.0：清掉本次的身份验证凭据
+                    this.pwdOldPassword = '';
+                    this.pwdEmailCode = '';
+                    this.pwdTotpCode = '';
+                    this.adminPassword = '';
                     // 改了自己的用户名 → 会话里的用户名已失效，提示重新登录
                     if (this.isSelf && payload.username !== this.currentUser) {
                         this.$message.info(this.$t('userEdit.reloginHint'));
@@ -733,6 +846,40 @@ export default {
             }
         },
 
+        /**
+         * v2.6.0：恢复码弹窗「复制全部」—— 一键复制所有恢复码（每行一枚）
+         * 并自动关闭窗口；复制失败时给出降级提示（弹窗不关闭，用户可手动选择）。
+         */
+        async copyRecoveryCodes() {
+            const text = (this.recoveryCodes || []).join('\n');
+            if (!text) return;
+            let ok = false;
+            try {
+                await navigator.clipboard.writeText(text);
+                ok = true;
+            } catch {
+                // 非安全上下文（http）下 clipboard API 不可用 → execCommand 降级
+                try {
+                    const ta = document.createElement('textarea');
+                    ta.value = text;
+                    ta.style.position = 'fixed';
+                    ta.style.opacity = '0';
+                    document.body.appendChild(ta);
+                    ta.select();
+                    ok = document.execCommand('copy');
+                    document.body.removeChild(ta);
+                } catch {
+                    ok = false;
+                }
+            }
+            if (ok) {
+                this.$message.success(this.$t('userEdit.recoveryCopied'));
+                this.showRecoveryDialog = false;
+            } else {
+                this.$message.error(this.$t('userEdit.recoveryCopyFailed'));
+            }
+        },
+
         /** 重新生成恢复码（需当前动态码；旧码全部作废） */
         async regenerateRecovery() {
             if (!/^\d{6}$/.test(String(this.totpCode || ''))) {
@@ -778,21 +925,21 @@ export default {
             }
         },
 
-        /** 忘记验证器：邮箱验证码 + 一枚恢复码 → 关闭两步验证 */
+        /**
+         * 忘记验证器：邮箱验证码 或 一枚恢复码（v2.6.0 起任一即可）→ 关闭两步验证
+         */
         async disableTotpByFallback() {
-            if (!/^\d{6}$/.test(String(this.disableEmailCode || ''))) {
-                this.$message.warning(this.$t('userEdit.emailCodeInvalid'));
-                return;
-            }
-            if (!String(this.disableRecoveryCode || '').trim()) {
-                this.$message.warning(this.$t('userEdit.recoveryPlaceholder'));
+            const emailCode = String(this.disableEmailCode || '').trim();
+            const recoveryCode = String(this.disableRecoveryCode || '').trim();
+            if (!emailCode && !recoveryCode) {
+                this.$message.warning(this.$t('userEdit.disableEitherHint'));
                 return;
             }
             this.disableBusy = true;
             try {
                 const res = await axios.post(
                     `/api/manage/users/${encodeURIComponent(this.userId)}/totp/disable-fallback`,
-                    { emailCode: this.disableEmailCode, recoveryCode: this.disableRecoveryCode },
+                    { emailCode, recoveryCode },
                     { withCredentials: true },
                 );
                 if (res.data?.success) {
@@ -904,6 +1051,9 @@ export default {
 .forgot-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
 .forgot-title { font-size: 13px; font-weight: 600; }
 .recovery-input { width: 170px; }
+/* v2.6.0：修改密码身份验证 */
+.pwd-verify-methods { margin-bottom: 8px; display: flex; flex-wrap: wrap; }
+.pwd-verify-input { max-width: 360px; }
 .recovery-alert { margin-bottom: 14px; }
 .recovery-grid {
     display: grid;

@@ -189,7 +189,8 @@ let UploadController = class UploadController {
             let suggestedName = '';
             if (/^text\/html/i.test(firstMime)) {
                 const html = await resp.text();
-                const r = await (0, video_resolve_1.resolveVideoFromHtml)(url, html);
+                const finalUrl = resp.url || url;
+                const r = await (0, video_resolve_1.resolveVideoFromHtml)(finalUrl, html);
                 if (!r.ok) {
                     app_log_1.appLog.warn('video', `视频解析失败：${url.slice(0, 120)}`, r.message);
                     return res.status(400).json({ success: false, message: r.message });

@@ -1055,3 +1055,30 @@ html.dark .os-theme-dark,
     text-overflow: ellipsis;
     white-space: nowrap;
 }
+
+/* ---------------------------------------------------------------------------
+   v2.6.0：两步验证弹窗（ElMessageBox.prompt）
+   message 内嵌「邮箱验证」按钮 —— 点击发送 6 位字母数字验证码到账户邮箱。
+   ElMessageBox 挂在 body 下，必须放全局样式。
+   --------------------------------------------------------------------------- */
+.totp-prompt-box {
+    text-align: left;
+}
+.totp-prompt-box .totp-email-btn {
+    display: inline-block;
+    padding: 6px 16px;
+    border: 1px solid var(--el-color-primary, #409eff);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--el-color-primary, #409eff);
+    font-size: 13px;
+    cursor: pointer;
+    transition: background-color 0.2s, color 0.2s;
+}
+.totp-prompt-box .totp-email-btn:hover:not(:disabled) {
+    background: var(--el-color-primary-light-9, #ecf5ff);
+}
+.totp-prompt-box .totp-email-btn:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+}

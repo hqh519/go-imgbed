@@ -25,11 +25,12 @@ import { generateTotpSecret, totpUri, verifyTotp } from '../common/totp';
 import { consumeRecoveryCode, countRecoveryCodes, generateRecoveryCodes } from '../common/recovery';
 import { MailService } from '../mail/mail.service';
 import { maskEmail } from '../auth/auth.controller';
-import { parseAuthorizedUsers } from '../common/channel-access';
+import { channelVisibleTo } from '../common/channel-access';
 import { appLog } from '../common/app-log';
 import { ManageAuthGuard, currentSession, isAdminRole } from '../auth/auth.guard';
 import { SysConfigService } from '../settings/sysconfig.service';
 import { SettingsService } from '../settings/settings.service';
+import { ipDisplayBatch } from '../common/ip-query';
 
 /** 会话有效期默认值（天）：账户留空时生效 */
 const DEFAULT_SESSION_DAYS = 7;
@@ -112,10 +113,10 @@ export class UsersController {
   /**
    * 某账户「可用渠道」的 ID 集合（含渠道 id 与 6 位 code 两种写法）。
    *
-   * 规则与 /api/channels 的可见性一致：
-   *   · 内置「本地存储」渠道对所有账户开放；
-   *   · 管理员账户可用全部渠道；
-   *   · 普通用户只拿到 authorizedUsers 里点过名的渠道。
+   * 规则与 /api/channels 的可见性一致（统一走 channelVisibleTo）：
+   *   · 内置「本地存储」渠道在授权名单为空时对所有账户开放（零配置兜底）；
+   *   · 名单非空后与其它渠道一致：管理员全部可用，普通用户只拿到
+   *     authorizedUsers 里点过名的渠道。
    * 编辑页的主/备渠道下拉、保存时的越权校验都以此为准。
    */
   private async authorizedChannelIds(username: string): Promise<Set<string>> {
@@ -131,7 +132,8 @@ export class UsersController {
       isAdmin = false;
     }
     for (const c of rows) {
-      const ok = isAdmin || c.type === 'local' || parseAuthorizedUsers(c.authorizedUsers).includes(username);
+      // v2.6.0：可见性判断统一走 channelVisibleTo（本地存储也支持授权名单）
+      const ok = channelVisibleTo(c.authorizedUsers, c.type, username, isAdmin);
       if (!ok) continue;
       out.add(c.id);
       if (c.code) out.add(c.code);
@@ -282,6 +284,18 @@ export class UsersController {
       for (const r of records) {
         const b = buckets.get(r.ip);
         if (b) b.address = [r.country, r.region, r.city].filter(Boolean).join(' ') || b.address;
+      }
+      // v2.6.0 #301：全系统 IP 显示统一 —— 每行附格式化展示文本
+      try {
+        const fallback = new Map<string, string>();
+        for (const [k, b] of buckets) if (byIp) fallback.set(k, b.address || '');
+        const displays = await ipDisplayBatch(ips, fallback, this.sysConfig);
+        for (const [k, b] of buckets) {
+          const d = displays.get(k);
+          if (d) (b as any).display = d;
+        }
+      } catch {
+        /* 忽略 */
       }
     }
 
@@ -442,6 +456,12 @@ export class UsersController {
     body: {
       username?: string;
       password?: string;
+      /** v2.6.0：本人改密验证 —— 原密码 / 邮箱验证码 / 2FA 动态码（三选一） */
+      oldPassword?: string;
+      emailCode?: string;
+      totpCode?: string;
+      /** v2.6.0：管理员改他人密码时必填 —— 管理员自己的密码 */
+      adminPassword?: string;
       nickname?: string;
       email?: string;
       enabled?: boolean;
@@ -487,9 +507,18 @@ export class UsersController {
         data.username = next;
       }
     }
-    // ---- 密码 ----
+    // ---- 密码（v2.6.0：改密必须先验证身份）----
     if (body.password !== undefined && body.password !== '') {
       if (String(body.password).length < 4) return { success: false, message: '密码至少 4 位' };
+      if (admin && !self) {
+        // 管理员改「他人」密码 → 必须输入管理员自己的密码
+        const okAdmin = await this.verifyAdminPassword(req, String(body.adminPassword || ''));
+        if (!okAdmin) return { success: false, message: '请输入正确的管理员密码后再修改他人密码' };
+      } else {
+        // 本人（含管理员本人）改密 → 原密码 / 邮箱验证码 / 2FA 动态码 三选一
+        const v = this.verifySelfPassword(u, body);
+        if (!v.ok) return { success: false, message: v.message };
+      }
       data.passwordHash = CryptoService.hashPassword(String(body.password));
     }
     // ---- 基础资料（本人可改）----
@@ -710,6 +739,83 @@ export class UsersController {
     return { u, err: '' };
   }
 
+  /**
+   * v2.6.0：本人修改密码的身份验证 —— 原密码 / 邮箱验证码 / 2FA 动态码 三选一。
+   * 依次尝试用户提交的凭据，任一通过即可；全部为空给出明确提示。
+   */
+  private verifySelfPassword(
+    u: { passwordHash: string; email: string; emailVerified: boolean; totpEnabled: boolean; totpSecret: string },
+    body: { oldPassword?: string; emailCode?: string; totpCode?: string },
+  ): { ok: boolean; message?: string } {
+    const oldPassword = String(body.oldPassword || '');
+    const emailCode = String(body.emailCode || '').trim();
+    const totpCode = String(body.totpCode || '').trim();
+    if (!oldPassword && !emailCode && !totpCode) {
+      return { ok: false, message: '修改密码需要验证身份：请输入原密码、邮箱验证码或两步验证动态码（任一）' };
+    }
+    if (oldPassword) {
+      if (CryptoService.verifyPassword(oldPassword, u.passwordHash)) return { ok: true };
+      return { ok: false, message: '原密码不正确' };
+    }
+    if (emailCode) {
+      if (!u.email || !u.emailVerified) return { ok: false, message: '该账户邮箱未验证，无法使用邮箱验证码改密' };
+      // 兼容「登录验证码 / 修改密码验证码」两个入口签发的码
+      const r = this.mail.consumeAnyCode(u.email, ['change-password', 'login'], emailCode);
+      return r.ok ? { ok: true } : { ok: false, message: r.message };
+    }
+    // totpCode
+    if (!u.totpEnabled || !u.totpSecret) return { ok: false, message: '该账户未启用两步验证' };
+    try {
+      if (verifyTotp(CryptoService.decrypt(u.totpSecret), totpCode)) return { ok: true };
+    } catch {
+      return { ok: false, message: '动态码错误或已过期' };
+    }
+    return { ok: false, message: '动态码错误或已过期' };
+  }
+
+  /**
+   * v2.6.0：管理员修改「他人」密码时，校验提交的是管理员自己的密码。
+   * 依次对 users 表管理员记录 → .env 超管 → 安全设置历史兜底账号验证。
+   */
+  private async verifyAdminPassword(req: Request, adminPassword: string): Promise<boolean> {
+    const pwd = String(adminPassword || '');
+    if (!pwd) return false;
+    const me = this.me(req);
+    const row = me ? await prisma.user.findUnique({ where: { username: me } }) : null;
+    if (row && row.role === 'admin') return CryptoService.verifyPassword(pwd, row.passwordHash);
+    // 超管（仅 .env 配置）
+    const suUser = (process.env.SUPER_ADMIN_USERNAME || '').trim();
+    const suPass = process.env.SUPER_ADMIN_PASSWORD || '';
+    if (suUser && suPass && me === suUser && pwd === suPass) return true;
+    // 历史兜底：安全设置里的管理端账号
+    try {
+      const raw = await this.sysConfig.readSecurityRaw();
+      const cfgPass = String(raw?.auth?.admin?.adminPassword || '');
+      const cfgUser = String(raw?.auth?.admin?.adminUsername || '').trim() || 'admin';
+      if (cfgPass && me === cfgUser && pwd === cfgPass) return true;
+    } catch {
+      /* 忽略配置读取失败 */
+    }
+    return false;
+  }
+
+  /**
+   * v2.6.0：给目标账户发「修改密码」验证码（本人或管理员可调用）。
+   * 前端用户编辑页「修改密码」区使用；与 2FA 的发码端点互相独立。
+   */
+  @Post(':id/password/send-code')
+  async sendPasswordChangeCode(@Req() req: Request, @Param('id') id: string) {
+    const { u, err } = await this.totpTarget(req, id);
+    if (!u) return { success: false, message: err };
+    if (!u.email || !u.emailVerified) return { success: false, message: '该账户邮箱未验证，无法发送验证码' };
+    if (!(await this.mail.configured())) {
+      return { success: false, message: '管理员尚未配置发信邮箱（安全设置 → 邮箱配置）' };
+    }
+    const r = await this.mail.sendCode(u.email, 'change-password', u.nickname || u.username);
+    if (!r.ok) return { success: false, message: r.message };
+    return { success: true, message: `验证码已发送至 ${maskEmail(u.email)}`, data: { email: maskEmail(u.email) } };
+  }
+
   /** 生成密钥（暂不启用），返回二维码内容 */
   @Post(':id/totp/setup')
   async totpSetup(@Req() req: Request, @Param('id') id: string) {
@@ -799,9 +905,9 @@ export class UsersController {
   }
 
   /**
-   * 「验证器丢失」时关闭两步验证（v2.3.0）。
-   * 需要同时提交「邮箱验证码」+「一枚恢复码」两个凭据。
-   * 本人与管理员都可操作（管理员代操作时，需用户把两个码提供给管理员）。
+   * 「验证器丢失」时关闭两步验证（v2.3.0；v2.6.0 起二凭据任选其一）。
+   * 提交「邮箱验证码」或「一枚恢复码」任意一个即可，不再要求同时提供。
+   * 本人与管理员都可操作。
    */
   @Post(':id/totp/disable-fallback')
   async totpDisableFallback(
@@ -815,24 +921,31 @@ export class UsersController {
     if (!u.email || !u.emailVerified) return { success: false, message: '该账户邮箱未验证，无法使用邮箱验证码关闭' };
     const emailCode = String(body?.emailCode || '').trim();
     const recoveryCode = String(body?.recoveryCode || '').trim();
-    if (!emailCode) return { success: false, message: '请输入邮箱验证码' };
-    if (!recoveryCode) return { success: false, message: '请输入一枚恢复码' };
+    if (!emailCode && !recoveryCode) return { success: false, message: '请提供邮箱验证码或恢复码（任一即可）' };
 
-    const mailRes = this.mail.consumeAnyCode(u.email, ['disable-2fa', 'login'], emailCode);
-    if (!mailRes.ok) return { success: false, message: mailRes.message };
-    const hit = consumeRecoveryCode(u.recoveryHashes, recoveryCode);
-    if (!hit) return { success: false, message: '恢复码无效或已被使用' };
+    let method = '';
+    let recoveryHashes = u.recoveryHashes;
+    if (emailCode) {
+      const mailRes = this.mail.consumeAnyCode(u.email, ['disable-2fa', 'login'], emailCode);
+      if (!mailRes.ok) return { success: false, message: mailRes.message };
+      method = '邮箱验证码';
+    } else {
+      const hit = consumeRecoveryCode(u.recoveryHashes, recoveryCode);
+      if (!hit) return { success: false, message: '恢复码无效或已被使用' };
+      recoveryHashes = JSON.stringify(hit.rest);
+      method = '恢复码';
+    }
 
     await prisma.user.update({
       where: { id: u.id },
       data: {
         totpEnabled: false,
         totpSecret: '',
-        recoveryHashes: JSON.stringify(hit.rest),
+        recoveryHashes,
         backVerifiedAt: null,
       },
     });
-    appLog.warn('auth', `账户「${u.username}」通过「邮箱验证码 + 恢复码」关闭了两步验证`);
+    appLog.warn('auth', `账户「${u.username}」通过「${method}」关闭了两步验证`);
     return { success: true, message: '两步验证已关闭，请重新绑定验证器' };
   }
 

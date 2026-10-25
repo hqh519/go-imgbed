@@ -9,6 +9,7 @@
                 <AdminHeaderActions
                     :show-link-format="showLinkFormat"
                     :disable-tooltip="isMobile"
+                    :is-mobile="isMobile"
                     @link-format="$emit('link-format')"
                     @logout="handleLogout"
                 />
@@ -166,9 +167,39 @@ export default {
         height: var(--admin-header-reserved-space, 114px);
     }
 
+    /*
+     * v2.6.0 #302：搜索区打平（display: contents），
+     * 让 标签/刷新/回收站 上移到第一行（与「更多菜单」同行），
+     * 搜索框 + 筛选留在第二行且搜索框加长（flex 占满剩余宽度）。
+     */
     .admin-header-search {
+        display: contents;
+    }
+
+    .admin-header-content :deep(.search-area) {
+        display: contents;
+    }
+
+    /* 第一行：标签 / 刷新 / 回收站（跟在 DashboardTabs 后面） */
+    .admin-header-content :deep(.tag-filter-badge),
+    .admin-header-content :deep(.refresh-files-btn) {
+        order: 1;
+    }
+
+    /* 第二行：搜索框加长占满 + 筛选按钮靠右 */
+    .admin-header-content :deep(.search-card) {
         order: 3;
-        flex: 1 0 100%;
+        flex: 1 1 auto;
+    }
+
+    .admin-header-content :deep(.search-card :deep(.el-input)) {
+        width: 100%;
+    }
+
+    .admin-header-content :deep(.search-area > .filter-trigger),
+    .admin-header-content :deep(.search-area > *:not(.search-card):not(.tag-filter-badge):not(.refresh-files-btn)) {
+        order: 4;
+        margin-left: auto;
     }
 
     .admin-header-tools {
@@ -176,6 +207,7 @@ export default {
     }
 
     .admin-header-content :deep(.admin-header-actions) {
+        order: 2;
         margin-left: auto;
     }
 }

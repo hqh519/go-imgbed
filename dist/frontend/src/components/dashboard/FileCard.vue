@@ -8,6 +8,7 @@
     <div
         class="file-card"
         :class="{ 'is-selected': localSelected }"
+        @contextmenu.prevent
         @touchstart="$emit('touchstart', $event)"
         @touchend="$emit('touchend', $event)"
         @touchmove="$emit('touchmove', $event)"
@@ -93,6 +94,7 @@
                 </div>
 
                 <div class="overlay-actions" @click.stop>
+                    <!-- v2.6.0：封面「移动」按钮移除，只留 复制 / 打开 -->
                     <el-tooltip :disabled="disableTooltip" :content="$t('dashboard.copyLink')" placement="top" :show-after="600">
                         <button class="overlay-btn" @click.stop="$emit('copy')">
                             <font-awesome-icon icon="copy"></font-awesome-icon>
@@ -101,11 +103,6 @@
                     <el-tooltip :disabled="disableTooltip" :content="$t('dashboard.openLink')" placement="top" :show-after="600">
                         <button class="overlay-btn" @click.stop="$emit('openLink')">
                             <font-awesome-icon icon="external-link-alt"></font-awesome-icon>
-                        </button>
-                    </el-tooltip>
-                    <el-tooltip :disabled="disableTooltip" :content="$t('dashboard.moveFile')" placement="top" :show-after="600">
-                        <button class="overlay-btn" @click.stop="$emit('move')">
-                            <font-awesome-icon icon="file-export"></font-awesome-icon>
                         </button>
                     </el-tooltip>
                 </div>
@@ -365,12 +362,13 @@ export default {
     opacity: 1;
     pointer-events: auto;
 }
+/* v2.6.0：左上角渠道图标与右上角选择按钮「同水平」—— 垂直居中对齐 + 减小上边距 */
 .overlay-top {
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     justify-content: space-between;
     gap: 6px;
-    padding: 6px 8px;
+    padding: 4px 8px;
 }
 .card-tags {
     display: flex;
@@ -458,13 +456,14 @@ export default {
 .overlay-btn:active {
     transform: scale(0.95);
 }
-/* 下方中间：访问次数（小眼睛 + 数字） */
+/* 下方中间：访问次数（小眼睛 + 数字）；v2.6.0 下方边距 +1px */
 .card-views-badge {
     align-self: center;
     display: inline-flex;
     align-items: center;
     gap: 4px;
     padding: 2px 9px;
+    margin-bottom: 1px;
     border-radius: 999px;
     font-size: 11px;
     font-weight: 600;
@@ -571,18 +570,14 @@ export default {
     .card-views-badge {
         display: none;
     }
-    .overlay-top {
-        padding: 4px 6px;
+    /* v2.6.0：移动端封面左上角不显示存储/备份渠道图标 */
+    .card-tags {
+        display: none;
     }
-    .channel-tag,
-    .backup-tag {
-        max-width: 64px;
-        height: 16px;
-        padding: 0 5px;
-        border-radius: 5px;
-        font-size: 9px;
-        overflow: hidden;
-        text-overflow: ellipsis;
+    /* v2.6.0：选择按钮与渠道图标同水平（同步收紧上边距 + 垂直居中） */
+    .overlay-top {
+        align-items: center;
+        padding: 3px 6px;
     }
     .card-info {
         padding: 8px 10px;

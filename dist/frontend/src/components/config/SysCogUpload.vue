@@ -308,8 +308,8 @@
                         <el-button text type="primary" size="small" @click="openEditDialog(channelType.value, channel)">
                             <font-awesome-icon icon="edit" style="margin-right: 4px;"/>编辑
                         </el-button>
+                        <!-- v2.6.0：本地存储渠道也开放「授权」设置（名单为空 = 全员可用兜底，非空 = 仅勾选账户） -->
                         <el-button
-                            v-if="channel.type !== 'local'"
                             text
                             type="primary"
                             size="small"
@@ -365,6 +365,7 @@
             <div class="auth-tip">
                 <font-awesome-icon icon="info-circle" style="margin-right: 6px;"/>
                 仅被勾选的账户能在自己的上传设置里看到并使用该渠道；管理员不受限制，始终可用。
+                <template v-if="authChannel?.type === 'local'">内置本地存储渠道授权名单为空时对所有账户开放（零配置兜底），勾选后仅名单内账户可用。</template>
             </div>
             <div v-loading="authLoading" class="auth-body">
                 <el-checkbox-group v-model="authSelected" v-if="authUsers.length">

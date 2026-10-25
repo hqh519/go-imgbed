@@ -42,8 +42,8 @@ export interface ResolvedVideo {
 
 type ResolveResult = { ok: true; video: ResolvedVideo } | { ok: false; message: string };
 
-/** 带超时的文本抓取（HTML / JSON API） */
-async function fetchText(url: string, referer?: string, timeoutMs = 15000): Promise<string> {
+/** 带超时的文本抓取（HTML / JSON API）；finalUrl 用于回传重定向后的最终地址 */
+async function fetchText(url: string, referer?: string, timeoutMs = 15000, finalUrl?: { value: string }): Promise<string> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
@@ -53,6 +53,7 @@ async function fetchText(url: string, referer?: string, timeoutMs = 15000): Prom
       headers: { ...BASE_HEADERS, ...(referer ? { referer } : {}) },
     });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    if (finalUrl) finalUrl.value = resp.url || url;
     return await resp.text();
   } finally {
     clearTimeout(timer);
@@ -83,8 +84,9 @@ function absolutize(u: string, base: string): string | null {
 
 /**
  * 通用 HTML 提取：按命中概率排序收集视频候选。
+ * （export 仅为链路测试用：dev-tools/test-video-resolve.js 离线验证抖音 RENDER_DATA 解码）
  */
-function extractCandidatesFromHtml(html: string, baseUrl: string): string[] {
+export function extractCandidatesFromHtml(html: string, baseUrl: string): string[] {
   const out: string[] = [];
   const push = (raw?: string | null) => {
     if (!raw) return;
@@ -117,10 +119,53 @@ function extractCandidatesFromHtml(html: string, baseUrl: string): string[] {
     push(m[1]);
   }
 
+  /*
+   * v2.6.0（v20261024-1）：抖音 / 快手页面的数据藏在百分号编码的 RENDER_DATA
+   * （或 __INITIAL_STATE__）里，上面按原文匹配的正则全都看不见 —— 先把整页做
+   * decodeURIComponent 尝试解码，再用同样的规则跑一遍。解码失败（含裸 %）的
+   * 片段 decodeURIComponent 会抛错，这里按 script 块分段解码，单块失败不影响其他。
+   */
+  const decodedChunks: string[] = [];
+  const scriptRe = /<script[^>]*>([\s\S]*?)<\/script>/gi;
+  while ((m = scriptRe.exec(html)) !== null) {
+    try {
+      decodedChunks.push(decodeURIComponent(m[1]));
+    } catch {
+      /* 该块不是合法百分号编码，跳过 */
+    }
+  }
+  // URL 数组字段：抖音 play_addr.url_list / 快手 photo.url 数组等。
+  // 解码块里任何 http 地址都会被扫到（头像/封面/统计打点…），
+  // 这里只保留带视频特征的地址，避免噪声挤掉真候选（调用方最多探测 6 条）。
+  const urlListRe = /(?:https?%3A%2F%2F|https?:\\?\/\\?\/)[^\s"'<>\\)\]]+/gi;
+  const videoHint = /mp4|video|play|aweme|motion|media|stream/i;
+  for (const chunk of decodedChunks) {
+    let um: RegExpExecArray | null;
+    while ((um = urlListRe.exec(chunk)) !== null) {
+      const cand = um[0].replace(/\\/g, '');
+      if (videoHint.test(cand)) push(cand);
+    }
+  }
+  for (const chunk of decodedChunks) {
+    let jm: RegExpExecArray | null;
+    const chunkJsonRe = new RegExp(jsonRe.source, 'gi');
+    while ((jm = chunkJsonRe.exec(chunk)) !== null) {
+      push(jm[1]);
+    }
+  }
+
   // 4. 裸视频直链兜底
   const bareRe = /https?:\/\/[^\s"'<>]+\.mp4[^\s"'<>]*/gi;
   while ((m = bareRe.exec(html)) !== null) {
     push(m[0]);
+  }
+  // 4b. 解码块里的裸视频直链（含百分号编码形式还原）
+  const bareDecodedRe = /https?:\/\/[^\s"'<>]+(?:\.mp4|mime_type%3Dvideo[^\s"'<>]*)[^\s"'<>]*/gi;
+  for (const chunk of decodedChunks) {
+    let bm: RegExpExecArray | null;
+    while ((bm = bareDecodedRe.exec(chunk)) !== null) {
+      push(bm[0]);
+    }
   }
 
   return out;
@@ -245,11 +290,13 @@ export async function resolveVideoPage(url: string): Promise<ResolveResult> {
   }
 
   let html: string;
+  const finalUrl = { value: url };
   try {
-    html = await fetchText(url, undefined, 15000);
+    html = await fetchText(url, undefined, 15000, finalUrl);
   } catch (e) {
     return { ok: false, message: `页面拉取失败: ${(e as Error).message}` };
   }
 
-  return resolveVideoFromHtml(url, html);
+  // v2.6.0：短链（b23.tv 等）302 后用最终地址解析，平台判断才不会落空
+  return resolveVideoFromHtml(finalUrl.value, html);
 }

@@ -13,6 +13,10 @@
  *      否则用户下次要按两下返回才有反应。
  *
  * 只在窄屏（<=768px，即移动端布局）启用，桌面端返回键行为完全不变。
+ *
+ * v2.6.0 完善：关闭浮层前在 window 上打 `__goimgbedBackGuardAt` 时间戳标记；
+ * 路由守卫（如 2FA 弹窗 settleTotp）凭「标记时间 < 500ms」识别返回键关闭，
+ * 只终止本次导航（next(false)），不再同时执行回首页/页面回退。
  */
 
 const MOBILE_MAX_WIDTH = 768
@@ -42,6 +46,12 @@ function closeTopOverlay() {
     const list = visibleOverlays()
     const top = list[list.length - 1]
     if (!top) return false
+    // v2.6.0：给业务侧留一个「本次关闭来自返回键」的标记，
+    // 供路由守卫等逻辑区分「用户主动取消」与「返回键关闭」——
+    // 返回键只关弹窗，不允许同时再触发页面回退/重定向。
+    try {
+        window.__goimgbedBackGuardAt = Date.now()
+    } catch (e) { /* 忽略 */ }
     const btn = top.querySelector(
         '.el-dialog__headerbtn, .el-message-box__headerbtn, .el-drawer__close-btn, .el-dialog__close'
     )

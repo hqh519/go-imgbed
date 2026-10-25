@@ -1,13 +1,108 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.getIpQueryCfg = getIpQueryCfg;
+exports.addressByRegionFormat = addressByRegionFormat;
+exports.formatIpDisplay = formatIpDisplay;
+exports.ipDisplayOf = ipDisplayOf;
+exports.ipDisplayBatch = ipDisplayBatch;
 exports.isPrivateIp = isPrivateIp;
 exports.cachedAddress = cachedAddress;
 exports.resolveAddress = resolveAddress;
 exports.touchIpUpload = touchIpUpload;
 const prisma_1 = require("./prisma");
+const qqwry_1 = require("./qqwry");
 const memCache = new Map();
 const MEM_TTL = 10 * 60 * 1000;
 const inflight = new Map();
+let cfgCache = { at: 0, cfg: null };
+async function getIpQueryCfg(sysConfig) {
+    if (Date.now() - cfgCache.at < 5000)
+        return cfgCache.cfg;
+    let cfg = null;
+    try {
+        const security = await sysConfig.get('security');
+        const q = security?.upload?.ipQuery;
+        if (q) {
+            cfg = {
+                enabled: q.enabled === true,
+                channel: String(q.channel || 'ipApi'),
+                displayFormat: String(q.displayFormat || 'ipFirst'),
+                regionFormat: String(q.regionFormat || 'provinceArea'),
+                raw: q,
+            };
+        }
+    }
+    catch {
+        cfg = null;
+    }
+    cfgCache = { at: Date.now(), cfg };
+    return cfg;
+}
+function addressByRegionFormat(parts, regionFormat) {
+    const country = String(parts.country || '').trim();
+    const region = String(parts.region || '').trim();
+    const city = String(parts.city || '').trim();
+    if (regionFormat === 'province') {
+        return region || country;
+    }
+    if (regionFormat === 'area') {
+        return city || region || country;
+    }
+    if (region && city)
+        return `${region}${city}`;
+    if (region || city)
+        return region || city;
+    return country;
+}
+function formatIpDisplay(ip, address, cfg) {
+    const a = String(address || '').trim();
+    const i = String(ip || '').trim();
+    if (!a)
+        return i;
+    if (!i)
+        return a;
+    switch (cfg?.displayFormat) {
+        case 'addressFirst':
+            return `${a}(${i})`;
+        case 'ipThenAddress':
+            return `${i}\n${a}`;
+        case 'addressThenIp':
+            return `${a}\n${i}`;
+        case 'ipFirst':
+        default:
+            return `(${i})${a}`;
+    }
+}
+async function ipDisplayOf(ip, fallbackAddress, sysConfig) {
+    const cfg = await getIpQueryCfg(sysConfig);
+    let address = await cachedAddress(ip);
+    if (!address)
+        address = String(fallbackAddress || '');
+    return { ip, address, display: formatIpDisplay(ip, address, cfg) };
+}
+async function ipDisplayBatch(ips, fallback, sysConfig) {
+    const out = new Map();
+    const uniq = Array.from(new Set(ips.filter(Boolean)));
+    if (!uniq.length)
+        return out;
+    const cfg = await getIpQueryCfg(sysConfig);
+    let records = [];
+    try {
+        records = await prisma_1.prisma.ipRecord.findMany({ where: { ip: { in: uniq } } });
+    }
+    catch {
+    }
+    const addrOf = new Map();
+    for (const r of records) {
+        const joined = [r.country, r.region, r.city].filter(Boolean).join(' ');
+        addrOf.set(r.ip, addressByRegionFormat(r, cfg?.regionFormat || 'provinceArea') || joined);
+    }
+    for (const ip of uniq) {
+        const address = addrOf.get(ip) || String(fallback?.get(ip) || '');
+        out.set(ip, formatIpDisplay(ip, address, cfg));
+    }
+    return out;
+}
 function isPrivateIp(ip) {
     const s = String(ip || '').trim();
     if (!s)
@@ -69,19 +164,34 @@ async function resolveAddress(ip, sysConfig) {
     const task = (async () => {
         let cfg;
         try {
-            const security = await sysConfig.get('security');
-            cfg = security?.upload?.ipQuery;
+            cfg = await getIpQueryCfg(sysConfig);
         }
         catch {
             return '';
         }
         if (!cfg?.enabled)
             return '';
+        if (cfg.channel === 'local') {
+            try {
+                const r = (0, qqwry_1.queryQqwry)(ip);
+                if (r && (r.country || r.region || r.city)) {
+                    const address = addressByRegionFormat(r, cfg.regionFormat);
+                    if (address)
+                        await saveAddress(ip, r.country, r.region, r.city, address);
+                    return address;
+                }
+                return '';
+            }
+            catch (err) {
+                console.warn('[ipQuery] 本地数据包查询失败:', err.message);
+                return '';
+            }
+        }
         const timeout = AbortSignal.timeout(6000);
         try {
-            if (cfg.channel === 'customApi' && cfg.customApi?.url) {
-                let url = String(cfg.customApi.url);
-                for (const p of cfg.customApi.params || []) {
+            if (cfg.channel === 'customApi' && cfg.raw?.customApi?.url) {
+                let url = String(cfg.raw.customApi.url);
+                for (const p of cfg.raw.customApi.params || []) {
                     if (!p?.key)
                         continue;
                     url = url.replace(new RegExp(`\\{${p.key}\\}`, 'g'), encodeURIComponent(p.value === '{ip}' ? ip : p.value));
@@ -91,7 +201,7 @@ async function resolveAddress(ip, sysConfig) {
                 const pick = (path) => String(path)
                     .split('.')
                     .reduce((o, k) => (o == null ? '' : o[k]), json) || '';
-                const fields = cfg.customApi.responseFields || [];
+                const fields = cfg.raw.customApi.responseFields || [];
                 const parts = fields.map(pick).filter(Boolean);
                 const address = parts.join(' ');
                 if (address)
@@ -103,8 +213,9 @@ async function resolveAddress(ip, sysConfig) {
             const country = json?.country || '';
             const region = json?.regionName || '';
             const city = json?.city || '';
-            const address = [country, region, city].filter(Boolean).join(' ');
-            if (address)
+            const full = [country, region, city].filter(Boolean).join(' ');
+            const address = addressByRegionFormat({ country, region, city }, cfg.regionFormat) || full;
+            if (full)
                 await saveAddress(ip, country, region, city, address);
             return address;
         }

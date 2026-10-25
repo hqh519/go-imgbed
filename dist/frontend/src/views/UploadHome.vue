@@ -159,8 +159,9 @@
         <div class="header">
             <h1 class="title">
                 <span class="title-crayon-text" aria-hidden="true">{{ ownerName }}</span>
+                <!-- v2.6.0：移除图床名称的跳转链接（仅去 <a>，样式不变） -->
                 <span class="title-base-text">
-                    <a class="main-title" :href="siteLink" target="_blank" rel="noreferrer">{{ ownerName }}</a>
+                    <span class="main-title">{{ ownerName }}</span>
                 </span>
             </h1>
         </div>
@@ -190,9 +191,9 @@
                 <span>{{ $t('upload.linkTab') }}</span>
             </button>
         </div>
-        <UploadForm 
-            :selectedUrlForm="selectedUrlForm" 
-            :customerCompress="customerCompress" 
+        <UploadForm
+            :selectedUrlForm="selectedUrlForm"
+            v-model:customerCompress="customerCompress"
             :compressBar="compressBar"
             :serverCompress="serverCompress"
             :uploadChannel="uploadChannel"
@@ -1469,17 +1470,26 @@ html.dark .upload-folder:hover :deep(.el-input__wrapper) {
     .upload-folder-container {
         position: absolute;
     }
-    .upload-home :deep(.logo-link),
+    /*
+     * v2.6.0：修复「移动端左上角 LOGO 不显示」——
+     * 旧方案把 .logo-link 与 .logo--fixed 同时改 absolute，img 与 <a> 形成嵌套定位
+     * 且 static 位置在 flex 居中布局里不可控（实测 LOGO 整个不落在可视区）。
+     * 改为：LOGO 整体 fixed 挂视口（恒显示、不随滚动）；img 在链接内部改回
+     * 静态流式布局，由 <a> 统一定位，避免双重偏移。
+     */
+    .upload-home :deep(.logo-link) {
+        position: fixed;
+        top: calc(16px + env(safe-area-inset-top, 0px));
+        left: calc(16px + env(safe-area-inset-left, 0px));
+        display: inline-block;
+        z-index: 901;
+    }
     .upload-home :deep(.logo--fixed) {
-        position: absolute;
+        position: static;
     }
     .mobile-more-dropdown {
         top: calc(30px + env(safe-area-inset-top, 0px));
         right: calc(14px + env(safe-area-inset-right, 0px));
-    }
-    .upload-home :deep(.logo-link) {
-        top: calc(20px + env(safe-area-inset-top, 0px));
-        left: calc(20px + env(safe-area-inset-left, 0px));
     }
 }
 /* 上传区整体（标签页 + 上传框）作为一个纵向栈，统一保持原有的视觉上移 */

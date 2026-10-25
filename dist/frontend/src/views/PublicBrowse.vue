@@ -54,19 +54,6 @@
     <div v-else-if="error" class="error-container">
       <p>{{ error }}</p>
       <button v-if="canRetry" @click="loadFiles" class="retry-btn">{{ $t('publicBrowse.retry') }}</button>
-      <div class="error-credit">
-        <p>{{ $t('publicBrowse.creditText') }}</p>
-        <div class="error-credit-links">
-          <a href="https://github.com/axibayuit-a11y" target="_blank" rel="noopener">
-            <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
-            GitHub
-          </a>
-          <a href="https://linux.do/u/yuit_axiba/summary" target="_blank" rel="noopener">
-            <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>
-            Linux.do
-          </a>
-        </div>
-      </div>
     </div>
 
     <!-- 瀑布流容器 -->
@@ -88,55 +75,63 @@
         </div>
       </div>
 
-      <!-- 瀑布流图片区域 -->
-      <div class="waterfall" ref="waterfall">
-        <div 
-          v-for="(column, colIndex) in columns" 
-          :key="colIndex" 
-          class="waterfall-column"
-        >
-          <div 
-            v-for="file in column" 
-            :key="file.name"
-            class="waterfall-item"
-            @click="openPreview(file)"
-          >
-            <div class="image-wrapper" :class="{ loaded: file.loaded }">
-              <img 
-                v-if="isImage(file)"
-                :src="getFileUrl(file.name)" 
-                :alt="file.name"
-                loading="lazy"
-                @load="onImageLoad($event, file)"
-                @error="handleImageError"
-              />
-              <video 
-                v-else-if="isVideo(file)"
-                :src="getFileUrl(file.name)"
-                muted
-                loop
-                preload="metadata"
-                @loadedmetadata="onVideoLoad($event, file)"
-                @pointerenter="e => e.pointerType === 'mouse' && e.target.play()"
-                @pointerleave="e => e.pointerType === 'mouse' && e.target.pause()"
-              ></video>
-              <div v-else-if="isAudio(file)" class="audio-placeholder">
-                <svg class="audio-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>
-                <span class="audio-name">{{ getFileName(file.name) }}</span>
-              </div>
-              <div v-else class="file-placeholder">
-                <svg viewBox="0 0 24 24" fill="currentColor"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm-1 7V3.5L18.5 9H13z"/></svg>
-                <span class="file-name">{{ getFileName(file.name) }}</span>
-              </div>
-              <!-- 悬浮操作层 -->
-              <div class="overlay">
-                <div class="overlay-actions">
+      <!-- v2.6.0：历史记录风格时间线（上缩略图下链接，hover 复制/打开/下载，点击灯箱预览） -->
+      <div class="timeline" ref="waterfall">
+        <div v-for="group in groups" :key="group.date" class="timeline-group">
+          <div class="timeline-header">
+            <span class="timeline-dot"></span>
+            <span class="date-label">{{ group.date }}</span>
+            <span class="date-count">{{ group.items.length }}</span>
+          </div>
+          <div class="browse-grid">
+            <div
+              v-for="file in group.items"
+              :key="file.name"
+              class="grid-item is-clickable"
+              @click="openPreview(file)"
+            >
+              <div class="grid-preview" :class="{ loaded: file.loaded }">
+                <img
+                  v-if="isImage(file)"
+                  :src="getFileUrl(file.name)"
+                  :alt="file.name"
+                  loading="lazy"
+                  @load="onMediaLoad(file)"
+                  @error="handleImageError"
+                />
+                <video
+                  v-else-if="isVideo(file)"
+                  :src="getFileUrl(file.name)"
+                  muted
+                  preload="metadata"
+                  @loadeddata="onMediaLoad(file)"
+                ></video>
+                <div v-else class="file-icon-wrapper">
+                  <svg v-if="isAudio(file)" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>
+                  <svg v-else viewBox="0 0 24 24" fill="currentColor"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm-1 7V3.5L18.5 9H13z"/></svg>
+                  <span class="file-ext">{{ extOf(file.name) }}</span>
+                </div>
+                <!-- 悬浮操作层：复制 / 打开 / 下载 -->
+                <div class="grid-overlay">
                   <button class="action-btn" @click.stop="copyLink(file.name)" :title="$t('publicBrowse.copyLink')">
                     <svg viewBox="0 0 24 24" fill="currentColor"><path d="M3.9 12c0-1.71 1.39-3.1 3.1-3.1h4V7H7c-2.76 0-5 2.24-5 5s2.24 5 5 5h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1zM8 13h8v-2H8v2zm9-6h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1s-1.39 3.1-3.1 3.1h-4V17h4c2.76 0 5-2.24 5-5s-2.24-5-5-5z"/></svg>
+                  </button>
+                  <button class="action-btn" @click.stop="openLink(file.name)" :title="$t('publicBrowse.openLink')">
+                    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></svg>
                   </button>
                   <button class="action-btn" @click.stop="downloadFile(file.name)" :title="$t('publicBrowse.downloadBtn')">
                     <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
                   </button>
+                </div>
+              </div>
+              <div class="grid-info">
+                <div class="file-name" :title="displayName(file)">
+                  <span class="name-start">{{ nameParts(file).start }}</span><span class="name-end">{{ nameParts(file).end }}</span>
+                </div>
+                <div class="file-url" :title="getFileUrl(file.name)">{{ getFileUrl(file.name) }}</div>
+                <div class="grid-meta">
+                  <span>{{ formatTime(file.metadata?.TimeStamp) }}</span>
+                  <span v-if="file.metadata?.FileSize">{{ file.metadata.FileSize }}</span>
                 </div>
               </div>
             </div>
@@ -158,9 +153,6 @@
         <div v-else-if="!hasMore && mediaFiles.length > 0" class="no-more">
           {{ $t('publicBrowse.allLoaded') }}
         </div>
-        <a v-if="!hasMore && mediaFiles.length > 0" class="credit-link" href="https://github.com/axibayuit-a11y" target="_blank" rel="noopener">
-          {{ $t('publicBrowse.creditLink') }}
-        </a>
       </div>
     </div>
 
@@ -345,8 +337,6 @@ export default {
       filterType: '',
       lastScrollY: 0,
       scrollPage: 0,
-      columnCount: 4,
-      columnHeights: [0, 0, 0, 0],
       // 桌面端旋转和缩放
       imageRotation: 0,
       imageScale: 1,
@@ -405,17 +395,17 @@ export default {
       // 根据滚动比例计算当前在第几页
       return Math.min(startPage + Math.floor(this.scrollPage * loadedPages), this.totalPages);
     },
-    columns() {
-      const cols = Array.from({ length: this.columnCount }, () => []);
-      for (const file of this.mediaFiles) {
-        const idx = file.columnIndex ?? 0;
-        if (idx < this.columnCount) {
-          cols[idx].push(file);
-        } else {
-          cols[0].push(file);
-        }
+    /** v2.6.0：历史记录风格 —— 按上传日期分组（TimeStamp 毫秒时间戳，保持后端时间倒序） */
+    groups() {
+      const map = new Map();
+      for (const f of this.mediaFiles) {
+        const d = new Date(Number(f.metadata?.TimeStamp) || Date.now());
+        const p = (n) => String(n).padStart(2, '0');
+        const key = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+        if (!map.has(key)) map.set(key, []);
+        map.get(key).push(f);
       }
-      return cols;
+      return Array.from(map.entries()).map(([date, items]) => ({ date, items }));
     },
     currentPreviewFile() {
       return this.mediaFiles[this.previewIndex];
@@ -460,8 +450,6 @@ export default {
     this.checkMobile();
     this.initFromRoute();
     this.setupIntersectionObserver();
-    this.updateColumnCount();
-    window.addEventListener('resize', this.updateColumnCount);
     window.addEventListener('resize', this.checkMobile);
     window.addEventListener('scroll', this.handleScroll);
     document.addEventListener('pointerdown', this.handleSearchOutside);
@@ -470,7 +458,6 @@ export default {
     if (this.observer) {
       this.observer.disconnect();
     }
-    window.removeEventListener('resize', this.updateColumnCount);
     window.removeEventListener('resize', this.checkMobile);
     window.removeEventListener('scroll', this.handleScroll);
     document.removeEventListener('pointerdown', this.handleSearchOutside);
@@ -529,7 +516,6 @@ export default {
     resetAndLoad() {
       this.files = [];
       this.hasMore = true;
-      this.columnHeights = new Array(this.columnCount).fill(0);
       this.loadFiles().then(() => {
         // 重新观察加载触发器，确保无限滚动继续工作
         this.observeLoadTrigger();
@@ -597,66 +583,8 @@ export default {
       return f.name;
     },
 
-    updateColumnCount() {
-      const width = window.innerWidth;
-      let newCount;
-      if (width < 600) {
-        newCount = 2;
-      } else if (width < 900) {
-        newCount = 3;
-      } else {
-        newCount = 4;
-      }
-      
-      if (newCount !== this.columnCount) {
-        this.columnCount = newCount;
-        this.columnHeights = new Array(this.columnCount).fill(0);
-        this.mediaFiles.forEach(f => {
-          f.columnIndex = undefined;
-          this.assignToColumn(f);
-        });
-      }
-    },
-
-    getShortestColumn() {
-      let minIndex = 0;
-      let minHeight = this.columnHeights[0];
-      for (let i = 1; i < this.columnCount; i++) {
-        if (this.columnHeights[i] < minHeight) {
-          minHeight = this.columnHeights[i];
-          minIndex = i;
-        }
-      }
-      return minIndex;
-    },
-
-    assignToColumn(file, height = 200) {
-      const colIndex = this.getShortestColumn();
-      file.columnIndex = colIndex;
-      this.columnHeights[colIndex] += height;
-      // 音频和其他文件直接标记为已加载（没有 load 事件）
-      if (this.isAudio(file) || (!this.isImage(file) && !this.isVideo(file))) {
-        file.loaded = true;
-      }
-    },
-
-    onImageLoad(event, file) {
-      const img = event.target;
-      const ratio = img.naturalHeight / img.naturalWidth;
-      const height = 280 * ratio;
-      if (file.columnIndex === undefined) {
-        this.assignToColumn(file, height);
-      }
-      file.loaded = true;
-    },
-
-    onVideoLoad(event, file) {
-      const video = event.target;
-      const ratio = video.videoHeight / video.videoWidth;
-      const height = 280 * ratio;
-      if (file.columnIndex === undefined) {
-        this.assignToColumn(file, height);
-      }
+    /** 媒体载入完成：去掉占位背景 */
+    onMediaLoad(file) {
       file.loaded = true;
     },
 
@@ -690,7 +618,6 @@ export default {
       this.currentPath = dirPath;
       this.files = [];
       this.hasMore = true;
-      this.columnHeights = new Array(this.columnCount).fill(0);
       // 重置搜索状态
       this.searchInput = '';
       this.searchKeyword = '';
@@ -728,10 +655,13 @@ export default {
           name: f.name,
           isFolder: false,
           metadata: f.metadata,
-          columnIndex: undefined
+          loaded: false
         }));
-        
-        files.forEach(f => this.assignToColumn(f));
+
+        // 音频/其他类型没有 load 事件，直接标记为已加载（去掉占位背景）
+        files.forEach(f => {
+          if (!this.isImage(f) && !this.isVideo(f)) f.loaded = true;
+        });
         
         this.files = [...dirs, ...files];
         this.totalCount = res.data.totalCount || this.files.length;
@@ -772,10 +702,12 @@ export default {
           name: f.name,
           isFolder: false,
           metadata: f.metadata,
-          columnIndex: undefined
+          loaded: false
         }));
-        
-        moreFiles.forEach(f => this.assignToColumn(f));
+
+        moreFiles.forEach(f => {
+          if (!this.isImage(f) && !this.isVideo(f)) f.loaded = true;
+        });
         this.files.push(...moreFiles);
         this.hasMore = (this.currentStartIndex + this.mediaFiles.length) < this.totalCount;
       } catch (err) {
@@ -809,24 +741,62 @@ export default {
       return fileLink(name);
     },
 
+    // v2.6.0：File_ID 不带扩展名 → 优先用后端 FileType 判型，扩展名兜底
     isImage(file) {
+      if (file?.metadata?.FileType === 'image') return true;
       const ext = file.name.split('.').pop().toLowerCase();
       return ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg', 'avif'].includes(ext);
     },
 
     isVideo(file) {
+      if (file?.metadata?.FileType === 'video') return true;
       const ext = file.name.split('.').pop().toLowerCase();
       // 浏览器原生支持的视频格式 + 部分浏览器支持的格式
       return ['mp4', 'webm', 'ogg', 'mov', 'm4v', 'mkv', 'avi', '3gp', 'mpeg', 'mpg'].includes(ext);
     },
 
     isAudio(file) {
+      if (file?.metadata?.FileType === 'audio') return true;
       const ext = file.name.split('.').pop().toLowerCase();
       return ['mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a', 'wma', 'ape', 'opus'].includes(ext);
     },
 
     getFileName(name) {
       return name.split('/').pop();
+    },
+
+    /** 展示名：优先原始文件名 */
+    displayName(file) {
+      return String(file?.metadata?.FileName || file?.name || '').split('/').pop();
+    },
+
+    /** 扩展名大写（占位图标下标） */
+    extOf(name) {
+      const ext = String(name || '').split('.').pop();
+      return ext ? ext.toUpperCase() : 'FILE';
+    },
+
+    /**
+     * v2.6.0：文件名「中间省略」—— 与历史记录页同款双 span 方案，
+     * start 可收缩出省略号，end（含扩展名）固定可见
+     */
+    nameParts(file) {
+      const full = this.displayName(file);
+      if (full.length <= 24) return { start: full, end: '' };
+      return { start: full.slice(0, -12), end: full.slice(-12) };
+    },
+
+    /** 上传时间（时分秒） */
+    formatTime(ts) {
+      const d = new Date(Number(ts) || 0);
+      if (!Number.isFinite(d.getTime()) || !ts) return '';
+      const p = (n) => String(n).padStart(2, '0');
+      return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+    },
+
+    /** 新标签页打开外链 */
+    openLink(name) {
+      window.open(this.getFileUrl(name), '_blank', 'noopener');
     },
 
     handleImageError(e) {
@@ -1375,36 +1345,6 @@ html.dark .search-box:hover {
   color: #666;
 }
 
-.error-credit {
-  margin-top: 40px;
-  text-align: center;
-  color: var(--el-text-color-secondary);
-  font-size: 14px;
-}
-
-.error-credit p {
-  margin-bottom: 12px;
-}
-
-.error-credit-links {
-  display: flex;
-  gap: 24px;
-  justify-content: center;
-}
-
-.error-credit-links a {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: #C8C9CC;
-  text-decoration: none;
-  transition: color 0.2s;
-}
-
-.error-credit-links a:hover {
-  color: #3b82f6;
-}
-
 .loading-spinner {
   width: 48px;
   height: 48px;
@@ -1502,150 +1442,145 @@ html.dark .search-box:hover {
   word-break: break-all;
 }
 
-.waterfall {
-  display: flex;
-  gap: 16px;
+/* ===== v2.6.0：历史记录风格时间线 ===== */
+.timeline {
+  padding-left: 28px;
+  border-left: 2px solid #1f1f1f;
+  margin-left: 8px;
 }
 
-.waterfall-column {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.waterfall-item {
-  cursor: pointer;
-}
-
-.image-wrapper {
+.timeline-group {
   position: relative;
+  padding-bottom: 28px;
+}
+
+.timeline-group:last-child {
+  padding-bottom: 0;
+}
+
+.timeline-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 16px;
+  position: relative;
+}
+
+.timeline-dot {
+  position: absolute;
+  left: -37px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #3b82f6;
+  box-sizing: border-box;
+}
+
+.date-label {
+  font-size: 18px;
+  font-weight: 700;
+  color: #e5e7eb;
+}
+
+.date-count {
+  font-size: 12px;
+  padding: 1px 8px;
+  border-radius: 10px;
+  background: #1c1c1c;
+  border: 1px solid #262626;
+  color: #888;
+}
+
+/* 网格卡片：上缩略图、下链接 */
+.browse-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 18px;
+}
+
+.grid-item {
+  background: #141414;
   border-radius: 12px;
   overflow: hidden;
-  background: #141414;
   border: 1px solid #1a1a1a;
-  min-height: 180px;
+  cursor: pointer;
+  transition: box-shadow 0.3s ease, border-color 0.2s ease;
 }
 
-.image-wrapper::before {
+.grid-item:hover {
+  border-color: #333;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+
+.grid-preview {
+  height: 150px;
+  position: relative;
+  background: #101010;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.grid-preview::before {
   content: '';
   position: absolute;
   inset: 0;
-  background: #1a1a1a;
-  background-size: 200% 100%;
-  animation: shimmer 1.5s infinite;
+  background: #161616;
   z-index: 1;
   pointer-events: none;
 }
 
-.image-wrapper.loaded::before {
+.grid-preview.loaded::before {
   display: none;
 }
 
-.image-wrapper.loaded {
-  min-height: auto;
+.grid-preview img,
+.grid-preview video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  position: relative;
+  z-index: 2;
+  display: block;
 }
 
-.image-wrapper img, .image-wrapper video {
-  width: 100%;
-  display: block;
+.file-icon-wrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  color: #555;
   position: relative;
   z-index: 2;
 }
 
-@keyframes shimmer {
-  0% { background-position: 200% 0; }
-  100% { background-position: -200% 0; }
+.file-icon-wrapper svg {
+  width: 42px;
+  height: 42px;
 }
 
-.image-wrapper:hover {
-  border-color: #333;
+.file-ext {
+  font-size: 12px;
+  text-transform: uppercase;
+  color: #888;
 }
 
-.overlay {
+.grid-overlay {
   position: absolute;
   inset: 0;
-  background: rgba(0,0,0,0.5);
-  opacity: 0;
-  transition: opacity 0.2s;
+  background: rgba(0, 0, 0, 0.5);
   display: flex;
-  align-items: flex-end;
-  justify-content: flex-end;
-  padding: 12px;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  opacity: 0;
+  transition: opacity 0.25s ease;
   z-index: 10;
 }
 
-.image-wrapper:hover .overlay {
+.grid-item:hover .grid-overlay {
   opacity: 1;
-}
-
-.file-placeholder {
-  width: 100%;
-  height: 200px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  background: #141414;
-  color: #555;
-  gap: 12px;
-  padding: 16px;
-  box-sizing: border-box;
-}
-
-.file-placeholder svg {
-  width: 48px;
-  height: 48px;
-}
-
-.file-name {
-  font-size: 12px;
-  color: #FAFAFA;
-  text-align: center;
-  word-break: break-all;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-}
-
-.audio-placeholder {
-  width: 100%;
-  height: 200px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  background: #16213e;
-  gap: 12px;
-  padding: 16px;
-  box-sizing: border-box;
-}
-
-.audio-icon {
-  width: 48px;
-  height: 48px;
-  color: #C8C9CC;
-}
-
-.audio-name {
-  font-size: 12px;
-  color: #FAFAFA;
-  text-align: center;
-  word-break: break-all;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-}
-
-.overlay-actions {
-  display: flex;
-  gap: 8px;
 }
 
 .action-btn {
@@ -1653,13 +1588,13 @@ html.dark .search-box:hover {
   height: 32px;
   border: none;
   border-radius: 50%;
-  background: rgba(255,255,255,0.08);
+  background: rgba(255,255,255,0.12);
   cursor: pointer;
   transition: all 0.2s;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #C8C9CC;
+  color: #e5e5e5;
 }
 
 .action-btn svg {
@@ -1668,9 +1603,54 @@ html.dark .search-box:hover {
 }
 
 .action-btn:hover {
-  background: rgba(255,255,255,0.2);
+  background: #3b82f6;
   color: #fff;
   transform: scale(1.1);
+}
+
+.grid-info {
+  padding: 10px 12px;
+  border-top: 1px solid #1a1a1a;
+}
+
+.file-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: #e5e7eb;
+  margin-bottom: 4px;
+  /* 中间省略：start 可收缩出省略号，end（含扩展名）固定可见 */
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
+}
+
+.name-start {
+  flex-shrink: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.name-end {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.file-url {
+  font-size: 11px;
+  color: #6b7280;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 4px;
+}
+
+.grid-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: #666;
 }
 
 .load-trigger {
@@ -1720,20 +1700,6 @@ html.dark .search-box:hover {
 .no-more {
   color: #444;
   font-size: 14px;
-}
-
-.credit-link {
-  display: block;
-  margin-top: 8px;
-  color: #555;
-  font-size: 12px;
-  text-decoration: none;
-  transition: color 0.2s;
-  text-align: center;
-}
-
-.credit-link:hover {
-  color: #888;
 }
 
 /* 预览弹窗 */
@@ -1969,16 +1935,12 @@ html.dark .search-box:hover {
   .gallery-container {
     padding: 12px;
   }
-  
-  .waterfall {
+
+  .browse-grid {
     gap: 10px;
   }
-  
-  .waterfall-column {
-    gap: 10px;
-  }
-  
-  .image-wrapper {
+
+  .grid-item {
     border-radius: 8px;
   }
 }
@@ -2008,18 +1970,22 @@ html.dark .search-box:hover {
   .gallery-container {
     padding: 6px;
   }
-  
-  .waterfall {
-    gap: 6px;
+
+  .browse-grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
   }
-  
-  .waterfall-column {
-    gap: 6px;
-  }
-  
-  .image-wrapper {
+
+  .grid-item {
     border-radius: 6px;
-    min-height: 120px;
+  }
+
+  .timeline {
+    padding-left: 16px;
+  }
+
+  .timeline-dot {
+    left: -25px;
   }
   
   .folders-section {
@@ -2111,14 +2077,6 @@ html.dark .search-box:hover {
   color: var(--el-text-color-secondary);
 }
 
-:root:not(.dark) .error-credit {
-  color: #4E5969;
-}
-
-:root:not(.dark) .error-credit-links a {
-  color: #1D2129;
-}
-
 :root:not(.dark) .loading-spinner {
   border-color: #ddd;
   border-top-color: #3b82f6;
@@ -2147,50 +2105,72 @@ html.dark .search-box:hover {
   color: #666;
 }
 
-:root:not(.dark) .image-wrapper {
+:root:not(.dark) .timeline {
+  border-left-color: var(--el-border-color-lighter);
+}
+
+:root:not(.dark) .date-label {
+  color: #1D2129;
+}
+
+:root:not(.dark) .date-count {
+  background: var(--el-fill-color-light);
+  border-color: var(--el-border-color-lighter);
+  color: var(--el-text-color-secondary);
+}
+
+:root:not(.dark) .timeline-dot {
+  background: var(--el-color-primary);
+}
+
+:root:not(.dark) .grid-item {
   background: #fff;
   border-color: #e0e0e0;
 }
 
-:root:not(.dark) .image-wrapper::before {
-  background: var(--el-border-color-lighter);
-}
-
-:root:not(.dark) .image-wrapper:hover {
+:root:not(.dark) .grid-item:hover {
   border-color: #ccc;
 }
 
-:root:not(.dark) .file-placeholder {
-  background: #f5f5f5;
+:root:not(.dark) .grid-preview {
+  background: var(--el-fill-color-light);
+}
+
+:root:not(.dark) .grid-preview::before {
+  background: var(--el-border-color-lighter);
+}
+
+:root:not(.dark) .file-icon-wrapper {
   color: var(--el-text-color-secondary);
+}
+
+:root:not(.dark) .file-ext {
+  color: var(--el-text-color-secondary);
+}
+
+:root:not(.dark) .grid-info {
+  border-top-color: #eee;
 }
 
 :root:not(.dark) .file-name {
   color: #1D2129;
 }
 
-:root:not(.dark) .audio-placeholder {
-  background: #EFF6FF;
+:root:not(.dark) .file-url {
+  color: #86909c;
 }
 
-:root:not(.dark) .audio-icon {
-  color: #4E5969;
+:root:not(.dark) .grid-meta {
+  color: var(--el-text-color-secondary);
 }
 
-:root:not(.dark) .audio-name {
-  color: #1D2129;
+:root:not(.dark) .action-btn {
+  background: rgba(0, 0, 0, 0.35);
+  color: #fff;
 }
 
 :root:not(.dark) .no-more {
   color: #bbb;
-}
-
-:root:not(.dark) .credit-link {
-  color: #aaa;
-}
-
-:root:not(.dark) .credit-link:hover {
-  color: #666;
 }
 
 :root:not(.dark) .loading-more {

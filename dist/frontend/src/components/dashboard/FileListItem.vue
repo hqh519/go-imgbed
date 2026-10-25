@@ -8,6 +8,7 @@
     <div
         class="list-item"
         :class="{ 'is-selected': localSelected }"
+        @contextmenu.prevent
         @touchstart="$emit('touchstart', $event)"
         @touchend="$emit('touchend', $event)"
         @touchmove="$emit('touchmove', $event)"
@@ -35,10 +36,14 @@
                 <font-awesome-icon icon="file" class="list-file-icon"/>
             </template>
         </div>
-        <!-- 3. 文件名（上行）+ 渠道简称（下行） -->
+        <!-- 3. 文件名（上行）+ 渠道简称 / 文件夹统计（下行） -->
         <div class="list-col list-col-name" @click="handlePreviewClick">
             <div class="name-line" :title="displayName">
                 <span class="filename-start">{{ fileNameStart }}</span><span class="filename-end">{{ fileNameEnd }}</span>
+            </div>
+            <!-- v2.6.0：文件夹名称下加「子文件夹 / 文件数」统计行 -->
+            <div v-if="isFolder && folderStatsText" class="channel-line">
+                <span class="folder-stat-line">{{ folderStatsText }}</span>
             </div>
             <div v-if="!isFolder" class="channel-line">
                 <span class="channel-short" :title="storageChannelText">{{ storageChannelShort || '-' }}</span>
@@ -52,7 +57,8 @@
                 </template>
             </div>
         </div>
-        <!-- 4. 大小（上）/ 上传用户（中）/ 上传时间（下） -->
+        <!-- 4. 大小（上）/ 上传用户（中）/ 上传时间（下）
+             v2.6.0：文件夹也显示三行 —— 第一行"-"、第二行所属用户、第三行创建时间 -->
         <div class="list-col list-col-meta">
             <template v-if="!isFolder">
                 <span class="meta-size">{{ fileSizeDisplay }}</span>
@@ -62,7 +68,14 @@
                 </span>
                 <span class="meta-time">{{ uploadDate }}</span>
             </template>
-            <span v-else class="list-empty">-</span>
+            <template v-else>
+                <span class="meta-size">-</span>
+                <span class="meta-user">
+                    <font-awesome-icon icon="user" />
+                    {{ folderCreator || '-' }}
+                </span>
+                <span class="meta-time">{{ folderCreatedAtDisplay }}</span>
+            </template>
         </div>
         <!-- 5. 操作：复制 / 打开 / 移动 -->
         <div class="list-col list-col-actions">
@@ -77,8 +90,9 @@
                         <font-awesome-icon icon="external-link-alt"/>
                     </button>
                 </el-tooltip>
+                <!-- v2.6.0：移动端列表模式隐藏「移动」按钮（is-move + CSS） -->
                 <el-tooltip :content="$t('dashboard.moveFile')" placement="top" :show-after="1000">
-                    <button class="list-action-btn" @click.stop="$emit('move')">
+                    <button class="list-action-btn is-move" @click.stop="$emit('move')">
                         <font-awesome-icon icon="file-export"/>
                     </button>
                 </el-tooltip>
@@ -90,7 +104,7 @@
                     </button>
                 </el-tooltip>
                 <el-tooltip :content="$t('dashboard.moveFile')" placement="top" :show-after="1000">
-                    <button class="list-action-btn" @click.stop="$emit('move')">
+                    <button class="list-action-btn is-move" @click.stop="$emit('move')">
                         <font-awesome-icon icon="file-export"/>
                     </button>
                 </el-tooltip>
@@ -117,6 +131,32 @@ export default {
         isFolder() {
             // 检查 isFolder 属性或名称以 / 结尾
             return this.item.isFolder || this.item.name?.endsWith('/');
+        },
+        /** v2.6.0：文件夹统计（后端 directoryStats 经 metadata.folderStats 下发） */
+        folderStats() {
+            return this.isFolder ? this.item.metadata?.folderStats || null : null;
+        },
+        /** v2.6.0：「X 个子文件夹 · Y 个文件」 */
+        folderStatsText() {
+            const s = this.folderStats;
+            if (!s || (s.folders === undefined && s.files === undefined)) return '';
+            return this.$t('dashboard.folderStat', {
+                folders: Number(s.folders || 0),
+                files: Number(s.files || 0)
+            });
+        },
+        /** v2.6.0：文件夹创建用户（= 文件夹内最早文件的上传者） */
+        folderCreator() {
+            return this.folderStats?.creator || '';
+        },
+        /** v2.6.0：文件夹创建时间（年-月-日） */
+        folderCreatedAtDisplay() {
+            const ts = Number(this.folderStats?.createdAt || 0);
+            if (!ts) return '-';
+            const d = new Date(ts);
+            if (!Number.isFinite(d.getTime())) return '-';
+            const p = (n) => String(n).padStart(2, '0');
+            return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
         },
         /**
          * 判断文件类型：**优先 metadata.FileType**（后端按 mime 下发 image / video / audio / other），
@@ -362,6 +402,15 @@ export default {
     border-color: color-mix(in srgb, var(--el-color-warning) 40%, transparent);
 }
 
+/* v2.6.0：文件夹统计行（名称下方） */
+.folder-stat-line {
+    font-size: 11px;
+    opacity: 0.65;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
 /* 4. 大小 / 用户 / 时间（三行，右对齐同历史记录 list-meta） */
 .list-col-meta {
     flex-direction: column;
@@ -439,6 +488,8 @@ export default {
     .list-folder-icon { font-size: 24px; }
     .list-file-icon { font-size: 21px; }
     .list-col-actions { gap: 3px; }
+    /* v2.6.0：移动端列表模式隐藏「移动」按钮 */
+    .list-action-btn.is-move { display: none; }
     .list-action-btn {
         width: 26px;
         height: 26px;

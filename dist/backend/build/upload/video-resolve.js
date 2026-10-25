@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.isDirectMediaUrl = isDirectMediaUrl;
+exports.extractCandidatesFromHtml = extractCandidatesFromHtml;
 exports.resolveVideoFromHtml = resolveVideoFromHtml;
 exports.resolveVideoPage = resolveVideoPage;
 const app_log_1 = require("../common/app-log");
@@ -13,7 +14,7 @@ const BASE_HEADERS = {
     'user-agent': BROWSER_UA,
     'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8',
 };
-async function fetchText(url, referer, timeoutMs = 15000) {
+async function fetchText(url, referer, timeoutMs = 15000, finalUrl) {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
@@ -24,6 +25,8 @@ async function fetchText(url, referer, timeoutMs = 15000) {
         });
         if (!resp.ok)
             throw new Error(`HTTP ${resp.status}`);
+        if (finalUrl)
+            finalUrl.value = resp.url || url;
         return await resp.text();
     }
     finally {
@@ -81,9 +84,42 @@ function extractCandidatesFromHtml(html, baseUrl) {
     while ((m = jsonRe.exec(html)) !== null) {
         push(m[1]);
     }
+    const decodedChunks = [];
+    const scriptRe = /<script[^>]*>([\s\S]*?)<\/script>/gi;
+    while ((m = scriptRe.exec(html)) !== null) {
+        try {
+            decodedChunks.push(decodeURIComponent(m[1]));
+        }
+        catch {
+        }
+    }
+    const urlListRe = /(?:https?%3A%2F%2F|https?:\\?\/\\?\/)[^\s"'<>\\)\]]+/gi;
+    const videoHint = /mp4|video|play|aweme|motion|media|stream/i;
+    for (const chunk of decodedChunks) {
+        let um;
+        while ((um = urlListRe.exec(chunk)) !== null) {
+            const cand = um[0].replace(/\\/g, '');
+            if (videoHint.test(cand))
+                push(cand);
+        }
+    }
+    for (const chunk of decodedChunks) {
+        let jm;
+        const chunkJsonRe = new RegExp(jsonRe.source, 'gi');
+        while ((jm = chunkJsonRe.exec(chunk)) !== null) {
+            push(jm[1]);
+        }
+    }
     const bareRe = /https?:\/\/[^\s"'<>]+\.mp4[^\s"'<>]*/gi;
     while ((m = bareRe.exec(html)) !== null) {
         push(m[0]);
+    }
+    const bareDecodedRe = /https?:\/\/[^\s"'<>]+(?:\.mp4|mime_type%3Dvideo[^\s"'<>]*)[^\s"'<>]*/gi;
+    for (const chunk of decodedChunks) {
+        let bm;
+        while ((bm = bareDecodedRe.exec(chunk)) !== null) {
+            push(bm[0]);
+        }
     }
     return out;
 }
@@ -191,11 +227,12 @@ async function resolveVideoPage(url) {
         return { ok: false, message: 'URL 无效' };
     }
     let html;
+    const finalUrl = { value: url };
     try {
-        html = await fetchText(url, undefined, 15000);
+        html = await fetchText(url, undefined, 15000, finalUrl);
     }
     catch (e) {
         return { ok: false, message: `页面拉取失败: ${e.message}` };
     }
-    return resolveVideoFromHtml(url, html);
+    return resolveVideoFromHtml(finalUrl.value, html);
 }

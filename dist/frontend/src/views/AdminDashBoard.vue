@@ -1466,63 +1466,80 @@ methods: {
             this.trashPurgeItems([file]);
         }
     },
+    /**
+     * v2.6.0 #303：黑名单 toggle ——
+     * 未在黑名单 → 确认后加入（Block）；已在黑名单 → 直接移出（恢复 None）。
+     */
     handleBlock(key) {
+        const current = String(this.detailFile?.metadata?.ListType || 'None');
+        if (current === 'Block') {
+            this.patchListType(key, 'None', 'blockRemoved', 'blockFailed', 'Block');
+            return;
+        }
         this.$confirm(this.$t('dashboard.blockConfirm'), this.$t('dashboard.deleteConfirmTitle'), {
             confirmButtonText: this.$t('dashboard.deleteConfirmOk'),
             cancelButtonText: this.$t('dashboard.deleteConfirmCancel'),
             type: 'warning'
         }).then(() => {
-        fetchWithAuth(`/api/manage/metadata/${encodeURIComponent(key)}`, {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ListType: 'Block' })
-        })
-            .then(response => {
-                if (response.ok) {
-                    const fileIndex = this.tableData.findIndex(file => file.name === key);
-                    if (fileIndex !== -1) {
-                        this.tableData[fileIndex].metadata.ListType = 'Block';
-                    }
-                } else {
-                    return Promise.reject('Request failed');
-                }
-            })
-            .then(() => {
-                this.$message.success(this.$t('dashboard.blockSuccess'));
-            })
-            .catch(() => this.$message.error(this.$t('dashboard.blockFailed')));
+            this.patchListType(key, 'Block', 'blockSuccess', 'blockFailed');
         }).catch(
             () => console.log('Block cancelled')
         );
     },
+    /** v2.6.0 #303：白名单 toggle（同黑名单） */
     handleWhite(key) {
+        const current = String(this.detailFile?.metadata?.ListType || 'None');
+        if (current === 'White') {
+            this.patchListType(key, 'None', 'whiteRemoved', 'whiteFailed', 'White');
+            return;
+        }
         this.$confirm(this.$t('dashboard.whiteConfirm'), this.$t('dashboard.deleteConfirmTitle'), {
             confirmButtonText: this.$t('dashboard.deleteConfirmOk'),
             cancelButtonText: this.$t('dashboard.deleteConfirmCancel'),
             type: 'warning'
         }).then(() => {
+            this.patchListType(key, 'White', 'whiteSuccess', 'whiteFailed');
+        }).catch(
+            () => console.log('White cancelled')
+        );
+    },
+    /**
+     * ListType 统一落地：PATCH 元数据 + 同步表格行/详情弹窗状态。
+     * prevListType：移出时传被移出的名单（从该名单计数减一），加入时不传。
+     */
+    patchListType(key, value, successKey, failedKey, prevListType) {
         fetchWithAuth(`/api/manage/metadata/${encodeURIComponent(key)}`, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ListType: 'White' })
+            body: JSON.stringify({ ListType: value })
         })
             .then(response => {
                 if (response.ok) {
                     const fileIndex = this.tableData.findIndex(file => file.name === key);
                     if (fileIndex !== -1) {
-                        this.tableData[fileIndex].metadata.ListType = 'White';
+                        this.tableData[fileIndex].metadata.ListType = value;
+                    }
+                    // 详情弹窗里的文件对象同步刷新（按钮 toggle 文案 / 访问状态标签）
+                    if (this.detailFile?.name === key) {
+                        this.detailFile = { ...this.detailFile, metadata: { ...this.detailFile.metadata, ListType: value } };
                     }
                 } else {
                     return Promise.reject('Request failed');
                 }
             })
             .then(() => {
-                this.$message.success(this.$t('dashboard.whiteSuccess'));
+                this.$message.success(this.$t(`dashboard.${successKey}`));
+                if (prevListType) this.refreshListTypeCount(prevListType, -1);
+                else this.refreshListTypeCount(value, 1);
             })
-            .catch(() => this.$message.error(this.$t('dashboard.whiteFailed')));
-        }).catch(
-            () => console.log('White cancelled')
-        );
+            .catch(() => this.$message.error(this.$t(`dashboard.${failedKey}`)));
+    },
+    /** 黑白名单侧边统计计数增减（存在该计数字段时） */
+    refreshListTypeCount(type, delta) {
+        const key = type === 'Block' ? 'blockCount' : 'whiteCount';
+        if (this[key] !== undefined && typeof this[key] === 'number') {
+            this[key] = Math.max(0, this[key] + delta);
+        }
     },
     // ==================== 回收站 ====================
     /** 进入 / 退出回收站模式 */

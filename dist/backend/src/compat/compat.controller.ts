@@ -17,6 +17,7 @@ import { AdminGuard } from '../auth/auth.guard';
 import { SettingsService } from '../settings/settings.service';
 import { SysConfigService } from '../settings/sysconfig.service';
 import { serializeFile } from '../common/file-view';
+import { ipDisplayBatch } from '../common/ip-query';
 
 /**
  * 读取通配路由（`xxx/*`）捕获到的完整路径。
@@ -462,10 +463,22 @@ export class ManageCompatController {
     const ips = grouped.map((g) => g.ip).filter(Boolean);
     const records = await prisma.ipRecord.findMany({ where: { ip: { in: ips } } });
     const addrOf = new Map(records.map((r) => [r.ip, [r.country, r.region, r.city].filter(Boolean).join(' ')]));
+    // v2.6.0 #301：全系统 IP 显示统一 —— 附带格式化后的展示文本
+    let displayOf = new Map<string, string>();
+    try {
+      displayOf = await ipDisplayBatch(ips, addrOf, this.sysConfig);
+    } catch {
+      /* 忽略 */
+    }
     return grouped
       .filter((g) => g.ip)
       .slice(start, start + count)
-      .map((g) => ({ ip: g.ip, address: addrOf.get(g.ip) || '', count: g._count._all }));
+      .map((g) => ({
+        ip: g.ip,
+        address: addrOf.get(g.ip) || '',
+        display: displayOf.get(g.ip) || '',
+        count: g._count._all,
+      }));
   }
 
   /**

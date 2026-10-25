@@ -12,9 +12,9 @@ const ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 exports.RECOVERY_CODE_COUNT = 10;
 function oneCode() {
     let s = '';
-    for (let i = 0; i < 9; i++)
+    for (let i = 0; i < 12; i++)
         s += ALPHABET[(0, crypto_1.randomInt)(ALPHABET.length)];
-    return `${s.slice(0, 4)}-${s.slice(4)}`;
+    return `${s.slice(0, 6)}-${s.slice(6)}`;
 }
 function normalizeRecoveryCode(input) {
     return String(input || '')

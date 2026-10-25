@@ -44,6 +44,7 @@ var __metadata = (this && this.__metadata) || function (k, v) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.MailService = exports.MAIL_DEFAULTS = void 0;
 const common_1 = require("@nestjs/common");
+const crypto_1 = require("crypto");
 const sysconfig_service_1 = require("../settings/sysconfig.service");
 const crypto_service_1 = require("../common/crypto.service");
 const app_log_1 = require("../common/app-log");
@@ -61,6 +62,13 @@ exports.MAIL_DEFAULTS = {
 const CODE_TTL = 10 * 60 * 1000;
 const SEND_GAP = 60 * 1000;
 const MAX_ATTEMPTS = 5;
+const EMAIL_CODE_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+function generateEmailCode() {
+    let s = '';
+    for (let i = 0; i < 6; i++)
+        s += EMAIL_CODE_ALPHABET[(0, crypto_1.randomInt)(EMAIL_CODE_ALPHABET.length)];
+    return s;
+}
 let MailService = class MailService {
     sysConfig;
     codes = new Map();
@@ -201,7 +209,7 @@ let MailService = class MailService {
             const wait = Math.ceil((SEND_GAP - (now - prev.sentAt)) / 1000);
             return { ok: false, message: `发送过于频繁，请 ${wait} 秒后再试` };
         }
-        const code = String(Math.floor(100000 + Math.random() * 900000));
+        const code = generateEmailCode();
         this.codes.set(key, { code, purpose, expiresAt: now + CODE_TTL, attempts: 0, sentAt: now });
         if (this.codes.size > 500) {
             for (const [k, v] of this.codes)
@@ -212,6 +220,7 @@ let MailService = class MailService {
             'verify-email': '邮箱验证',
             login: '登录验证码',
             'disable-2fa': '关闭两步验证',
+            'change-password': '修改密码',
         };
         const subject = `【go-imgbed】${titles[purpose]}验证码：${code}`;
         const html = buildCodeMail({
@@ -220,10 +229,12 @@ let MailService = class MailService {
             name: displayName || target,
             minutes: Math.round(CODE_TTL / 60000),
             hint: purpose === 'disable-2fa'
-                ? '该验证码用于「关闭两步验证」，同时还需要一枚恢复码。'
+                ? '该验证码用于「关闭两步验证」，输入验证码或一枚恢复码（任一）即可关闭。'
                 : purpose === 'login'
                     ? '在两步验证弹窗里输入该验证码即可进入管理中心。'
-                    : '将该验证码填入「验证邮箱」弹窗即可完成验证。',
+                    : purpose === 'change-password'
+                        ? '在用户编辑页输入该验证码即可完成身份验证并修改密码。'
+                        : '将该验证码填入「验证邮箱」弹窗即可完成验证。',
         });
         try {
             await this.send(target, subject, html);
@@ -249,7 +260,7 @@ let MailService = class MailService {
             this.codes.delete(key);
             return { ok: false, message: '验证码错误次数过多，请重新获取' };
         }
-        if (String(code || '').trim() !== entry.code) {
+        if (String(code || '').trim().toUpperCase() !== entry.code.toUpperCase()) {
             return { ok: false, message: `验证码不正确（还可尝试 ${Math.max(0, MAX_ATTEMPTS - entry.attempts)} 次）` };
         }
         this.codes.delete(key);

@@ -15,11 +15,15 @@ const ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 /** 默认生成 10 个 */
 export const RECOVERY_CODE_COUNT = 10;
 
-/** 生成一个 XXXX-XXXXX 形式的恢复码 */
+/**
+ * v2.6.0（v20261024-1）：恢复码格式改为 xxxxxx-xxxxxx（前后各 6 位字母+数字）。
+ * 旧格式（XXXX-XXXXX）的历史恢复码仍可校验通过 —— normalizeRecoveryCode
+ * 去掉连字符后统一大写比较，摘要不受展示格式影响。
+ */
 function oneCode(): string {
   let s = '';
-  for (let i = 0; i < 9; i++) s += ALPHABET[randomInt(ALPHABET.length)];
-  return `${s.slice(0, 4)}-${s.slice(4)}`;
+  for (let i = 0; i < 12; i++) s += ALPHABET[randomInt(ALPHABET.length)];
+  return `${s.slice(0, 6)}-${s.slice(6)}`;
 }
 
 /** 归一化：去掉空格 / 连字符 / 转小写 → 统一大写比较 */

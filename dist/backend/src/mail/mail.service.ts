@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { randomInt } from 'crypto';
 import { SysConfigService } from '../settings/sysconfig.service';
 import { CryptoService } from '../common/crypto.service';
 import { appLog } from '../common/app-log';
@@ -39,7 +40,18 @@ const SEND_GAP = 60 * 1000;
 /** 单个验证码最多试错次数 */
 const MAX_ATTEMPTS = 5;
 
-export type MailPurpose = 'verify-email' | 'login' | 'disable-2fa';
+/**
+ * v2.6.0（v20261024-1）：验证码改为 6 位「大小写字母 + 数字」混合（不再纯数字）。
+ * 密码学安全随机（randomInt）；校验时不区分大小写（用户手输大小写不应影响通过）。
+ */
+const EMAIL_CODE_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+function generateEmailCode(): string {
+  let s = '';
+  for (let i = 0; i < 6; i++) s += EMAIL_CODE_ALPHABET[randomInt(EMAIL_CODE_ALPHABET.length)];
+  return s;
+}
+
+export type MailPurpose = 'verify-email' | 'login' | 'disable-2fa' | 'change-password';
 
 interface CodeEntry {
   code: string;
@@ -233,7 +245,7 @@ export class MailService {
       const wait = Math.ceil((SEND_GAP - (now - prev.sentAt)) / 1000);
       return { ok: false, message: `发送过于频繁，请 ${wait} 秒后再试` };
     }
-    const code = String(Math.floor(100000 + Math.random() * 900000));
+    const code = generateEmailCode();
     this.codes.set(key, { code, purpose, expiresAt: now + CODE_TTL, attempts: 0, sentAt: now });
     // 顺手清理过期项，避免 Map 无限增长
     if (this.codes.size > 500) {
@@ -244,6 +256,7 @@ export class MailService {
       'verify-email': '邮箱验证',
       login: '登录验证码',
       'disable-2fa': '关闭两步验证',
+      'change-password': '修改密码',
     };
     const subject = `【go-imgbed】${titles[purpose]}验证码：${code}`;
     const html = buildCodeMail({
@@ -253,10 +266,12 @@ export class MailService {
       minutes: Math.round(CODE_TTL / 60000),
       hint:
         purpose === 'disable-2fa'
-          ? '该验证码用于「关闭两步验证」，同时还需要一枚恢复码。'
+          ? '该验证码用于「关闭两步验证」，输入验证码或一枚恢复码（任一）即可关闭。'
           : purpose === 'login'
             ? '在两步验证弹窗里输入该验证码即可进入管理中心。'
-            : '将该验证码填入「验证邮箱」弹窗即可完成验证。',
+            : purpose === 'change-password'
+              ? '在用户编辑页输入该验证码即可完成身份验证并修改密码。'
+              : '将该验证码填入「验证邮箱」弹窗即可完成验证。',
     });
     try {
       await this.send(target, subject, html);
@@ -285,7 +300,7 @@ export class MailService {
       this.codes.delete(key);
       return { ok: false, message: '验证码错误次数过多，请重新获取' };
     }
-    if (String(code || '').trim() !== entry.code) {
+    if (String(code || '').trim().toUpperCase() !== entry.code.toUpperCase()) {
       return { ok: false, message: `验证码不正确（还可尝试 ${Math.max(0, MAX_ATTEMPTS - entry.attempts)} 次）` };
     }
     this.codes.delete(key);

@@ -14,11 +14,12 @@
             <el-button v-if="showAdvanced && !isEditing && canEditAction && !trashMode" type="primary" @click="$emit('tagManagement')" round size="small" class="detail-action">
                 <font-awesome-icon icon="tags" style="margin-right: 3px;"></font-awesome-icon> {{ $t('fileDetail.tags') }}
             </el-button>
-            <el-button v-if="showAdvanced && !isEditing && canEditAction && !trashMode" type="primary" @click="$emit('block')" round size="small" class="detail-action">
-                <font-awesome-icon icon="ban" style="margin-right: 3px;"></font-awesome-icon> {{ $t('fileDetail.blacklist') }}
+            <!-- v2.6.0 #303：黑白名单 toggle —— 已在名单时按钮变「移出」，再点恢复 None -->
+            <el-button v-if="showAdvanced && !isEditing && canEditAction && !trashMode" :type="isBlocked ? 'danger' : 'primary'" @click="$emit('block')" round size="small" class="detail-action">
+                <font-awesome-icon icon="ban" style="margin-right: 3px;"></font-awesome-icon> {{ isBlocked ? $t('fileDetail.removeFromBlacklist') : $t('fileDetail.blacklist') }}
             </el-button>
-            <el-button v-if="showAdvanced && !isEditing && canEditAction && !trashMode" type="primary" @click="$emit('white')" round size="small" class="detail-action">
-                <font-awesome-icon icon="shield-alt" style="margin-right: 3px;"></font-awesome-icon> {{ $t('fileDetail.whitelist') }}
+            <el-button v-if="showAdvanced && !isEditing && canEditAction && !trashMode" :type="isWhitelisted ? 'success' : 'primary'" @click="$emit('white')" round size="small" class="detail-action">
+                <font-awesome-icon icon="shield-alt" style="margin-right: 3px;"></font-awesome-icon> {{ isWhitelisted ? $t('fileDetail.removeFromWhitelist') : $t('fileDetail.whitelist') }}
             </el-button>
             <!-- 回收站模式：删除按钮替换为「恢复」+「彻底删除」 -->
             <template v-if="trashMode">
@@ -225,9 +226,10 @@
                 </div>
                 <span v-else style="color: var(--el-text-color-secondary);">{{ $t('fileDetail.noTags') }}</span>
             </el-descriptions-item>
-            <!-- 「上传IP」紧随「上传地址」之后 -->
-            <el-descriptions-item :label="$t('fileDetail.uploadAddressLabel')">{{ file?.metadata?.UploadAddress || $t('fileDetail.unknown') }}</el-descriptions-item>
-            <el-descriptions-item :label="$t('fileDetail.uploadIP')">{{ file?.metadata?.UploadIP || $t('fileDetail.unknown') }}</el-descriptions-item>
+            <!-- v2.6.0 #301：IP 归属地统一展示 —— 后端按「显示格式」拼好 IpDisplay（换行格式用 pre-wrap 呈现） -->
+            <el-descriptions-item :label="$t('fileDetail.ipDisplayLabel')">
+                <span :class="{ 'ip-display-multiline': String(file?.metadata?.IpDisplay || '').includes('\n') }">{{ file?.metadata?.IpDisplay || file?.metadata?.UploadAddress || file?.metadata?.UploadIP || $t('fileDetail.unknown') }}</span>
+            </el-descriptions-item>
             <!-- 上传用户：记录该文件由哪个账户上传 -->
             <el-descriptions-item :label="$t('dashboard.uploadUser')">{{ file?.metadata?.UploadUser || $t('fileDetail.unknown') }}</el-descriptions-item>
             <!-- 上传渠道：Default（前端上传页）/ WebDAV / API-Web / API-S3 -->
@@ -533,6 +535,7 @@ export default {
                 m.ChannelName,
                 m.UploadAddress,
                 m.UploadIP,
+                m.IpDisplay,
                 m.UploadUser,
                 m.UploadSource,
                 m.Directory,
@@ -629,6 +632,13 @@ export default {
             if (listType === 'Block') return this.$t('fileDetail.accessBlockedBlacklist');
             if (label === 'adult') return this.$t('fileDetail.accessBlockedReview');
             return this.$t('fileDetail.accessNormal');
+        },
+        /** v2.6.0 #303：黑白名单 toggle 状态（决定按钮文案与颜色） */
+        isBlocked() {
+            return this.file?.metadata?.ListType === 'Block';
+        },
+        isWhitelisted() {
+            return this.file?.metadata?.ListType === 'White';
         },
         /** 上传时长：毫秒 → 「x.x 秒 / m 分 s 秒」；无记录时显示「未知」 */
         uploadDurationText() {
@@ -1093,6 +1103,12 @@ export default {
 </script>
 
 <style scoped>
+/* v2.6.0 #301：换行格式（ip␤归属地）按多行展示 */
+.ip-display-multiline {
+    white-space: pre-line;
+    word-break: break-all;
+}
+
 /* 二维码标签页 */
 .qr-pane {
     display: flex;

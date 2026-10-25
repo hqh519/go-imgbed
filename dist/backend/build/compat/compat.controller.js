@@ -21,6 +21,7 @@ const auth_guard_1 = require("../auth/auth.guard");
 const settings_service_1 = require("../settings/settings.service");
 const sysconfig_service_1 = require("../settings/sysconfig.service");
 const file_view_1 = require("../common/file-view");
+const ip_query_1 = require("../common/ip-query");
 function wildcardParam(req) {
     const raw = String(req.params['0'] ?? '');
     if (!raw)
@@ -362,10 +363,21 @@ let ManageCompatController = class ManageCompatController {
         const ips = grouped.map((g) => g.ip).filter(Boolean);
         const records = await prisma_1.prisma.ipRecord.findMany({ where: { ip: { in: ips } } });
         const addrOf = new Map(records.map((r) => [r.ip, [r.country, r.region, r.city].filter(Boolean).join(' ')]));
+        let displayOf = new Map();
+        try {
+            displayOf = await (0, ip_query_1.ipDisplayBatch)(ips, addrOf, this.sysConfig);
+        }
+        catch {
+        }
         return grouped
             .filter((g) => g.ip)
             .slice(start, start + count)
-            .map((g) => ({ ip: g.ip, address: addrOf.get(g.ip) || '', count: g._count._all }));
+            .map((g) => ({
+            ip: g.ip,
+            address: addrOf.get(g.ip) || '',
+            display: displayOf.get(g.ip) || '',
+            count: g._count._all,
+        }));
     }
     async cusFiles(q) {
         const ip = q.ip || '';

@@ -35,6 +35,8 @@ import { AdminGuard, ManageAuthGuard, SESSION_COOKIE, currentSession, isAdminRol
 import { buildDirectoryTree, CHANNEL_LABEL, CopyWithChannel, fileExtOf, fileTypeOf, formatSize, normalizeDir, safeParse, serializeFile } from '../common/file-view';
 import { appLog } from '../common/app-log';
 import { frontendAppDir } from '../common/project-paths';
+import { qqwryStatus, saveQqwry } from '../common/qqwry';
+import { ipDisplayBatch, ipDisplayOf } from '../common/ip-query';
 
 /** 逗号分隔参数 → 数组 */
 function splitCsv(v?: string): string[] {
@@ -972,7 +974,8 @@ export class ManageController {
     }
 
     // v2.5.0：每个直接子目录的统计（子文件夹数 / 直接文件数）—— 文件管理文件夹卡片展示用
-    const directoryStats: Record<string, { folders: number; files: number }> = {};
+    // v2.6.0：增加 creator / createdAt（创建用户与时间 = 该文件夹内最早一条文件记录）
+    const directoryStats: Record<string, { folders: number; files: number; creator?: string; createdAt?: number }> = {};
     if (!recursive) {
       for (const d of directories) {
         const prefix = `${d}/`;
@@ -980,7 +983,23 @@ export class ManageController {
         for (const f of allFolders) {
           if (f.startsWith(prefix) && !f.slice(prefix.length).includes('/')) sub += 1;
         }
-        directoryStats[d] = { folders: sub, files: files.filter((r) => (r.folder || '') === d).length };
+        // 创建用户 / 创建时间：文件夹本身是虚拟概念，取其中最早上传的文件归属者与时间
+        let creator = '';
+        let createdAt = 0;
+        for (const r of matched) {
+          if ((r.folder || '') !== d && !(r.folder || '').startsWith(prefix)) continue;
+          const t = r.createdAt ? new Date(r.createdAt).getTime() : 0;
+          if (!createdAt || (t && t < createdAt)) {
+            createdAt = t;
+            creator = r.uploader || '';
+          }
+        }
+        directoryStats[d] = {
+          folders: sub,
+          files: files.filter((r) => (r.folder || '') === d).length,
+          creator,
+          createdAt,
+        };
       }
     }
 
@@ -990,8 +1009,25 @@ export class ManageController {
     const paged = count === -1 ? files.slice(start) : files.slice(start, start + count);
     // 渠道真实直链解析器（本页所有文件共用一份渠道配置缓存）
     const resolveDirectUrl = this.directUrlResolver();
+    const fileItems = paged.map((r) => serializeFile(r, r.copies, { tags: r.tags.map((t) => t.tag.name), resolveDirectUrl }));
+    // v2.6.0 #301：全系统 IP 显示统一 —— 批量补「IpDisplay」格式化字段
+    try {
+      const fallback = new Map<string, string>();
+      for (const item of fileItems) {
+        const m: any = item.metadata;
+        if (m?.UploadIP) fallback.set(String(m.UploadIP), String(m.UploadAddress || ''));
+      }
+      const displays = await ipDisplayBatch(fileItems.map((i) => String((i.metadata as any)?.UploadIP || '')), fallback, this.sysConfig);
+      for (const item of fileItems) {
+        const m: any = item.metadata;
+        const d = displays.get(String(m?.UploadIP || ''));
+        if (m && d) m.IpDisplay = d;
+      }
+    } catch {
+      /* 格式化失败不影响列表 */
+    }
     return {
-      files: paged.map((r) => serializeFile(r, r.copies, { tags: r.tags.map((t) => t.tag.name), resolveDirectUrl })),
+      files: fileItems,
       directories,
       directoryStats,
       totalCount,
@@ -1497,6 +1533,17 @@ export class ManageController {
     }).metadata as Record<string, unknown>;
     // 限时：把截止时间带给前端（0 = 永久）
     metadata.LinkExpiresAt = rec.linkExpiresAt ? rec.linkExpiresAt.getTime() : 0;
+    // v2.6.0 #301：全系统 IP 显示统一 —— 详情页直接拿格式化后的展示文本
+    try {
+      const m: any = metadata;
+      if (m.UploadIP) {
+        const r = await ipDisplayOf(String(m.UploadIP), String(m.UploadAddress || ''), this.sysConfig);
+        m.IpDisplay = r.display;
+        if (r.address) m.UploadAddress = r.address;
+      }
+    } catch {
+      /* 忽略 */
+    }
     return {
       success: true,
       data: {
@@ -1875,6 +1922,48 @@ export class ManageController {
     return { success: true };
   }
 
+  /**
+   * v2.6.0 #301：IP 归属地本地数据包（qqwry.dat）。
+   * GET  security/ip-query/dat —— 数据包状态（是否存在 / 条数 / 大小 / 错误）
+   * POST security/ip-query/dat —— 上传覆盖（请求体为 dat 原始字节）
+   */
+  @Get('security/ip-query/dat')
+  @UseGuards(AdminGuard)
+  async ipQueryDatStatus() {
+    return { success: true, data: qqwryStatus() };
+  }
+
+  @Post('security/ip-query/dat')
+  @UseGuards(AdminGuard)
+  async ipQueryDatUpload(@Req() req: Request) {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    const MAX = 64 * 1024 * 1024; // 64MB 上限，防误传超大文件
+    await new Promise<void>((resolve, reject) => {
+      req.on('data', (c: Buffer) => {
+        total += c.length;
+        if (total > MAX) {
+          reject(new Error('文件超过 64MB 上限'));
+          req.destroy();
+          return;
+        }
+        chunks.push(c);
+      });
+      req.on('end', () => resolve());
+      req.on('error', reject);
+    });
+    const buf = Buffer.concat(chunks);
+    if (!buf.length) return { success: false, message: '未收到数据包内容' };
+    try {
+      const r = saveQqwry(buf);
+      console.log(`[security] qqwry.dat 上传成功：${r.records.toLocaleString()} 条，${(r.sizeBytes / 1048576).toFixed(1)} MB`);
+      return { success: true, data: r };
+    } catch (err: any) {
+      console.error('[security] qqwry.dat 上传失败:', err?.message || err);
+      return { success: false, message: String(err?.message || '数据包解析失败') };
+    }
+  }
+
   private async readLists(): Promise<{ white: string[]; block: string[]; enabled: boolean }> {
     const parse = (raw: string): string[] => {
       if (!raw) return [];
@@ -2220,8 +2309,9 @@ export class UserConfigController {
       return res.status(403).json({ error: 'Public browse is disabled' });
     }
 
+    // v2.6.0：开放目录改多行输入（一行一个），兼容逗号分隔的旧格式
     const allowedDirs = String(cfg.allowedDir || '')
-      .split(',')
+      .split(/[\n\r,]+/)
       .map((d) => d.trim())
       .filter(Boolean);
 
@@ -2322,7 +2412,7 @@ export class UserConfigController {
         : res.status(403).send('Random is disabled');
     }
     const allowedRandomDirs = String(randomCfg.allowedDir || '')
-      .split(',')
+      .split(/[\n\r,]+/)
       .map((d) => d.trim())
       .filter(Boolean);
 

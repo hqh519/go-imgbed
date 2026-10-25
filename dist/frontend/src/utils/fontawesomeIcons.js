@@ -2,6 +2,7 @@ import { faAws } from '@fortawesome/free-brands-svg-icons/faAws';
 import { faCloudflare } from '@fortawesome/free-brands-svg-icons/faCloudflare';
 import { faDiscord } from '@fortawesome/free-brands-svg-icons/faDiscord';
 import { faAngleDoubleLeft } from '@fortawesome/free-solid-svg-icons/faAngleDoubleLeft';
+import { faAdjust } from '@fortawesome/free-solid-svg-icons/faAdjust';
 import { faAngleDoubleRight } from '@fortawesome/free-solid-svg-icons/faAngleDoubleRight';
 import { faArrowDown } from '@fortawesome/free-solid-svg-icons/faArrowDown';
 import { faArrowLeft } from '@fortawesome/free-solid-svg-icons/faArrowLeft';
@@ -29,6 +30,7 @@ import { faCog } from '@fortawesome/free-solid-svg-icons/faCog';
 import { faCogs } from '@fortawesome/free-solid-svg-icons/faCogs';
 import { faComments } from '@fortawesome/free-solid-svg-icons/faComments';
 import { faCompressAlt } from '@fortawesome/free-solid-svg-icons/faCompressAlt';
+import { faExpandAlt } from '@fortawesome/free-solid-svg-icons/faExpandAlt';
 import { faCopy } from '@fortawesome/free-solid-svg-icons/faCopy';
 import { faCut } from '@fortawesome/free-solid-svg-icons/faCut';
 import { faDatabase } from '@fortawesome/free-solid-svg-icons/faDatabase';
@@ -58,6 +60,7 @@ import { faICursor } from '@fortawesome/free-solid-svg-icons/faICursor';
 import { faImage } from '@fortawesome/free-solid-svg-icons/faImage';
 import { faImages } from '@fortawesome/free-solid-svg-icons/faImages';
 import { faInbox } from '@fortawesome/free-solid-svg-icons/faInbox';
+import { faKey } from '@fortawesome/free-solid-svg-icons/faKey';
 import { faInfoCircle } from '@fortawesome/free-solid-svg-icons/faInfoCircle';
 import { faLink } from '@fortawesome/free-solid-svg-icons/faLink';
 import { faList } from '@fortawesome/free-solid-svg-icons/faList';
@@ -133,6 +136,7 @@ export default [
     faCogs,
     faComments,
     faCompressAlt,
+    faExpandAlt,
     faCopy,
     faCut,
     faDatabase,
@@ -163,6 +167,7 @@ export default [
     faImage,
     faImages,
     faInbox,
+    faKey,
     faInfoCircle,
     faLink,
     faList,
@@ -205,5 +210,6 @@ export default [
     faStar,
     faPlug,
     faCommentDots,
-    faUsers
+    faUsers,
+    faAdjust
 ];

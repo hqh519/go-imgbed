@@ -1,4 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import { h, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import store from '../store'
 import axios from '@/utils/axios'
@@ -6,39 +7,80 @@ import i18n from '@/locales'
 import { OverlayScrollbars } from 'overlayscrollbars'
 
 /**
- * 两步验证门禁（v202610221824，v2.3.0 扩展）。
+ * 两步验证门禁（v202610221824，v2.3.0 扩展；v2.6.0 改造）。
  *
  * 触发时机：账户启用了 2FA，但本次会话尚未验证、或「后端会话有效期」已过。
  * 此时登录态仍然有效（前端页可正常用），只是进后台需要补一次验证。
  *
- * v2.3.0 变化：
- *   · 输入框同时接受三种凭证 —— 6 位邮箱验证码 / 6 位 2FA 动态码 / 恢复码（XXXX-XXXXX）；
- *   · 输错只提示错误并重新弹框，**绝不跳登录页**（登录态一直有效）；
- *   · 用户取消输入 → 回到来源页（next(false) 撤销本次导航），也不是登录页。
+ * v2.6.0 变化：
+ *   · 输入框不做任何字符 / 长度限制（后台匹对验证，输入什么就送什么）；
+ *   · 弹窗内新增「邮箱验证」按钮 —— 点击发 6 位字母数字验证码到账户邮箱，
+ *     并提示「已发送验证码，请前往 abc***@126.com 邮箱查看」；
+ *   · 点取消 → 直接回前端首页（移动端返回键关闭时例外：只终止导航不跳转）；
  */
-const TOTP_CODE_PATTERN = /^(\d{6}|[A-Za-z]{4}-[A-Za-z]{5})$/
-
 const promptTotp = async () => {
+  // 「邮箱验证」按钮的发送状态（VNode 闭包内读写）
+  const sending = ref(false)
+  const sendEmailCode = async () => {
+    if (sending.value) return
+    sending.value = true
+    try {
+      const res = await axios.post('/api/auth/email/send', {}, { withCredentials: true })
+      if (res.data?.success) {
+        const email = res.data?.data?.email || ''
+        ElMessage.success(
+          email
+            ? i18n.global.t('login.emailCodeSentTo', { email })
+            : (res.data.message || i18n.global.t('login.emailCodeSent')),
+        )
+      } else {
+        ElMessage.error(res.data?.message || i18n.global.t('login.emailCodeSentFailed'))
+      }
+    } catch (e) {
+      ElMessage.error(e?.response?.data?.message || i18n.global.t('login.emailCodeSentFailed'))
+    } finally {
+      sending.value = false
+    }
+  }
+  // 提示文案 + 内嵌「邮箱验证」按钮（ElMessageBox.message 支持 VNode）
+  const messageVNode = () =>
+    h('div', { class: 'totp-prompt-box' }, [
+      h('p', { style: 'margin:0 0 10px;line-height:1.6;' }, i18n.global.t('login.totpPrompt')),
+      h(
+        'button',
+        {
+          type: 'button',
+          class: 'totp-email-btn',
+          disabled: sending.value,
+          onClick: sendEmailCode,
+        },
+        sending.value ? i18n.global.t('login.emailCodeSending') : i18n.global.t('login.emailCodeBtn'),
+      ),
+    ])
+
   // 最多 5 次机会：每次输错都重新弹框，不打断登录态
   for (let attempt = 0; attempt < 5; attempt += 1) {
     let value = ''
     try {
       const res = await ElMessageBox.prompt(
-        i18n.global.t('login.totpPrompt'),
+        messageVNode(),
         i18n.global.t('login.totpTitle'),
         {
           confirmButtonText: i18n.global.t('common.confirm'),
           cancelButtonText: i18n.global.t('common.cancel'),
-          inputPattern: TOTP_CODE_PATTERN,
-          inputErrorMessage: i18n.global.t('login.totpFormatHint'),
+          // v2.6.0：不做字符 / 数量限制 —— 后台匹对验证
           inputPlaceholder: i18n.global.t('login.totpPlaceholder'),
           closeOnClickModal: false,
         },
       )
       value = res.value
     } catch (e) {
-      // 取消 / 关闭弹窗：交给调用方决定「回来源页」
+      // 取消 / 关闭弹窗：交给调用方决定「回首页」
       return { ok: false, canceled: true }
+    }
+    if (!String(value || '').trim()) {
+      ElMessage.warning(i18n.global.t('login.totpEmpty'))
+      continue
     }
     try {
       await axios.post('/api/auth/totp/verify', { code: value }, { withCredentials: true })
@@ -57,16 +99,26 @@ const promptTotp = async () => {
 /**
  * 2FA 结果落地到导航：
  *   通过       → 放行
- *   取消       → 回到来源页（没有来源页时给一个合理落点，反正不去登录页）
+ *   取消       → 直接回前端首页（v2.6.0）
  *   多次输错   → 停在当前页，登录态保留
+ *
+ * v2.6.0（#300）：移动端「返回键关弹窗」时不回首页 ——
+ * 返回键关闭（backGuard 打标记，500ms 内）只终止本次导航（next(false)），
+ * 不能同时关弹窗又执行页面回退/重定向。
  */
 const settleTotp = (result, to, from, next) => {
   if (result.ok) return next()
   if (!result.canceled) return next(false)
-  if (from && from.name) return next(false)
-  // 直接输地址进来的（没有来源页）：后台页回文件管理，文件管理回首页
-  if (to && to.name === 'dashboard') return next({ path: '/' })
-  return next({ name: 'dashboard' })
+  let backClosed = false
+  try {
+    const at = window.__goimgbedBackGuardAt || 0
+    backClosed = at > 0 && Date.now() - at < 500
+  } catch (e) {
+    backClosed = false
+  }
+  if (backClosed) return next(false)
+  // 用户主动点取消：回前端首页
+  return next({ path: '/' })
 }
 
 /** 若需要 2FA，则弹框；返回 { ok, canceled } */
@@ -324,6 +376,12 @@ const routes = [
     path: '/login',
     name: 'login',
     component: () => import('../views/Login.vue')
+  },
+  {
+    // v2.6.0：忘记密码的邮件重置页（公开访问；token 一次性、10 分钟有效）
+    path: '/reset-password',
+    name: 'resetPassword',
+    component: () => import('../views/ResetPassword.vue')
   },
   {
     path: '/dashboard',

@@ -125,6 +125,15 @@
                     >
                         {{ $t('upload.pasteUploadBtn') }}
                     </el-button>
+                    <!-- v2.6.0：一键清空链接输入框 -->
+                    <el-button
+                        class="paste-card-clear-button"
+                        :size="pasteCardMethodButtonSize"
+                        :disabled="!pastedUrls"
+                        @click="pastedUrls = ''"
+                    >
+                        {{ $t('upload.pasteClear') }}
+                    </el-button>
                     <div
                         class="paste-card-method-group"
                         :class="{ 'is-external': pasteUploadMethod === 'external' }"
@@ -164,6 +173,23 @@
                         </el-text>
                         <div class="upload-list-dashboard-action">
                             <div class="modern-action-group">
+                                <!--
+                                    v2.6.0：新增「文件压缩」开关图标按钮（复制按钮前）——
+                                    与「上传设置」弹窗里的「文件压缩」开关是同一个值
+                                    （customerCompress），双向同步：这里点了设置里跟着变，反之亦然。
+                                -->
+                                <el-tooltip :disabled="disableTooltip" :content="$t('upload.fileCompress')" placement="top" :show-after="1000">
+                                    <button
+                                        type="button"
+                                        class="modern-action-btn modern-action-btn-compress"
+                                        :class="{ 'is-active': customerCompress }"
+                                        :aria-pressed="customerCompress"
+                                        :aria-label="$t('upload.fileCompress')"
+                                        @click="toggleCompress"
+                                    >
+                                        <font-awesome-icon :icon="customerCompress ? 'compress-alt' : 'expand-alt'" />
+                                    </button>
+                                </el-tooltip>
                                 <el-tooltip :disabled="disableTooltip" :content="$t('upload.copyAll')" placement="top" :show-after="1000">
                                     <el-dropdown trigger="hover" @command="copyAll">
                                         <button
@@ -1930,6 +1956,15 @@ methods: {
 
         if (stringItems.length > 0) this.uploadFromUrl(stringItems)
     },
+    /**
+     * v2.6.0：切换「文件压缩」开关（列表栏压缩按钮）。
+     * customerCompress 是 props —— 不直接改，向父组件发 update 事件；
+     * 父组件（UploadHome）用 v-model:customerCompress 接住后，
+     * 上传设置弹窗里的「文件压缩」开关与这里是同一个值，天然双向同步。
+     */
+    toggleCompress() {
+        this.$emit('update:customerCompress', !this.customerCompress);
+    },
     handleUploadPasteUrls() {
         // 用于上传在上传文本框中粘贴的外链
         /*
@@ -3287,6 +3322,15 @@ html.dark .el-upload__text :deep(em) {
 
 .modern-action-btn-copy {
     color: var(--upload-action-copy-color);
+}
+
+/* v2.6.0：文件压缩开关按钮 —— 开启时高亮主色 */
+.modern-action-btn-compress {
+    color: var(--upload-action-copy-color);
+}
+.modern-action-btn-compress.is-active {
+    color: var(--el-color-primary, #409eff);
+    background: var(--el-color-primary-light-9, #ecf5ff);
 }
 
 .copy-format-badge {

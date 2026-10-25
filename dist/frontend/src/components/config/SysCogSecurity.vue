@@ -244,7 +244,53 @@
                 </el-form-item>
                 <el-form-item :label="$t('sysSecurity.ipQueryChannel')">
                     <el-select v-model="uploadSettings.ipQuery.channel" :placeholder="$t('sysSecurity.ipQueryChannelPlaceholder')">
+                        <el-option :label="$t('sysSecurity.ipQueryChannelIpApi')" value="ipApi"></el-option>
+                        <el-option :label="$t('sysSecurity.ipQueryChannelLocal')" value="local"></el-option>
                         <el-option :label="$t('sysSecurity.customApi')" value="customApi"></el-option>
+                    </el-select>
+                </el-form-item>
+                <!-- v2.6.0 #301：本地数据包（qqwry.dat）上传与状态 -->
+                <template v-if="uploadSettings.ipQuery.channel === 'local'">
+                    <el-form-item :label="$t('sysSecurity.ipQueryDatFile')">
+                        <div class="ipquery-dat-box">
+                            <el-upload
+                                action=""
+                                accept=".dat"
+                                :show-file-list="false"
+                                :http-request="uploadQqwryDat"
+                                :disabled="datUploading"
+                            >
+                                <el-button type="primary" plain :loading="datUploading">
+                                    <font-awesome-icon icon="upload" style="margin-right: 5px;"/>
+                                    <span>{{ $t('sysSecurity.ipQueryDatUpload') }}</span>
+                                </el-button>
+                            </el-upload>
+                            <div class="ipquery-dat-status">
+                                <span v-if="datStatus.exists">
+                                    {{ $t('sysSecurity.ipQueryDatStatus', {
+                                        records: Number(datStatus.records || 0).toLocaleString(),
+                                        size: (Number(datStatus.sizeBytes || 0) / 1048576).toFixed(1)
+                                    }) }}
+                                </span>
+                                <span v-else class="ipquery-dat-missing">{{ $t('sysSecurity.ipQueryDatMissing') }}</span>
+                            </div>
+                        </div>
+                    </el-form-item>
+                </template>
+                <!-- v2.6.0 #301：显示格式（全系统 IP 归属地展示统一走这里） -->
+                <el-form-item :label="$t('sysSecurity.ipDisplayFormat')">
+                    <el-select v-model="uploadSettings.ipQuery.displayFormat">
+                        <el-option :label="$t('sysSecurity.ipDispIpFirst')" value="ipFirst"></el-option>
+                        <el-option :label="$t('sysSecurity.ipDispAddressFirst')" value="addressFirst"></el-option>
+                        <el-option :label="$t('sysSecurity.ipDispIpThenAddress')" value="ipThenAddress"></el-option>
+                        <el-option :label="$t('sysSecurity.ipDispAddressThenIp')" value="addressThenIp"></el-option>
+                    </el-select>
+                </el-form-item>
+                <el-form-item :label="$t('sysSecurity.ipRegionFormat')">
+                    <el-select v-model="uploadSettings.ipQuery.regionFormat">
+                        <el-option :label="$t('sysSecurity.ipRegionProvinceArea')" value="provinceArea"></el-option>
+                        <el-option :label="$t('sysSecurity.ipRegionProvince')" value="province"></el-option>
+                        <el-option :label="$t('sysSecurity.ipRegionArea')" value="area"></el-option>
                     </el-select>
                 </el-form-item>
                 <template v-if="uploadSettings.ipQuery.channel === 'customApi'">
@@ -655,6 +701,9 @@ data() {
             ipQuery: {
                 enabled: false,
                 channel: 'customApi',
+                // v2.6.0 #301：显示格式 / 地区格式（全系统 IP 归属地展示统一走这里）
+                displayFormat: 'ipFirst',
+                regionFormat: 'provinceArea',
                 customApi: {
                     url: '',
                     params: [{ key: 'ip', value: '{ip}' }],
@@ -662,6 +711,9 @@ data() {
                 }
             }
         },
+        // v2.6.0 #301：qqwry.dat 数据包状态与上传
+        datStatus: { exists: false, records: 0, sizeBytes: 0, error: '' },
+        datUploading: false,
         accessSettings: {},
         // 对外 WebDAV（原「其他设置」页的区块迁移到本页）：
         // 数据仍存在 sysConfig 的 others 分区（others.webdav），保存时整段回写
@@ -954,6 +1006,8 @@ methods: {
             ipQuery: {
                 enabled: ipQuery.enabled ?? false,
                 channel: ipQuery.channel || 'customApi',
+                displayFormat: ipQuery.displayFormat || 'ipFirst',
+                regionFormat: ipQuery.regionFormat || 'provinceArea',
                 customApi: {
                     url: customApi.url || '',
                     params,
@@ -961,6 +1015,45 @@ methods: {
                 }
             }
         };
+    },
+    /** v2.6.0 #301：qqwry.dat 状态查询 */
+    async fetchIpQueryDatStatus() {
+        try {
+            const res = await fetchWithAuth('/api/manage/security/ip-query/dat');
+            const json = await res.json().catch(() => ({}));
+            if (json?.success && json.data) {
+                this.datStatus = { exists: !!json.data.exists, records: json.data.records || 0, sizeBytes: json.data.sizeBytes || 0, error: json.data.error || '' };
+            }
+        } catch {
+            /* 状态获取失败不打断页面 */
+        }
+    },
+    /** v2.6.0 #301：上传 qqwry.dat（原始字节直传） */
+    async uploadQqwryDat({ file }) {
+        if (this.datUploading) return;
+        this.datUploading = true;
+        try {
+            const res = await fetchWithAuth('/api/manage/security/ip-query/dat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/octet-stream' },
+                body: file
+            });
+            const json = await res.json().catch(() => ({}));
+            if (json?.success) {
+                this.$message.success(this.$t('sysSecurity.ipQueryDatUploaded', {
+                    records: Number(json.data?.records || 0).toLocaleString()
+                }));
+                await this.fetchIpQueryDatStatus();
+            } else {
+                this.$message.error(json?.message || this.$t('floatingSave.failed'));
+                console.error('[security] qqwry.dat 上传失败:', json?.message);
+            }
+        } catch (e) {
+            console.error('[security] qqwry.dat 上传异常:', e);
+            this.$message.error(this.$t('floatingSave.failed'));
+        } finally {
+            this.datUploading = false;
+        }
     },
     addIpQueryParam() {
         this.uploadSettings.ipQuery.customApi.params.push({ key: '', value: '' });
@@ -1486,6 +1579,8 @@ mounted() {
     // 现在合并为一个：先挂 resize 监听，再加载配置。
     window.addEventListener('resize', this.handleWindowResize);
     this.loading = true;
+    // v2.6.0 #301：qqwry.dat 数据包状态
+    this.fetchIpQueryDatStatus();
     // 获取上传设置
     Promise.all([
         fetchWithAuth('/api/manage/sysConfig/security').then((response) => response.json()),
@@ -1642,6 +1737,23 @@ beforeUnmount() {
     flex-direction: column;
     gap: 10px;
     width: 100%;
+}
+
+/* v2.6.0 #301：qqwry.dat 上传与状态 */
+.ipquery-dat-box {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.ipquery-dat-status {
+    font-size: 12px;
+    color: var(--el-text-color-secondary);
+}
+
+.ipquery-dat-missing {
+    color: var(--el-color-warning);
 }
 
 .query-param-row {

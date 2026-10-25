@@ -79,6 +79,45 @@ function isLoopback(req: express.Request): boolean {
 }
 
 /**
+ * v2.6.0：白名单放行规则 —— 来源地址匹配（一行一条）。
+ *
+ * 规则（锚链接不算）：
+ *   ① 访问来源地址与放行地址相符（去掉 #锚点 后相等）则放行；
+ *   ② 访问来源地址包含放行地址（或等于）即放行 ——
+ *      如放行 `192.168.1.3:5505`，则 `http://192.168.1.3:5505/?id=29` 等均放行；
+ *      放行 `http://192.168.1.3:55105/?id=29`，则同地址带 #锚点 也放行。
+ *
+ * 参与匹配的「访问来源地址」（按优先级）：
+ *   Referer → 本请求完整 URL（无 Referer 的直接访问）→ 客户端 IP（兼容历史纯 IP 条目）。
+ */
+function stripAnchor(s: string): string {
+  return String(s || '').split('#')[0].trim();
+}
+
+function sourceAllowed(entry: string, sources: string[]): boolean {
+  const e = stripAnchor(entry);
+  if (!e) return false;
+  return sources.some((s) => {
+    const src = stripAnchor(s);
+    return src === e || src.includes(e);
+  });
+}
+
+function sourceAddressesOf(req: express.Request): string[] {
+  const list: string[] = [];
+  const referer = String(req.headers.referer || '').trim();
+  if (referer) list.push(referer);
+  const host = String(req.headers.host || '').trim();
+  if (host) {
+    const proto = req.protocol || 'http';
+    list.push(`${proto}://${host}${req.originalUrl || req.url || ''}`);
+  }
+  const ip = clientIp(req);
+  if (ip) list.push(ip);
+  return list;
+}
+
+/**
  * 首次安装写入初始管理员账户（幂等）。
  *
  * 取值：ADMIN_USER / ADMIN_PASSWORD，未配置时用 admin / go-imgbed。
@@ -183,8 +222,15 @@ async function bootstrap() {
         if (parseSession(req.cookies?.[SESSION_COOKIE])) return next();
         const ip = clientIp(req);
         if (lists.block.includes(ip)) return res.status(403).send('Forbidden: IP blocked');
-        if (lists.white.length > 0 && !lists.white.includes(ip)) {
-          return res.status(403).send('Forbidden: IP not in whitelist');
+        if (lists.white.length > 0) {
+          // v2.6.0：放行规则改为来源地址匹配（锚点忽略、包含即放行，兼容历史纯 IP 条目）
+          const sources = sourceAddressesOf(req);
+          if (!lists.white.some((entry) => sourceAllowed(entry, sources))) {
+            console.error(
+              `[security] 白名单拦截 ip=${ip} referer=${String(req.headers.referer || '-')} path=${req.originalUrl || req.url}`,
+            );
+            return res.status(403).send('Forbidden: source not in whitelist');
+          }
         }
         next();
       })

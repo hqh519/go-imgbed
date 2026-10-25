@@ -1,15 +1,38 @@
 <template>
     <div class="login" :style="viewportStyle">
-        <ToggleDark class="toggle-dark"/>
-        <LanguageSwitcher class="language-switcher"/>
+        <!--
+            v2.6.0：右上角只留一个「更多菜单」按钮（同前端上传页右上角样式）——
+            主题切换（白天/夜间/自动）与语言切换以文字项迁入菜单，另加「忘记密码」入口。
+        -->
+        <el-dropdown class="more-dropdown" trigger="click" @command="handleMenuCommand">
+            <button type="button" class="more-button" :title="$t('login.moreMenu')" :aria-label="$t('login.moreMenu')">
+                <font-awesome-icon icon="ellipsis-v" size="lg"/>
+            </button>
+            <template #dropdown>
+                <el-dropdown-menu>
+                    <el-dropdown-item command="toggleTheme">
+                        <font-awesome-icon :icon="themeIcon" style="width: 16px; margin-right: 8px; text-align: center;"/>
+                        {{ themeText }}
+                    </el-dropdown-item>
+                    <el-dropdown-item command="toggleLanguage">
+                        <font-awesome-icon icon="globe" style="width: 16px; margin-right: 8px; text-align: center;"/>
+                        {{ $i18n.locale === 'zh-CN' ? 'English' : '简体中文' }}
+                    </el-dropdown-item>
+                    <el-dropdown-item command="forgotPassword" divided>
+                        <font-awesome-icon icon="key" style="width: 16px; margin-right: 8px; text-align: center;"/>
+                        {{ $t('login.forgotPassword') }}
+                    </el-dropdown-item>
+                </el-dropdown-menu>
+            </template>
+        </el-dropdown>
         <!-- v2.5.0：登录页不再显示左上角 LOGO（需求 v20261023-2；其余前端页面照常显示） -->
         <div class="login-container">
             <h1 class="login-title" tabindex="0">{{ title }}</h1>
-            
+
             <!-- 动态渲染输入字段 -->
             <div v-for="(field, index) in fields" :key="field.key" class="input-container">
-                <label 
-                    class="input-name" 
+                <label
+                    class="input-name"
                     :ref="`inputLabel${index}`"
                     :style="{ '--underline-width': labelUnderlineWidths[index] + 'px' }"
                 >
@@ -32,27 +55,61 @@
                     </el-input>
                 </div>
             </div>
-            
-            <el-button 
-                class="submit" 
+
+            <el-button
+                class="submit"
                 :class="{ 'is-loading': loading }"
-                type="primary" 
+                type="primary"
                 @click="handleSubmit"
                 :disabled="loading"
             >
                 <div v-if="loading" class="loading-ring"></div>
                 <span v-else>{{ computedSubmitText }}</span>
             </el-button>
+            <!-- v2.6.0：忘记密码入口（登录按钮下方小字链接） -->
+            <el-button class="forgot-link" link size="small" @click="showForgotDialog = true">
+                {{ $t('login.forgotPassword') }}?
+            </el-button>
         </div>
+
+        <!-- 忘记密码：用户名 + 邮箱（邮箱不提示、纯记忆输入），匹配则发重置链接（10 分钟有效） -->
+        <el-dialog
+            v-model="showForgotDialog"
+            :title="$t('login.forgotPassword')"
+            :width="dialogWidth"
+            append-to-body
+            class="forgot-dialog"
+        >
+            <p class="forgot-hint">{{ $t('login.forgotHint') }}</p>
+            <el-input
+                v-model="forgotUsername"
+                :placeholder="$t('login.forgotUsername')"
+                class="forgot-input"
+                clearable
+            />
+            <el-input
+                v-model="forgotEmail"
+                :placeholder="$t('login.forgotEmail')"
+                class="forgot-input"
+                clearable
+                @keyup.enter="submitForgot"
+            />
+            <template #footer>
+                <el-button @click="showForgotDialog = false">{{ $t('common.cancel') }}</el-button>
+                <el-button type="primary" :loading="forgotBusy" @click="submitForgot">
+                    {{ $t('login.forgotSubmit') }}
+                </el-button>
+            </template>
+        </el-dialog>
         <Footer class="footer"/>
     </div>
 </template>
 
 <script>
 import Footer from '@/components/Footer.vue';
-import ToggleDark from '@/components/ToggleDark.vue';
-import LanguageSwitcher from '@/components/LanguageSwitcher.vue';
 import { mapGetters } from 'vuex';
+import axios from '@/utils/axios';
+import { setLocale } from '@/locales';
 import backgroundManager from '@/mixins/backgroundManager';
 
 export default {
@@ -96,13 +153,38 @@ export default {
             formData: {},
             labelUnderlineWidths: [],
             isFocused: false,
-            viewportHeight: 0
+            viewportHeight: 0,
+            // v2.6.0：忘记密码
+            showForgotDialog: false,
+            forgotUsername: '',
+            forgotEmail: '',
+            forgotBusy: false
         }
     },
     computed: {
         ...mapGetters(['userConfig']),
         computedSubmitText() {
             return this.submitText || this.$t('login.submit');
+        },
+        /** 主题三态：auto（跟随系统）/ light / dark */
+        themeMode() {
+            if (!this.$store.getters.cusDarkMode) return 'auto';
+            return this.$store.getters.useDarkMode ? 'dark' : 'light';
+        },
+        themeIcon() {
+            // 显示下一个模式的图标（与上传页更多菜单一致）
+            if (this.themeMode === 'auto') return 'sun';
+            if (this.themeMode === 'light') return 'moon';
+            return 'adjust';
+        },
+        themeText() {
+            // 显示下一个模式的文字（文字模式，v2.6.0）
+            if (this.themeMode === 'auto') return this.$t('theme.lightMode');
+            if (this.themeMode === 'light') return this.$t('theme.darkMode');
+            return this.$t('theme.autoMode');
+        },
+        dialogWidth() {
+            return window.innerWidth < 768 ? '90%' : '420px';
         },
         viewportStyle() {
             // 当检测到虚拟键盘弹出时，将容器高度收缩到可见视口高度
@@ -127,9 +209,7 @@ export default {
         }
     },
     components: {
-        Footer,
-        ToggleDark,
-        LanguageSwitcher
+        Footer
     },
     mounted() {
         // 初始化表单数据
@@ -193,6 +273,51 @@ export default {
             if (this.loading) return;
             // 触发父组件的提交事件，传递表单数据
             this.$emit('submit', { ...this.formData });
+        },
+        /** v2.6.0：右上角更多菜单命令（主题 / 语言 / 忘记密码） */
+        handleMenuCommand(command) {
+            if (command === 'toggleTheme') {
+                // 循环切换：auto -> light -> dark -> auto（与上传页更多菜单一致）
+                if (this.themeMode === 'auto') {
+                    this.$store.commit('setCusDarkMode', true);
+                    this.$store.commit('setUseDarkMode', false);
+                } else if (this.themeMode === 'light') {
+                    this.$store.commit('setCusDarkMode', true);
+                    this.$store.commit('setUseDarkMode', true);
+                } else {
+                    this.$store.commit('setCusDarkMode', false);
+                }
+            } else if (command === 'toggleLanguage') {
+                const next = this.$i18n.locale === 'zh-CN' ? 'en' : 'zh-CN';
+                setLocale(next);
+            } else if (command === 'forgotPassword') {
+                this.forgotUsername = '';
+                this.forgotEmail = '';
+                this.showForgotDialog = true;
+            }
+        },
+        /** v2.6.0：忘记密码 —— 用户名 + 邮箱匹配即发重置链接（后端统一应答，不暴露账户是否存在） */
+        async submitForgot() {
+            const username = String(this.forgotUsername || '').trim();
+            const email = String(this.forgotEmail || '').trim();
+            if (!username || !email) {
+                this.$message.warning(this.$t('login.forgotRequired'));
+                return;
+            }
+            this.forgotBusy = true;
+            try {
+                const res = await axios.post('/api/auth/password/forgot', { username, email }, { withCredentials: true });
+                if (res.data?.success) {
+                    this.$message.success(res.data.message || this.$t('login.forgotSent'));
+                    this.showForgotDialog = false;
+                } else {
+                    this.$message.error(res.data?.message || this.$t('common.failed'));
+                }
+            } catch (e) {
+                this.$message.error(e?.response?.data?.message || this.$t('common.failed'));
+            } finally {
+                this.forgotBusy = false;
+            }
         },
         handleViewportResize() {
             if (!window.visualViewport) return;
@@ -537,50 +662,57 @@ export default {
     bottom: 0;
     width: 100vw;
 }
-.toggle-dark {
+
+/* v2.6.0：右上角「更多菜单」按钮（同上传页右上角样式：毛玻璃 + 圆角） */
+.more-dropdown {
     position: fixed;
     top: 30px;
     right: 30px;
-    border: 1px solid var(--glass-border);
-    transition: background-color 0.25s ease, border-color 0.25s ease, transform 0.25s ease;
-    background-color: var(--glass-bg);
-    box-shadow: none;
-    border-radius: 12px;
+    z-index: 100;
 }
-.toggle-dark:hover {
-    transform: scale(1.05);
-    border-color: var(--glass-border-hover);
-}
-.language-switcher {
-    position: fixed;
-    top: 30px;
-    right: 80px;
-    transition: background-color 0.25s ease, border-color 0.25s ease, transform 0.25s ease;
-    background-color: var(--glass-bg);
-    box-shadow: none;
-    border: 1px solid var(--glass-border);
-    border-radius: 12px;
+.more-button {
     width: 2.5rem;
     height: 2.5rem;
     display: flex;
     align-items: center;
     justify-content: center;
-    z-index: 100;
+    border: 1px solid var(--glass-border);
+    border-radius: 12px;
+    background-color: var(--glass-bg);
+    color: var(--text-color, inherit);
+    cursor: pointer;
+    box-shadow: none;
+    backdrop-filter: blur(20px) saturate(1.4);
+    -webkit-backdrop-filter: blur(20px) saturate(1.4);
+    transition: background-color 0.25s ease, border-color 0.25s ease, transform 0.25s ease;
+}
+.more-button:hover {
+    transform: scale(1.05);
+    border-color: var(--glass-border-hover);
 }
 @media (max-width: 768px) {
-    .language-switcher {
+    .more-dropdown {
+        top: 20px;
+        right: 20px;
+    }
+    .more-button {
         width: 2rem;
         height: 2rem;
     }
 }
-.language-switcher:hover {
-    transform: scale(1.05);
-    border-color: var(--glass-border-hover);
-}
 
-.toggle-dark,
-.language-switcher {
-    backdrop-filter: blur(20px) saturate(1.4);
-    -webkit-backdrop-filter: blur(20px) saturate(1.4);
+/* v2.6.0：忘记密码入口（登录按钮下方小字链接） */
+.forgot-link {
+    margin-top: -6px;
+    color: var(--login-input-label-focus-color, #5b9bd3);
+}
+.forgot-hint {
+    margin: 0 0 12px;
+    font-size: 13px;
+    color: var(--text-color-secondary, #909399);
+    line-height: 1.6;
+}
+.forgot-input {
+    margin-bottom: 12px;
 }
 </style>

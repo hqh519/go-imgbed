@@ -24,7 +24,7 @@
     v2.5.0（v20261023-2）：移动端边缘小按钮 ——
     导航条默认整体藏在屏幕外，屏幕左缘只露 15px 宽的小按钮（垂直居中）；
     点击小按钮 → 导航条滑入；点击屏幕任意位置 / 滚动页面 → 导航条收回。
-    小按钮自身：默认显示；页面向上滚动时隐藏、向下滚动时显示（页面顶部恒显示）。
+    小按钮自身：默认显示；页面上滚（往深处看）时隐藏、下滚（往回看）时显示（页面顶部恒显示）。
 -->
 <button
     v-if="isMobileViewport"
@@ -134,9 +134,9 @@ methods: {
         const delta = y - this.lastScrollY;
         // 滚动页面 → 导航条收回
         if (this.mobileOpen && Math.abs(delta) >= 2) this.mobileOpen = false;
-        // 边缘小按钮：页面向下滚动 → 显示；向上滚动 → 隐藏；页面顶部恒显示
+        // v2.6.0：边缘小按钮方向修正 —— 页面上滚（往深处看，delta>0）→ 隐藏；下滚（往回看，delta<0）→ 显示；页面顶部恒显示
         if (Math.abs(delta) >= 2 || y <= 40) {
-            this.handleHidden = !(y <= 40 || delta > 0);
+            this.handleHidden = !(y <= 40 || delta < 0);
         }
         this.lastScrollY = y;
     },

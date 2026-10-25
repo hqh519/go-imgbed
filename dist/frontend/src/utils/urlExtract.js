@@ -20,6 +20,9 @@ const TRAILING_PUNCT = /[)\]}'"»】」』）】，。；：！？、…·,.;:!?
 /** 尾部表情符号（代理对区间） */
 const TRAILING_EMOJI = /[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\uFE0F\u200D]+$/u
 
+/** v2.6.0：HTML 属性里的协议相对地址（<img src="//cdn.example.com/a.png">） */
+const ATTR_PROTOCOL_RELATIVE = /\b(?:src|href|content|data-src)\s*=\s*(["'])\/\/([^'"\s>]+)\1/gi
+
 function trimTrailing(url) {
   let u = url
   // 循环剥离尾部标点 / 表情
@@ -61,6 +64,19 @@ export function extractUrlsFromText(text) {
     if (!/^https?:\/\/[^\s/]+\.[^\s/]+/i.test(url)) continue
     if (!found.includes(url)) found.push(url)
   }
+
+  /*
+   * v2.6.0（v20261024-1）补充：HTML 代码里 src="//cdn.x.com/a.png" 这类
+   * 协议相对地址，主扫描（认 http 起点看不见它）——只在属性值语境里补扫，
+   * 避免把普通注释文本误判成链接。
+   */
+  let am
+  ATTR_PROTOCOL_RELATIVE.lastIndex = 0
+  while ((am = ATTR_PROTOCOL_RELATIVE.exec(text)) !== null) {
+    const url = 'https://' + am[2].replace(TRAILING_PUNCT, '')
+    if (/^https?:\/\/[^\s/]+\.[^\s/]+/i.test(url) && !found.includes(url)) found.push(url)
+  }
+
   return found
 }
 

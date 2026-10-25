@@ -105,12 +105,12 @@
                             <span class="channel-text">{{ row.backupChannelName || $t('userManage.followGlobal') }}</span>
                         </template>
                     </el-table-column>
-                    <!-- 操作列：移动端不固定，与其他列一起左右滚动 -->
-                    <el-table-column :label="$t('userManage.actions')" :width="isAdminRole ? 200 : 190" :fixed="isMobile ? false : 'right'" align="center">
+                    <!-- 操作列：移动端不固定，与其他列一起左右滚动。
+                         v2.6.0：「重置密码」「修改密码」按钮移除 —— 改密码统一收口到用户编辑页 -->
+                    <el-table-column :label="$t('userManage.actions')" :width="isAdminRole ? 130 : 90" :fixed="isMobile ? false : 'right'" align="center">
                         <template #default="{ row }">
                             <template v-if="isAdminRole">
                                 <el-button link type="primary" size="small" :disabled="row.orphan" @click="openEditDialog(row)">{{ $t('common.edit') }}</el-button>
-                                <el-button link type="warning" size="small" :disabled="row.orphan" @click="openPasswordDialog(row)">{{ $t('userManage.resetPassword') }}</el-button>
                                 <el-button
                                     link
                                     type="danger"
@@ -119,10 +119,9 @@
                                     @click="removeUser(row)"
                                 >{{ $t('common.delete') }}</el-button>
                             </template>
-                            <!-- 普通用户：只能修改自己的昵称与密码 -->
+                            <!-- 普通用户：只留「编辑」（进用户编辑页，可改昵称/密码/邮箱/2FA 等） -->
                             <template v-else>
-                                <el-button link type="primary" size="small" :disabled="row.orphan" @click="openProfileDialog(row)">{{ $t('userManage.changeNickname') }}</el-button>
-                                <el-button link type="warning" size="small" :disabled="row.orphan" @click="openPasswordDialog(row)">{{ $t('userManage.changePassword') }}</el-button>
+                                <el-button link type="primary" size="small" :disabled="row.orphan" @click="openEditDialog(row)">{{ $t('common.edit') }}</el-button>
                             </template>
                         </template>
                     </el-table-column>
@@ -299,8 +298,11 @@
                             </div>
                         </template>
                     </el-table-column>
-                    <el-table-column prop="ip" :label="$t('customerConfig.ipAddress')" min-width="180"></el-table-column>
-                    <el-table-column prop="address" :label="$t('customerConfig.address')" min-width="220"></el-table-column>
+                    <el-table-column :label="$t('fileDetail.ipDisplayLabel')" min-width="280">
+                        <template v-slot="{ row }">
+                            <span :class="{ 'ip-display-cell-multiline': String(row.display || '').includes('\n') }">{{ row.display || (row.address ? `${row.address}(${row.ip})` : row.ip) }}</span>
+                        </template>
+                    </el-table-column>
                     <el-table-column prop="count" :label="$t('customerConfig.uploadCount')" sortable min-width="110"></el-table-column>
                     <!-- 「上传渠道」不在汇总行显示（改到展开后的每个文件行，见内层表格） -->
                     <el-table-column :label="$t('customerConfig.allowUpload')" :fixed="allowUploadColumnFixed" :width="allowUploadColumnWidth" align="center">
@@ -394,31 +396,7 @@
             </template>
         </el-dialog>
 
-        <!-- 普通用户修改自己的昵称（其余字段不可改，后端也会忽略） -->
-        <el-dialog v-model="showProfileDialog" :title="$t('userManage.changeNickname')" :width="dialogWidth">
-            <el-form label-position="top">
-                <el-form-item :label="`${$t('userManage.username')}：${profileTarget?.username || ''}`">
-                    <el-input v-model="profileNickname" :placeholder="$t('userManage.nicknamePlaceholder')" />
-                </el-form-item>
-            </el-form>
-            <template #footer>
-                <el-button @click="showProfileDialog = false">{{ $t('common.cancel') }}</el-button>
-                <el-button type="primary" :loading="savingUser" @click="submitProfile">{{ $t('common.save') }}</el-button>
-            </template>
-        </el-dialog>
-
-        <!-- 重置密码（普通用户即「修改密码」——只能改自己的） -->
-        <el-dialog v-model="showPasswordDialog" :title="isAdminRole ? $t('userManage.resetPassword') : $t('userManage.changePassword')" :width="dialogWidth">
-            <el-form label-position="top">
-                <el-form-item :label="`${$t('userManage.username')}：${passwordTarget?.username || ''}`">
-                    <el-input v-model="newPassword" type="password" show-password :placeholder="$t('userManage.passwordPlaceholder')" />
-                </el-form-item>
-            </el-form>
-            <template #footer>
-                <el-button @click="showPasswordDialog = false">{{ $t('common.cancel') }}</el-button>
-                <el-button type="primary" :loading="savingUser" @click="submitPassword">{{ $t('common.save') }}</el-button>
-            </template>
-        </el-dialog>
+        <!-- v2.6.0：重置/修改密码弹窗已移除 —— 改密码统一在用户编辑页（含身份验证） -->
 
         <!-- 归集统计：点击文件封面调出文件详情（与文件管理页同一弹窗，隐藏批量动作） -->
         <FileDetailDialog
@@ -478,13 +456,7 @@ export default {
                 canEdit: true, canDelete: true, linkEnabled: true, enabled: true, enforceLimits: true
             },
             savingUser: false,
-            showPasswordDialog: false,
-            passwordTarget: null,
-            newPassword: '',
-            // 普通用户修改自己的昵称（仅昵称一项，其余字段后端会忽略）
-            showProfileDialog: false,
-            profileTarget: null,
-            profileNickname: '',
+            // v2.6.0：重置/修改密码与改昵称弹窗已移除，统一走用户编辑页
             // 用户公告（管理员可编辑，普通用户只读）
             noticeText: '',
             noticeSaving: false,
@@ -723,58 +695,8 @@ export default {
                 this.$message.error(this.$t('common.failed'));
             }
         },
-        openPasswordDialog(row) {
-            this.passwordTarget = row;
-            this.newPassword = '';
-            this.showPasswordDialog = true;
-        },
-        async submitPassword() {
-            if (!this.newPassword || this.newPassword.length < 4) {
-                this.$message.warning(this.$t('userManage.passwordTooShort'));
-                return;
-            }
-            this.savingUser = true;
-            try {
-                const res = await axios.put(`/api/manage/users/${this.passwordTarget.id}`, { password: this.newPassword }, { withCredentials: true });
-                if (res.data?.success) {
-                    this.$message.success(this.$t('common.success'));
-                    this.showPasswordDialog = false;
-                } else {
-                    this.$message.error(res.data?.message || this.$t('common.failed'));
-                }
-            } catch (e) {
-                this.$message.error(e?.response?.data?.message || this.$t('common.failed'));
-            } finally {
-                this.savingUser = false;
-            }
-        },
-        /*
-         * 普通用户修改自己的昵称。
-         * 后端 PUT /api/manage/users/:id 对非管理员会话只接受 password / nickname，
-         * 其余字段（启用 / 权限 / 主备渠道）一律忽略，所以这里只提交 nickname。
-         */
-        /** 普通用户改自己的资料：同样进独立页（可改用户名/密码/邮箱/头像/2FA/会话） */
-        openProfileDialog(row) {
-            if (!row?.id) return;
-            this.$router.push({ name: 'userEdit', params: { id: row.id } });
-        },
-        async submitProfile() {
-            this.savingUser = true;
-            try {
-                const res = await axios.put(`/api/manage/users/${this.profileTarget.id}`, { nickname: this.profileNickname }, { withCredentials: true });
-                if (res.data?.success) {
-                    this.$message.success(this.$t('common.success'));
-                    this.showProfileDialog = false;
-                    await this.loadUsers();
-                } else {
-                    this.$message.error(res.data?.message || this.$t('common.failed'));
-                }
-            } catch (e) {
-                this.$message.error(e?.response?.data?.message || this.$t('common.failed'));
-            } finally {
-                this.savingUser = false;
-            }
-        },
+        // v2.6.0：openPasswordDialog / submitPassword / openProfileDialog / submitProfile 已移除
+        // —— 改密码统一在用户编辑页（带原密码/邮箱验证码/2FA 三选一验证），改资料直接进编辑页
         async removeUser(row) {            try {
                 await this.$confirm(this.$t('userManage.deleteConfirm', { name: row.username }), this.$t('common.warning'), {
                     confirmButtonText: this.$t('common.confirm'),
@@ -864,6 +786,7 @@ export default {
                     this.dealedData = this.dealedData.concat(result.map(item => ({
                         ip: item.ip,
                         address: item.address,
+                        display: item.display || '',
                         count: item.count,
                         uploadSources: channelByIp[item.ip] || [],
                         data: [],
@@ -892,6 +815,7 @@ export default {
                     this.dealedData = result.map(item => ({
                         ip: item.ip,
                         address: item.address,
+                        display: item.display || '',
                         count: item.count,
                         uploadSources: channelByIp[item.ip] || [],
                         data: [],
