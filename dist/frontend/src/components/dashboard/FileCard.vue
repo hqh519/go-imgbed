@@ -116,7 +116,10 @@
 
         <!-- 下半部分：文件信息（与历史记录卡片一致） -->
         <div class="card-info" @click="$emit('detail')">
-            <div class="file-name" :title="fullName">{{ displayName }}</div>
+            <!-- v2.7.0：文件名中间省略（与历史记录/列表视图同规则：头部与扩展名恒可见） -->
+            <div class="file-name" :title="fullName">
+                <span class="name-start">{{ nameParts.start }}</span><span class="name-end">{{ nameParts.end }}</span>
+            </div>
             <div class="card-meta">
                 <span class="upload-time">{{ uploadDate }}</span>
                 <span class="upload-size">{{ fileSizeDisplay }}</span>
@@ -215,6 +218,12 @@ export default {
             const keepStart = max - keepEnd - 1; // 中间省略号占 1 个字符
             if (keepStart <= 3) return `${full.slice(0, max - 1)}…`;
             return `${full.slice(0, keepStart)}…${full.slice(-keepEnd)}`;
+        },
+        /** v2.7.0：文件名中间省略（与历史记录同规则：≤24 全显，否则保留头部与尾部/扩展名） */
+        nameParts() {
+            const name = this.fullName || '';
+            if (name.length <= 24) return { start: name, end: '' };
+            return { start: name.slice(0, -12), end: name.slice(-12) };
         },
         /** 上传日期（与历史记录一致：年-月-日） */
         uploadDate() {
@@ -416,9 +425,17 @@ export default {
     color: rgba(255, 255, 255, 0.96);
     border: 1px solid rgba(230, 162, 60, 0.72);
 }
-/* 选择圆圈：右上角 */
+/* v2.7.0：选择圆圈恒靠右上 —— margin-left:auto 不依赖 space-between 的子项数量，
+   移动端隐藏渠道角标后 checkbox 也不会掉到左上角（与文件夹卡片行为一致） */
 .card-select {
     flex-shrink: 0;
+    margin-left: auto;
+}
+/* v2.8.0：手机端/平板端下选择圆圈整体上移 4px（PC 端保持不动） */
+@media (max-width: 1199px) {
+    .card-select {
+        margin-top: -4px;
+    }
 }
 .card-select :deep(.el-checkbox__inner) {
     width: 16px !important;
@@ -426,7 +443,9 @@ export default {
     height: 16px !important;
     min-height: 16px;
     border-radius: 50% !important;
-    border-color: rgba(255, 255, 255, 0.8);
+    /* v2.8.0：未选中时圆圈内部透明（不填充白色）；选中时保持主题色填充 */
+    background: transparent;
+    /* v2.7.0：去掉白色描边覆盖，圆圈颜色与文件夹卡片的选择按钮一致（默认描边） */
 }
 /* 中间：复制 / 打开 / 移动 */
 .overlay-actions {
@@ -488,11 +507,24 @@ export default {
 .file-name {
     font-size: 13px;
     font-weight: 500;
+    /* v2.7.0：中间省略 —— start 可收缩出省略号，end（含扩展名）固定可见（同历史记录） */
+    display: flex;
+    align-items: baseline;
+    min-width: 0;
     white-space: nowrap;
     overflow: hidden;
-    text-overflow: ellipsis;
     margin-bottom: 6px;
     color: var(--upload-text-color);
+}
+.name-start {
+    flex-shrink: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.name-end {
+    flex-shrink: 0;
+    white-space: nowrap;
 }
 .card-meta {
     display: flex;

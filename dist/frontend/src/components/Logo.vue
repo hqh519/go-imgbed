@@ -164,12 +164,11 @@ export default {
 }
 
 /*
- * v2.6.0：悬停动画改为「顺时针 360 度缓慢转圈」——
- * 用 animation 而不是 transition：每次悬停进入触发一次完整旋转，
- * 移出后瞬间复位，不会出现「倒转回去」的观感。
+ * v2.7.0：悬停动画改为「缓慢反复旋转」——
+ * linear + infinite：悬停期间一直匀速转圈（8s/圈），移出即停并复位。
  */
 .logo--hover-enabled:hover {
-  animation: logo-spin-360 1.2s cubic-bezier(0.4, 0, 0.2, 1);
+  animation: logo-spin-360 8s linear infinite;
   filter: brightness(var(--logo-hover-brightness)) drop-shadow(0 0 10px var(--logo-glow-color));
 }
 

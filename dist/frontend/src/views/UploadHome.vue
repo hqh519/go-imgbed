@@ -34,6 +34,11 @@
                         <font-awesome-icon icon="book" style="width: 16px; margin-right: 8px; text-align: center;"/>
                         {{ $t('upload.viewDocs') }}
                     </el-dropdown-item>
+                    <!-- v2.7.0：退出登录迁入右上角更多菜单（文字模式，原右下角快捷栏入口移除） -->
+                    <el-dropdown-item command="logout" divided class="menu-item-logout">
+                        <font-awesome-icon icon="sign-out-alt" style="width: 16px; margin-right: 8px; text-align: center;"/>
+                        {{ $t('upload.logout') }}
+                    </el-dropdown-item>
                 </el-dropdown-menu>
             </template>
         </el-dropdown>
@@ -60,20 +65,7 @@
                     @blur="handleFolderInputBlur"
                 />
             </div>
-            <DirectoryTreePicker
-                v-if="showDirectorySuggestions"
-                :current-directory="uploadFolder"
-                source="upload"
-                @select="handleDirectorySelect"
-            >
-                <template #trigger>
-                    <el-tooltip :content="$t('upload.selectFromDirectoryTree')" placement="top" :disabled="disableTooltip" :show-after="1000">
-                        <el-button class="directory-tree-trigger">
-                            <font-awesome-icon icon="folder-tree" />
-                        </el-button>
-                    </el-tooltip>
-                </template>
-            </DirectoryTreePicker>
+            <!-- v2.8.0：右上角「选择目录」按钮已迁移至右下角快捷栏（文件管理下方、链接格式上方） -->
         </div>
         <!-- 上传方式切换：由上「上传框上方」的标签页承担（原右上角按钮已迁移） -->
 
@@ -110,6 +102,11 @@
                         <font-awesome-icon icon="book" style="width: 16px; margin-right: 8px; text-align: center;"/>
                         {{ $t('upload.viewDocs') }}
                     </el-dropdown-item>
+                    <!-- v2.7.0：退出登录迁入右上角更多菜单（移动端同款文字项） -->
+                    <el-dropdown-item command="logout" divided class="menu-item-logout">
+                        <font-awesome-icon icon="sign-out-alt" style="width: 16px; margin-right: 8px; text-align: center;"/>
+                        {{ $t('upload.logout') }}
+                    </el-dropdown-item>
                 </el-dropdown-menu>
             </template>
         </el-dropdown>
@@ -120,16 +117,26 @@
         >
             <div class="quick-toolbar-actions">
                 <div class="quick-toolbar-actions-inner">
-                    <el-tooltip :disabled="disableTooltip || !isQuickToolbarOpen" :content="$t('upload.logout')" placement="left" :hide-after="0" :show-after="1000">
-                        <el-button class="quick-toolbar-button" @click="handleQuickToolbarCommand('logout')">
-                            <font-awesome-icon icon="sign-out-alt" class="quick-toolbar-icon"/>
-                        </el-button>
-                    </el-tooltip>
+                    <!-- v2.7.0：退出登录已迁至右上角「更多菜单」（文字模式），快捷栏不再保留 -->
                     <el-tooltip :disabled="disableTooltip || !isQuickToolbarOpen" :content="$t('upload.manageFiles')" placement="left" :hide-after="0" :show-after="1000">
                         <el-button class="quick-toolbar-button" @click="handleQuickToolbarCommand('manage')">
                             <font-awesome-icon icon="folder" class="quick-toolbar-icon"/>
                         </el-button>
                     </el-tooltip>
+                    <!-- v2.8.0：「选择目录」从右上角迁入快捷栏（文件管理下方、链接格式上方） -->
+                    <DirectoryTreePicker
+                        :current-directory="uploadFolder"
+                        source="upload"
+                        @select="handleDirectorySelect"
+                    >
+                        <template #trigger>
+                            <el-tooltip :disabled="disableTooltip || !isQuickToolbarOpen" :content="$t('upload.selectFromDirectoryTree')" placement="left" :hide-after="0" :show-after="1000">
+                                <el-button class="quick-toolbar-button">
+                                    <font-awesome-icon icon="folder-tree" class="quick-toolbar-icon"/>
+                                </el-button>
+                            </el-tooltip>
+                        </template>
+                    </DirectoryTreePicker>
                     <el-tooltip :disabled="disableTooltip || !isQuickToolbarOpen" :content="$t('upload.linkFormat')" placement="left" :hide-after="0" :show-after="1000">
                         <el-button class="quick-toolbar-button" @click="handleQuickToolbarCommand('linkFormat')">
                             <font-awesome-icon icon="link" class="quick-toolbar-icon"/>
@@ -669,6 +676,9 @@ export default {
                 setLocale(next)
             } else if (command === 'systemManage') {
                 this.openSystemManage()
+            } else if (command === 'logout') {
+                // v2.7.0：更多菜单里的退出登录（与原右下角快捷栏同一逻辑）
+                this.handleLogout()
             }
         },
         handleDesktopMenuCommand(command) {
@@ -683,6 +693,9 @@ export default {
                 setLocale(next)
             } else if (command === 'systemManage') {
                 this.openSystemManage()
+            } else if (command === 'logout') {
+                // v2.7.0：更多菜单里的退出登录（桌面端）
+                this.handleLogout()
             }
         },
         /** 「上传记录 / 历史记录」已合并为同一页：新标签打开 /manage/history */
@@ -1555,9 +1568,20 @@ html.dark .upload-folder:hover :deep(.el-input__wrapper) {
     .upload-stack {
         top: -3.8vh;
     }
+    .upload-method-tabs {
+        /* v2.7.0：切换模块与下方操作区的间距调小一点（原 10px） */
+        margin-bottom: 4px;
+    }
     .upload-method-tab {
         padding: 6px 14px;
         font-size: 13px;
+    }
+}
+
+/* v2.8.0：平板（769-1024px）同步收紧「文件/链接」切换模块与操作区的间距 */
+@media (min-width: 769px) and (max-width: 1024px) {
+    .upload-method-tabs {
+        margin-bottom: 4px;
     }
 }
 

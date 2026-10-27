@@ -3,10 +3,9 @@
  *
  * 规则（需求约定）：
  *   - 管理员：全部渠道可见可用；
- *   - 普通用户：内置「本地存储」在授权名单为空时恒可用（零配置兜底），
- *     名单非空后与其它渠道一致 —— 只有勾选过的账户才可见、可上传（v2.6.0）；
- *     其余渠道必须在渠道编辑页的「用户授权」里被勾选才可见、可上传；
- *   - 未登录：只给未设授权的本地存储，避免匿名者枚举出全部渠道。
+ *   - 普通用户：一律按渠道「用户授权」名单判定 —— 本地存储渠道自 v2.7.0 起与
+ *     其它渠道完全同规则（名单为空 = 普通用户不可见，不再有「恒可用」兜底）；
+ *   - 匿名上传兜底不受影响（存储候选只限制 role=user 的普通用户）。
  *
  * 放在 common 层是为了让 channels.controller 与 storage-channel.service 共用，
  * 避免两者互相 import 造成循环依赖。
@@ -31,10 +30,8 @@ export function channelVisibleTo(
   admin: boolean,
 ): boolean {
   if (admin) return true;
-  const list = parseAuthorizedUsers(raw);
-  // v2.6.0：本地存储渠道也支持「用户授权」——名单为空时保持零配置兜底
-  // （对所有账户可见，兼容历史行为），名单非空后与其它渠道规则一致。
-  if (type === 'local' && list.length === 0) return true;
   if (!username) return false;
-  return list.includes(username);
+  // v2.7.0：本地存储渠道与其它渠道完全同规则 —— 只有授权名单里的普通用户可见可用
+  // （原「local 空名单恒可用」兜底按需求取消，普通用户编辑页/上传设置不再显示未授权的本地存储）
+  return parseAuthorizedUsers(raw).includes(username);
 }

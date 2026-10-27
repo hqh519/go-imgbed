@@ -41,9 +41,10 @@
             <div class="name-line" :title="displayName">
                 <span class="filename-start">{{ fileNameStart }}</span><span class="filename-end">{{ fileNameEnd }}</span>
             </div>
-            <!-- v2.6.0：文件夹名称下加「子文件夹 / 文件数」统计行 -->
-            <div v-if="isFolder && folderStatsText" class="channel-line">
-                <span class="folder-stat-line">{{ folderStatsText }}</span>
+            <!-- v2.6.0：文件夹名称下加「子文件夹 / 文件数」统计行
+                 v2.7.0：恒渲染该行（无统计时用占位空格），保证文件夹行与文件行高度一致 -->
+            <div v-if="isFolder" class="channel-line">
+                <span class="folder-stat-line">{{ folderStatsText || '\u00A0' }}</span>
             </div>
             <div v-if="!isFolder" class="channel-line">
                 <span class="channel-short" :title="storageChannelText">{{ storageChannelShort || '-' }}</span>

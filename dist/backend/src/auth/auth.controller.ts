@@ -37,6 +37,56 @@ const DEFAULT_SESSION_DAYS = 7;
 export class AuthController {
   constructor(private sysConfig: SysConfigService, private mail: MailService) {}
 
+  /* ================= v2.7.0：2FA 验证码错误锁定（分用户） =================
+   * 规则（需求约定）：
+   *   · 每个用户独立统计（按用户名）；
+   *   · 第一次输错时记录时间，自该时间起 1 小时为一个统计窗口（固定窗口，
+   *     超过 1 小时清空重新计算）；
+   *   · 窗口内累计输错 6 次 → 锁定 30 分钟，期间拒绝验证；锁定期满自动解锁；
+   *   · 验证成功立即清零。
+   * 内存级存储：单实例部署下够用，进程重启即清零（对爆破者反而更严格窗口重置）。
+   */
+  private static readonly TOTP_FAIL_MAX = 6;          // 窗口内允许的最大错误次数
+  private static readonly TOTP_FAIL_WINDOW_MS = 60 * 60 * 1000;   // 1 小时统计窗口
+  private static readonly TOTP_LOCK_MS = 30 * 60 * 1000;          // 锁定 30 分钟
+  private totpFailStore = new Map<string, { firstFailAt: number; count: number; lockedUntil: number }>();
+
+  /** 查询某用户的 2FA 锁定状态（顺带做窗口过期惰性清理） */
+  private totpLockState(username: string): { locked: boolean; remainingMs: number; count: number } {
+    const st = this.totpFailStore.get(username);
+    if (!st) return { locked: false, remainingMs: 0, count: 0 };
+    const now = Date.now();
+    if (st.lockedUntil > now) return { locked: true, remainingMs: st.lockedUntil - now, count: st.count };
+    // 窗口过期（自首次失败起 1 小时）→ 清空重算
+    if (now - st.firstFailAt >= AuthController.TOTP_FAIL_WINDOW_MS) {
+      this.totpFailStore.delete(username);
+      return { locked: false, remainingMs: 0, count: 0 };
+    }
+    return { locked: false, remainingMs: 0, count: st.count };
+  }
+
+  /** 记录一次 2FA 验证失败；达到阈值时触发 30 分钟锁定 */
+  private totpRecordFailure(username: string): { count: number; locked: boolean; remainingMs: number } {
+    const now = Date.now();
+    const st = this.totpFailStore.get(username);
+    if (!st || now - st.firstFailAt >= AuthController.TOTP_FAIL_WINDOW_MS) {
+      // 首次失败：记录时间，计数 1
+      this.totpFailStore.set(username, { firstFailAt: now, count: 1, lockedUntil: 0 });
+      return { count: 1, locked: false, remainingMs: 0 };
+    }
+    st.count += 1;
+    if (st.count >= AuthController.TOTP_FAIL_MAX) {
+      st.lockedUntil = now + AuthController.TOTP_LOCK_MS;
+      return { count: st.count, locked: true, remainingMs: AuthController.TOTP_LOCK_MS };
+    }
+    return { count: st.count, locked: false, remainingMs: 0 };
+  }
+
+  /** 验证成功：清空该用户的失败计数 */
+  private totpClearFailures(username: string): void {
+    this.totpFailStore.delete(username);
+  }
+
   /** 读取「安全设置」中的账号配置（原始值，含散列/历史明文） */
   private async authConfig(): Promise<any> {
     try {
@@ -406,11 +456,40 @@ export class AuthController {
       await this.setSession(res, { user: u.username, role: session.role, totpEnabled: false }, req, true);
       return res.json({ success: true, data: { verified: true } });
     }
+    // v2.7.0：验证前先检查该用户是否处于错误锁定期
+    const lock = this.totpLockState(u.username);
+    if (lock.locked) {
+      const remainMin = Math.max(1, Math.ceil(lock.remainingMs / 60000));
+      appLog.warn('auth', `账户「${u.username}」2FA 验证处于锁定期（窗口内累计错误 ${lock.count} 次），剩余约 ${remainMin} 分钟，拒绝本次验证`);
+      return res.status(400).json({
+        success: false,
+        message: `验证码错误次数过多，已锁定，请约 ${remainMin} 分钟后再试`,
+        code: 'TOTP_LOCKED',
+        data: { locked: true, remainMinutes: remainMin },
+      });
+    }
     const hit = await this.verifySecondFactor(u, String(code || ''));
     if (!hit.ok) {
+      // v2.7.0：分用户记录失败次数，窗口内达 6 次锁定 30 分钟
+      const fail = this.totpRecordFailure(u.username);
+      if (fail.locked) {
+        appLog.warn('auth', `账户「${u.username}」2FA 验证错误已达 ${fail.count} 次（1 小时窗口），锁定 30 分钟`);
+      } else {
+        appLog.warn('auth', `账户「${u.username}」2FA 验证失败（第 ${fail.count}/${AuthController.TOTP_FAIL_MAX} 次，1 小时窗口）`);
+      }
       // 注意：这里**不能**清 Cookie / 跳登录页 —— 前端要继续停在验证框上让用户重试
-      return res.status(400).json({ success: false, message: hit.message || '验证失败', code: 'VERIFY_FAILED' });
+      const suffix = fail.locked
+        ? `，已锁定 30 分钟`
+        : `（${fail.count}/${AuthController.TOTP_FAIL_MAX}，1 小时内累计 6 次将锁定 30 分钟）`;
+      return res.status(400).json({
+        success: false,
+        message: (hit.message || '验证失败') + suffix,
+        code: fail.locked ? 'TOTP_LOCKED' : 'VERIFY_FAILED',
+        data: { locked: fail.locked, failCount: fail.count },
+      });
     }
+    // 验证成功：清零失败计数
+    this.totpClearFailures(u.username);
     await this.setSession(
       res,
       {

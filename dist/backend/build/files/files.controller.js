@@ -660,6 +660,7 @@ let ManageController = class ManageController {
         const fFileType = splitCsv(q.fileType);
         const fChannel = splitCsv(q.channel);
         const fChannelName = splitCsv(q.channelName);
+        const fUploadSource = splitCsv(q.uploadSource).map((s) => (0, file_view_1.normalizeUploadSource)(s));
         const fBackup = splitCsv(q.backup);
         const fRedirect = splitCsv(q.redirect);
         const rows = await prisma_1.prisma.fileRecord.findMany({
@@ -739,6 +740,8 @@ let ManageController = class ManageController {
                 return false;
             if (fChannelName.length && !fChannelName.includes(primary?.channel?.name || ''))
                 return false;
+            if (fUploadSource.length && !fUploadSource.includes((0, file_view_1.normalizeUploadSource)(r.uploadSource)))
+                return false;
             if (fBackup.length) {
                 const hasBackup = r.copies.some((c) => c !== primary && c.status === 'active' && (c.remoteKey || c.remoteUrl));
                 const ok = (fBackup.includes('backedup') && hasBackup) ||
@@ -797,7 +800,7 @@ let ManageController = class ManageController {
                 }
                 directoryStats[d] = {
                     folders: sub,
-                    files: files.filter((r) => (r.folder || '') === d).length,
+                    files: matched.filter((r) => (r.folder || '') === d).length,
                     creator,
                     createdAt,
                 };

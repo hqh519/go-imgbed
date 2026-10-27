@@ -171,6 +171,8 @@ export default {
      * v2.6.0 #302：搜索区打平（display: contents），
      * 让 标签/刷新/回收站 上移到第一行（与「更多菜单」同行），
      * 搜索框 + 筛选留在第二行且搜索框加长（flex 占满剩余宽度）。
+     * v2.8.0 #C16：标签/刷新/回收站 三个按钮靠拢到右侧「更多菜单」旁边
+     * （第一个按钮 margin-left:auto 整组推右，「更多菜单」不再独自推右）。
      */
     .admin-header-search {
         display: contents;
@@ -180,16 +182,23 @@ export default {
         display: contents;
     }
 
-    /* 第一行：标签 / 刷新 / 回收站（跟在 DashboardTabs 后面） */
-    .admin-header-content :deep(.tag-filter-badge),
+    /* 第一行右侧组：标签 / 刷新 / 回收站（margin-left:auto 只加在第一个，整组靠右） */
+    .admin-header-content :deep(.tag-filter-badge) {
+        order: 1;
+        margin-left: auto;
+    }
+
     .admin-header-content :deep(.refresh-files-btn) {
         order: 1;
     }
 
-    /* 第二行：搜索框加长占满 + 筛选按钮靠右 */
+    /* 第二行：搜索框加长占满 + 筛选按钮靠右。
+       v2.8.0 #C18：flex-basis 0 + min-width 0 —— 搜索框允许收缩，
+       筛选按钮不再被挤到第三行（始终跟随搜索框保持一行）。 */
     .admin-header-content :deep(.search-card) {
         order: 3;
-        flex: 1 1 auto;
+        flex: 1 1 0;
+        min-width: 0;
     }
 
     .admin-header-content :deep(.search-card :deep(.el-input)) {
@@ -208,7 +217,22 @@ export default {
 
     .admin-header-content :deep(.admin-header-actions) {
         order: 2;
-        margin-left: auto;
+        /* v2.8.0 #C16：去掉 margin-left:auto —— 由标签筛选按钮负责推右，
+           让 标签/刷新/回收站 与「更多菜单」紧靠成组 */
+    }
+
+    /*
+     * v2.8.0 #C17：移动端顶行滚动抖动移除 ——
+     * 顶栏宽度和内边距原本随滚动进度连续变化（gutter / padding 过渡），
+     * 移动端改为固定值并关闭过渡，滚动时顶行完全静止、跟随页面。
+     */
+    .admin-header-content {
+        --admin-header-gutter: 4px;
+        width: calc(100% - 8px);
+        transition: none;
+    }
+    .admin-header-content::before {
+        transition: none;
     }
 }
 

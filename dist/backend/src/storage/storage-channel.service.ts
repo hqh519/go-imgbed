@@ -139,7 +139,7 @@ export class StorageChannelService {
     /*
      * 用户授权过滤（v202610221824）：
      * 只有「已登录的普通用户」这一种身份会被限制 —— 他们只能使用
-     * 渠道「用户授权」里勾选过的渠道（本地存储恒可用）。
+     * 渠道「用户授权」里勾选过的渠道（v2.7.0 起本地存储同规则，无恒可用兜底）。
      * 匿名 / 管理员 / WebDAV / API Token 保持历史行为，不做过滤。
      */
     const role = await this.uploaderRole(q.uploader);

@@ -1373,10 +1373,10 @@ export default {
       return file.metadata.FileType.includes('image') || file.metadata.FileType.includes('video')
     },
     
-    // 打开发布页面（跳转本站首页，不再指向原系统仓库）
+    // 打开发布页面（跳转 GitHub 仓库）
     openReleases() {
-      // 「系统版本」→ 版本修改日志页（新标签打开，不打断当前状态页）
-      const url = this.$router.resolve({ name: 'changelog' }).href
+      // 「系统版本」→ GitHub Releases（新标签打开）
+      const url = 'https://github.com/hqh519/go-imgbed/releases'
       window.open(url, '_blank', 'noopener')
     },
     

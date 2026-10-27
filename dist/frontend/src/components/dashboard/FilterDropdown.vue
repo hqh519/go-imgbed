@@ -138,6 +138,20 @@
                         </el-checkbox-group>
                     </div>
                 </div>
+                <!-- v2.7.0：上传渠道（文件经由什么入口上传：网页 / WebDAV / API） -->
+                <div class="filter-section">
+                    <div class="filter-title">{{ $t('filter.uploadSource') }}</div>
+                    <div class="filter-options">
+                        <el-checkbox-group v-model="localFilters.uploadSource" @change="handleFilterChange('uploadSource')">
+                            <el-checkbox
+                                v-for="option in uploadSourceOptions"
+                                :key="'uploadSource-' + option.value"
+                                :label="option.value">
+                                {{ option.label }}
+                            </el-checkbox>
+                        </el-checkbox-group>
+                    </div>
+                </div>
                 <!-- 清除筛选按钮 -->
                 <div class="filter-actions">
                     <el-button size="small" @click="clearFilters" :disabled="activeFilterCount === 0">{{ $t('filter.clearFilters') }}</el-button>
@@ -162,6 +176,7 @@ export default {
                 fileType: [],
                 channel: [],
                 channelName: [],
+                uploadSource: [],
                 backup: [],
                 redirect: []
             })
@@ -181,6 +196,7 @@ export default {
                 fileType: [],
                 channel: [],
                 channelName: [],
+                uploadSource: [],
                 backup: [],
                 redirect: [],
                 tags: []
@@ -233,6 +249,15 @@ export default {
             return [
                 { label: this.$t('filter.backedUp'), value: 'backedup' },
                 { label: this.$t('filter.unbackedUp'), value: 'unbackedup' }
+            ];
+        },
+        // v2.7.0：上传渠道选项（与后端 UPLOAD_SOURCES 对齐）
+        uploadSourceOptions() {
+            return [
+                { label: this.$t('filter.uploadSourceDefault'), value: 'Default' },
+                { label: this.$t('filter.uploadSourceWebdav'), value: 'WebDAV' },
+                { label: this.$t('filter.uploadSourceApiWeb'), value: 'API-Web' },
+                { label: this.$t('filter.uploadSourceApiS3'), value: 'API-S3' }
             ];
         },
         redirectOptions() {

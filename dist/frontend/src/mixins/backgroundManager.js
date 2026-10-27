@@ -205,6 +205,19 @@ export default {
      * @param {boolean} autoCreateElements - 是否自动创建背景元素
      */
     initializeBackground(configKey, containerSelector = '.login', useDefaultBackground = false, autoCreateElements = false) {
+      /*
+       * v2.8.0：恢复参数必须无条件先保存 ——
+       * 原来保存在夜间分支之后，导致「夜间模式下打开的页面」没有参数，
+       * 切回白天（或自动模式进入白天时段）时 watch useDarkMode 拿不到参数，
+       * 背景图不会恢复、必须刷新页面才出现。
+       */
+      this.backgroundInitParams = {
+        configKey,
+        containerSelector,
+        useDefaultBackground,
+        autoCreateElements
+      }
+
       // 如果全局壁纸开关关闭，直接清理背景并返回
       if (this.userConfig?.wallpaperEnabled === false) {
         this.clearBackgroundImages(true);
@@ -224,14 +237,6 @@ export default {
       // 新页面在壁纸成功加载前保留自身底色，并使旧的异步加载结果失效
       this.backgroundLoadGeneration += 1
       this.setWallpaperActive(false)
-
-      // 保存初始化参数，用于主题切换时重新初始化
-      this.backgroundInitParams = {
-        configKey,
-        containerSelector,
-        useDefaultBackground,
-        autoCreateElements
-      }
 
       // 如果需要自动创建元素且元素不存在，则创建
       const container = document.querySelector(containerSelector)

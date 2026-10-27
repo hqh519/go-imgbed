@@ -114,9 +114,8 @@ export class UsersController {
    * 某账户「可用渠道」的 ID 集合（含渠道 id 与 6 位 code 两种写法）。
    *
    * 规则与 /api/channels 的可见性一致（统一走 channelVisibleTo）：
-   *   · 内置「本地存储」渠道在授权名单为空时对所有账户开放（零配置兜底）；
-   *   · 名单非空后与其它渠道一致：管理员全部可用，普通用户只拿到
-   *     authorizedUsers 里点过名的渠道。
+   *   · 管理员全部可用；普通用户只拿到 authorizedUsers 里点过名的渠道
+   *     （v2.7.0 起本地存储渠道与其它渠道完全同规则，无恒可用兜底）。
    * 编辑页的主/备渠道下拉、保存时的越权校验都以此为准。
    */
   private async authorizedChannelIds(username: string): Promise<Set<string>> {

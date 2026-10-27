@@ -226,10 +226,6 @@
                 </div>
                 <span v-else style="color: var(--el-text-color-secondary);">{{ $t('fileDetail.noTags') }}</span>
             </el-descriptions-item>
-            <!-- v2.6.0 #301：IP 归属地统一展示 —— 后端按「显示格式」拼好 IpDisplay（换行格式用 pre-wrap 呈现） -->
-            <el-descriptions-item :label="$t('fileDetail.ipDisplayLabel')">
-                <span :class="{ 'ip-display-multiline': String(file?.metadata?.IpDisplay || '').includes('\n') }">{{ file?.metadata?.IpDisplay || file?.metadata?.UploadAddress || file?.metadata?.UploadIP || $t('fileDetail.unknown') }}</span>
-            </el-descriptions-item>
             <!-- 上传用户：记录该文件由哪个账户上传 -->
             <el-descriptions-item :label="$t('dashboard.uploadUser')">{{ file?.metadata?.UploadUser || $t('fileDetail.unknown') }}</el-descriptions-item>
             <!-- 上传渠道：Default（前端上传页）/ WebDAV / API-Web / API-S3 -->
@@ -237,6 +233,10 @@
             <!-- 上传时长 / 上传速度：由后端记录的「开始 → 落库」时间差与文件体积算出 -->
             <el-descriptions-item :label="$t('fileDetail.uploadDuration')">{{ uploadDurationText }}</el-descriptions-item>
             <el-descriptions-item :label="$t('fileDetail.uploadSpeed')">{{ uploadSpeedText }}</el-descriptions-item>
+            <!-- v2.7.0：IP 归属地移到「上传速度」之后 —— 后端按「显示格式」拼好 IpDisplay（换行格式用 pre-wrap 呈现） -->
+            <el-descriptions-item :label="$t('fileDetail.ipDisplayLabel')">
+                <span :class="{ 'ip-display-multiline': String(file?.metadata?.IpDisplay || '').includes('\n') }">{{ file?.metadata?.IpDisplay || file?.metadata?.UploadAddress || file?.metadata?.UploadIP || $t('fileDetail.unknown') }}</span>
+            </el-descriptions-item>
             <!-- 文件分类：编辑态下可重新选择（等价于文件管理的「移动」），非编辑态只读展示 -->
             <el-descriptions-item :label="$t('fileDetail.fileCategory')">
                 <el-select
@@ -265,6 +265,8 @@
                     <span v-else style="color: var(--el-text-color-secondary);">{{ $t('fileDetail.noCategory') }}</span>
                 </template>
             </el-descriptions-item>
+            <!-- v2.7.0：「访问次数」在「文件分类」之后 —— 后端 serializeFile 已下发 metadata.Views -->
+            <el-descriptions-item :label="$t('fileDetail.views')">{{ Number(file?.metadata?.Views) || 0 }}</el-descriptions-item>
             <!-- 重定向状态：单独占满一整行（放在所有字段最后） -->
             <el-descriptions-item :label="$t('dashboard.redirect')" :span="descColumn">
                 <a v-if="file?.metadata?.RedirectUrl" class="channel-link" :href="file.metadata.RedirectUrl" target="_blank" rel="noopener noreferrer" :title="file.metadata.RedirectUrl">
@@ -492,13 +494,9 @@ export default {
         dialogWidth() {
             return window.innerWidth < 768 ? '95%' : '900px';
         },
-        /** 二维码渲染尺寸：窄屏按容器宽度收一点，避免撑破弹窗 */
+        /** 二维码渲染尺寸：v2.7.0 起固定 250x250 */
         qrSize() {
-            if (typeof window === 'undefined') return 200;
-            const w = window.innerWidth;
-            if (w <= 420) return 180;
-            if (w <= 768) return 200;
-            return 240;
+            return 250;
         },
         /**
          * 详情表列数：窄屏 1 列、宽屏 2 列。

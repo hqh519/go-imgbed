@@ -65,36 +65,6 @@
             </div>
         </div>
 
-        <!-- 文件命名方式 -->
-        <div class="dialog-section">
-            <div class="section-header">
-                <span class="section-title">{{ $t('uploadSettings.fileNaming') }}</span>
-                <el-tooltip :content="$t('uploadSettings.fileNamingTooltip')" placement="top">
-                    <font-awesome-icon icon="question-circle" class="section-help-icon"/>
-                </el-tooltip>
-            </div>
-            <div class="section-content">
-                <el-radio-group :model-value="uploadNameType" @update:model-value="$emit('update:uploadNameType', $event)" class="radio-card-group grid-2x2">
-                    <el-radio label="default" class="radio-card">
-                        <font-awesome-icon icon="cog" class="radio-icon"/>
-                        <span>{{ $t('uploadSettings.namingDefault') }}</span>
-                    </el-radio>
-                    <el-radio label="index" class="radio-card">
-                        <font-awesome-icon icon="hashtag" class="radio-icon"/>
-                        <span>{{ $t('uploadSettings.namingIndex') }}</span>
-                    </el-radio>
-                    <el-radio label="origin" class="radio-card">
-                        <font-awesome-icon icon="file-signature" class="radio-icon"/>
-                        <span>{{ $t('uploadSettings.namingOrigin') }}</span>
-                    </el-radio>
-                    <el-radio label="short" class="radio-card">
-                        <font-awesome-icon icon="compress-alt" class="radio-icon"/>
-                        <span>{{ $t('uploadSettings.namingShort') }}</span>
-                    </el-radio>
-                </el-radio-group>
-            </div>
-        </div>
-
         <!-- 客户端预处理 -->
         <div class="dialog-section">
             <div class="section-header">
@@ -186,6 +156,36 @@
                         <span class="limit-size-unit">MB</span>
                     </div>
                 </div>
+            </div>
+        </div>
+
+        <!-- v2.8.0：文件命名方式移到弹窗最后（原在「客户端预处理」之前） -->
+        <div class="dialog-section">
+            <div class="section-header">
+                <span class="section-title">{{ $t('uploadSettings.fileNaming') }}</span>
+                <el-tooltip :content="$t('uploadSettings.fileNamingTooltip')" placement="top">
+                    <font-awesome-icon icon="question-circle" class="section-help-icon"/>
+                </el-tooltip>
+            </div>
+            <div class="section-content">
+                <el-radio-group :model-value="uploadNameType" @update:model-value="$emit('update:uploadNameType', $event)" class="radio-card-group grid-2x2">
+                    <el-radio label="default" class="radio-card">
+                        <font-awesome-icon icon="cog" class="radio-icon"/>
+                        <span>{{ $t('uploadSettings.namingDefault') }}</span>
+                    </el-radio>
+                    <el-radio label="index" class="radio-card">
+                        <font-awesome-icon icon="hashtag" class="radio-icon"/>
+                        <span>{{ $t('uploadSettings.namingIndex') }}</span>
+                    </el-radio>
+                    <el-radio label="origin" class="radio-card">
+                        <font-awesome-icon icon="file-signature" class="radio-icon"/>
+                        <span>{{ $t('uploadSettings.namingOrigin') }}</span>
+                    </el-radio>
+                    <el-radio label="short" class="radio-card">
+                        <font-awesome-icon icon="compress-alt" class="radio-icon"/>
+                        <span>{{ $t('uploadSettings.namingShort') }}</span>
+                    </el-radio>
+                </el-radio-group>
             </div>
         </div>
 

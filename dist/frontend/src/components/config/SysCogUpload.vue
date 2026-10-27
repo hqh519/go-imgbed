@@ -365,7 +365,7 @@
             <div class="auth-tip">
                 <font-awesome-icon icon="info-circle" style="margin-right: 6px;"/>
                 仅被勾选的账户能在自己的上传设置里看到并使用该渠道；管理员不受限制，始终可用。
-                <template v-if="authChannel?.type === 'local'">内置本地存储渠道授权名单为空时对所有账户开放（零配置兜底），勾选后仅名单内账户可用。</template>
+                <template v-if="authChannel?.type === 'local'">内置本地存储渠道自 v2.7.0 起与其它渠道规则完全一致：名单为空时普通用户不可见（管理员不受限），勾选后仅名单内账户可用。</template>
             </div>
             <div v-loading="authLoading" class="auth-body">
                 <el-checkbox-group v-model="authSelected" v-if="authUsers.length">

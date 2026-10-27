@@ -1802,9 +1802,8 @@ beforeUnmount() {
     border-radius: 12px !important;
     overflow: hidden;
     box-shadow: var(--glass-shadow);
-    background-color: var(--glass-bg) !important;
-    backdrop-filter: blur(20px) saturate(1.4);
-    -webkit-backdrop-filter: blur(20px) saturate(1.4);
+    /* v2.7.0：主体背景改为透明（与上下模块一致），仅表头保留白色调 */
+    background-color: transparent !important;
     border: 1px solid var(--glass-border);
 }
 
@@ -1909,7 +1908,8 @@ html.dark .token-table :deep(.el-table__row:hover td) {
     }
     
     .token-table-container {
-        padding: 0 10px;
+        /* v2.7.0：与下方「对外 WebDAV」模块左右边距一致（去掉额外 padding） */
+        padding: 0;
     }
     
     .table-cell-content {
@@ -1925,7 +1925,7 @@ html.dark .token-table :deep(.el-table__row:hover td) {
 
 @media (max-width: 480px) {
     .token-table-container {
-        padding: 0 5px;
+        padding: 0;
     }
     
     .table-cell-content {

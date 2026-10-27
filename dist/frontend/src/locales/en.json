@@ -17,7 +17,7 @@
     "totpEmpty": "Please enter the code or a recovery code",
     "moreMenu": "More",
     "forgotPassword": "Forgot password",
-    "forgotHint": "Enter the username and its bound email (no hint will be shown). If they match, a reset link will be sent to the email (valid for 10 minutes).",
+    "forgotHint": "Enter your account username and the bound email address.",
     "forgotUsername": "Username",
     "forgotEmail": "Bound email address",
     "forgotSubmit": "Send reset link",
@@ -107,7 +107,13 @@
     "defaultTab": "File",
     "linkTab": "Link",
     "systemManage": "System Admin",
-    "manageFiles": "File Manager"
+    "manageFiles": "File Manager",
+    "pasteExtractBtn": "Extract",
+    "clearPasteInput": "Clear Input",
+    "pasteInputCleared": "Input cleared",
+    "pasteInputEmpty": "Input is empty",
+    "extractedCount": "{count} link(s) added to the list",
+    "extractNoNew": "No new links (already in the list)"
   },
   "uploadForm": {
     "deleted": "{name} deleted",
@@ -552,7 +558,12 @@
     "unbackedUp": "Not backed up",
     "tags": "Tags",
     "hasTags": "Has tags",
-    "noTags": "No tags"
+    "noTags": "No tags",
+    "uploadSource": "Upload Source",
+    "uploadSourceDefault": "Web Upload (Default)",
+    "uploadSourceWebdav": "WebDAV",
+    "uploadSourceApiWeb": "API-Web",
+    "uploadSourceApiS3": "API-S3"
   },
   "moveFile": {
     "title": "Move File",
@@ -1008,8 +1019,8 @@
     "uploadManagement": "Upload Management",
     "accessManagement": "Access Management",
     "domainFilter": "Domain Filter",
-    "allowedDomains": "Allowed Domains",
-    "allowedDomainsTooltip": "1. Only affects external access under Whitelist mode (checks the Referer host)<br/>2. One domain per line (commas / semicolons also accepted)<br/>3. Matching is substring-based: \"hhh555.top\" allows any host containing it (www.hhh555.top, a.hhh555.top)<br/>4. Empty = no restriction",
+    "allowedDomains": "Allowed Addresses (Source)",
+    "allowedDomainsTooltip": "1. Only affects external access under Whitelist mode<br/>2. One address per line (commas / semicolons also accepted)<br/>3. Matched by source address: a request passes when its source address equals an entry, or its full source URL contains the entry<br/>4. E.g. entry 192.168.1.3:5505/?id allows http://192.168.1.3:5505/?id=29 but not http://192.168.1.3:5505/post/29.html<br/>5. # anchors tolerated; empty = no restriction",
     "whiteListMode": "Whitelist Mode",
     "enableWhiteList": "Enable",
     "enableWhiteListTooltip": "1. Set permissions based on files <br> 2. When enabled, only whitelisted files can be accessed",
@@ -1153,7 +1164,7 @@
     "mailVerifyFailed": "SMTP connection failed",
     "mailSent": "Test email sent",
     "mailSendFailed": "Failed to send the test email",
-    "allowedDomainsPlaceholder": "One domain per line, e.g.\nexample.com\n*.cdn.example.com\n(Files not whitelisted are only reachable from these referrers)",
+    "allowedDomainsPlaceholder": "One address per line, e.g.\nhttp://192.168.1.3:55105/?id=29\n192.168.1.3:5505/?id\n(Files not whitelisted are only reachable from these sources)",
     "fallbackTitle": "Broken-file fallback",
     "fallbackTooltip": "When enabled, any file link that cannot be served loads the fallback instead:<br/>· Image: the image bytes are returned (same URL, replaced content)<br/>· Redirect: 302 to the given URL<br/>Covers forbidden / missing / not-public / expired cases.",
     "fallbackEnabled": "Enable",

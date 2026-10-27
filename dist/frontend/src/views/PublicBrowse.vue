@@ -841,11 +841,26 @@ export default {
       }, 1500);
     },
 
-    downloadFile(name) {
-      const link = document.createElement('a');
-      link.href = this.getFileUrl(name);
-      link.download = name.split('/').pop();
-      link.click();
+    /** v2.7.0：改为 blob 下载 —— <a download> 对跨域 / 302 跳外域的链接不生效，
+     *  会退化成当前标签页打开；先拉字节再走 objectURL 保证真正落盘，失败再兜底开新标签 */
+    async downloadFile(name) {
+      const url = this.getFileUrl(name);
+      try {
+        const resp = await fetch(url, { credentials: 'omit' });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const blob = await resp.blob();
+        const objUrl = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = objUrl;
+        link.download = name.split('/').pop();
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        setTimeout(() => URL.revokeObjectURL(objUrl), 30000);
+      } catch (e) {
+        console.error('[publicBrowse] 下载失败，回退打开：', e.message || e);
+        window.open(url, '_blank');
+      }
     },
 
     openPreview(file) {
@@ -1158,8 +1173,8 @@ export default {
   align-items: center;
   justify-content: space-between;
   padding: 16px 24px;
-  background: rgba(15, 15, 15, 0.95);
-  border-bottom: 1px solid #1a1a1a;
+  background: rgba(43, 43, 43, 0.95);
+  border-bottom: 1px solid #46464A;
   position: relative;
 }
 
@@ -1411,16 +1426,16 @@ html.dark .search-box:hover {
   align-items: center;
   justify-content: center;
   padding: 24px 16px;
-  background: #141414;
+  background: #2E2E32;
   border-radius: 12px;
-  border: 1px solid #1a1a1a;
+  border: 1px solid #46464A;
   cursor: pointer;
   transition: all 0.2s;
 }
 
 .folder-card:hover {
-  background: #1a1a1a;
-  border-color: #333;
+  background: #46464A;
+  border-color: #545459;
 }
 
 .folder-icon {
@@ -1499,16 +1514,16 @@ html.dark .search-box:hover {
 }
 
 .grid-item {
-  background: #141414;
+  background: #2E2E32;
   border-radius: 12px;
   overflow: hidden;
-  border: 1px solid #1a1a1a;
+  border: 1px solid #46464A;
   cursor: pointer;
   transition: box-shadow 0.3s ease, border-color 0.2s ease;
 }
 
 .grid-item:hover {
-  border-color: #333;
+  border-color: #545459;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
 }
 
@@ -1610,7 +1625,7 @@ html.dark .search-box:hover {
 
 .grid-info {
   padding: 10px 12px;
-  border-top: 1px solid #1a1a1a;
+  border-top: 1px solid #46464A;
 }
 
 .file-name {
@@ -1622,6 +1637,8 @@ html.dark .search-box:hover {
   display: flex;
   align-items: baseline;
   min-width: 0;
+  /* v2.7.0：与链接对齐一致（#app 的 text-align:center 对 flex 项无效） */
+  justify-content: center;
 }
 
 .name-start {

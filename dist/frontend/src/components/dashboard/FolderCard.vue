@@ -49,7 +49,7 @@
 
         <!-- 下半部分：名称 + 数量统计 + 创建用户（v2.6.0 第三行） -->
         <div class="card-info" @click="$emit('enter')">
-            <div class="file-name" :title="folderName">{{ folderName }}</div>
+            <div class="file-name" :title="folderName"><span class="name-start">{{ folderNameParts.start }}</span><span class="name-end">{{ folderNameParts.end }}</span></div>
             <div class="folder-stats">
                 <template v-if="statsText">{{ statsText }}</template>
                 <template v-else>-</template>
@@ -83,6 +83,15 @@ export default {
         folderName() {
             const parts = this.name.split('/').filter(Boolean);
             return parts[parts.length - 1] || this.name;
+        },
+        /**
+         * v2.8.0：文件夹名中间省略（与 FileCard 文件名同规则）：
+         * ≤24 全显，否则保留头部与尾部各 12 字符，中段由 CSS 按宽度自动省略。
+         */
+        folderNameParts() {
+            const name = this.folderName || '';
+            if (name.length <= 24) return { start: name, end: '' };
+            return { start: name.slice(0, -12), end: name.slice(-12) };
         },
         /** 「X 个子文件夹 · Y 个文件」；统计缺失时显示占位 */
         statsText() {
@@ -175,12 +184,20 @@ export default {
 .card-select {
     flex-shrink: 0;
 }
+/* v2.8.0：手机端/平板端下选择圆圈整体上移 4px（PC 端保持不动） */
+@media (max-width: 1199px) {
+    .card-select {
+        margin-top: -4px;
+    }
+}
 .card-select :deep(.el-checkbox__inner) {
     width: 16px !important;
     min-width: 16px;
     height: 16px !important;
     min-height: 16px;
     border-radius: 50% !important;
+    /* v2.8.0：未选中时圆圈内部透明（不填充白色）；选中时保持主题色填充 */
+    background: transparent;
 }
 .overlay-actions {
     display: flex;
@@ -222,11 +239,23 @@ export default {
 .file-name {
     font-size: 13px;
     font-weight: 500;
+    display: flex;
+    min-width: 0;
     white-space: nowrap;
     overflow: hidden;
-    text-overflow: ellipsis;
     margin-bottom: 6px;
     color: var(--upload-text-color);
+}
+/* v2.8.0：中间省略 —— start 可收缩省略，end 固定保留（含尾部） */
+.file-name .name-start {
+    flex-shrink: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.file-name .name-end {
+    flex-shrink: 0;
+    white-space: nowrap;
 }
 .folder-stats {
     font-size: 12px;

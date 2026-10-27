@@ -67,13 +67,28 @@ function isLoopback(req) {
 function stripAnchor(s) {
     return String(s || '').split('#')[0].trim();
 }
+function hostOf(urlOrHost) {
+    const s = stripAnchor(urlOrHost).replace(/^[a-zA-Z][a-zA-Z0-9+.\-]*:\/\//, '');
+    const slash = s.indexOf('/');
+    return slash === -1 ? s : s.slice(0, slash);
+}
+function isBareOrigin(s) {
+    const stripped = stripAnchor(s).replace(/^[a-zA-Z][a-zA-Z0-9+.\-]*:\/\//, '');
+    if (!stripped.includes('/'))
+        return false;
+    return stripped.slice(stripped.indexOf('/') + 1) === '';
+}
 function sourceAllowed(entry, sources) {
     const e = stripAnchor(entry);
     if (!e)
         return false;
     return sources.some((s) => {
         const src = stripAnchor(s);
-        return src === e || src.includes(e);
+        if (src === e || src.includes(e))
+            return true;
+        if (isBareOrigin(src) && hostOf(src) && hostOf(src) === hostOf(e))
+            return true;
+        return false;
     });
 }
 function sourceAddressesOf(req) {

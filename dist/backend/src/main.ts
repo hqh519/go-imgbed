@@ -94,12 +94,37 @@ function stripAnchor(s: string): string {
   return String(s || '').split('#')[0].trim();
 }
 
+/** 去掉协议前缀，返回 host[:port]（用于站点级兜底比较） */
+function hostOf(urlOrHost: string): string {
+  const s = stripAnchor(urlOrHost).replace(/^[a-zA-Z][a-zA-Z0-9+.\-]*:\/\//, '');
+  const slash = s.indexOf('/');
+  return slash === -1 ? s : s.slice(0, slash);
+}
+
+/**
+ * 是否「仅站点根地址」：http://host/ 或 host/（除根斜杠外无任何路径）。
+ * 浏览器在跨站引用图片时，受默认 Referrer-Policy: strict-origin-when-cross-origin
+ * 影响，Referer 常常只剩来源站点根地址（路径被截断），此时按完整地址匹配
+ * 永远不可能命中 → 需要用站点（host:port）级兜底，否则白名单形同虚设。
+ */
+function isBareOrigin(s: string): boolean {
+  const stripped = stripAnchor(s).replace(/^[a-zA-Z][a-zA-Z0-9+.\-]*:\/\//, '');
+  if (!stripped.includes('/')) return false;
+  return stripped.slice(stripped.indexOf('/') + 1) === '';
+}
+
 function sourceAllowed(entry: string, sources: string[]): boolean {
   const e = stripAnchor(entry);
   if (!e) return false;
   return sources.some((s) => {
     const src = stripAnchor(s);
-    return src === e || src.includes(e);
+    // 规则一：来源地址与条目完全相符；规则二：来源地址完全包含条目
+    if (src === e || src.includes(e)) return true;
+    // 规则三（v2.8.0 兜底）：来源地址被浏览器截断为仅站点根地址时，
+    // 若条目的站点部分（host:port）与来源站点一致，视为匹配放行。
+    // 注：这只放宽「Referer 只剩根地址」的场景；能拿到完整来源时仍按精确规则。
+    if (isBareOrigin(src) && hostOf(src) && hostOf(src) === hostOf(e)) return true;
+    return false;
   });
 }
 

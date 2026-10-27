@@ -785,6 +785,9 @@ export default {
   display: flex;
   align-items: baseline;
   min-width: 0;
+  /* v2.7.0：与下方链接对齐一致 —— #app 继承的 text-align:center 对 flex 项无效，
+     必须用 justify-content 让文件名与链接同为居中 */
+  justify-content: center;
 }
 
 .name-start {

@@ -63,13 +63,10 @@
                 @click="handleSubmit"
                 :disabled="loading"
             >
-                <div v-if="loading" class="loading-ring"></div>
-                <span v-else>{{ computedSubmitText }}</span>
+            <div v-if="loading" class="loading-ring"></div>
+            <span v-else>{{ computedSubmitText }}</span>
             </el-button>
-            <!-- v2.6.0：忘记密码入口（登录按钮下方小字链接） -->
-            <el-button class="forgot-link" link size="small" @click="showForgotDialog = true">
-                {{ $t('login.forgotPassword') }}?
-            </el-button>
+            <!-- v2.7.0：登录框下方的「忘记密码?」入口已移除（右上角更多菜单里已有） -->
         </div>
 
         <!-- 忘记密码：用户名 + 邮箱（邮箱不提示、纯记忆输入），匹配则发重置链接（10 分钟有效） -->
@@ -382,16 +379,49 @@ export default {
     cursor: pointer;
     transition: all 0.3s ease;
     letter-spacing: 2px;
+    /* v2.8.0：与首页图床名称同款 —— 微微上下浮动 + hover 放大跳动 + 下划线展开（无链接） */
+    position: relative;
+    display: inline-block;
+    padding-bottom: 8px;
+    animation: loginTitleFloat 4s ease-in-out infinite;
+}
+@keyframes loginTitleFloat {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-5px); }
+}
+/* hover 跳动（放大）会打断浮动动画，用内层无法加（纯文本节点），
+   改为在动画帧里同时承载缩放：hover 时切换到带缩放的动画曲线 */
+.login-title:hover,
+.login-title:focus {
+    text-shadow: 0 0 10px var(--login-title-glow-color, rgba(52, 152, 219, 0.5));
+    animation: loginTitleFloatHover 1.2s ease-in-out infinite;
+}
+@keyframes loginTitleFloatHover {
+    0%, 100% { transform: translateY(0) scale(1.06); }
+    50% { transform: translateY(-5px) scale(1.06); }
 }
 @media (max-width: 768px) {
     .login-title {
         font-size: 1.5rem;
     }
 }
-
-.login-title:hover,
-.login-title:focus {
-    text-shadow: 0 0 10px var(--login-title-glow-color, rgba(52, 152, 219, 0.5));
+/* hover 下划线：底部居中展开（与首页 .title::after 同款过渡） */
+.login-title::after {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 0;
+    height: 3px;
+    border-radius: 3px;
+    background: var(--login-title-glow-color, rgba(52, 152, 219, 0.55));
+    box-shadow: 0 0 8px var(--login-title-glow-color, rgba(52, 152, 219, 0.4));
+    transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.login-title:hover::after,
+.login-title:focus::after {
+    width: 80%;
 }
 
 .login-container {
@@ -701,11 +731,7 @@ export default {
     }
 }
 
-/* v2.6.0：忘记密码入口（登录按钮下方小字链接） */
-.forgot-link {
-    margin-top: -6px;
-    color: var(--login-input-label-focus-color, #5b9bd3);
-}
+/* v2.7.0：.forgot-link 已随登录框下方入口一起移除 */
 .forgot-hint {
     margin: 0 0 12px;
     font-size: 13px;

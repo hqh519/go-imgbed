@@ -434,12 +434,8 @@ const routes = [
     name: 'docs',
     component: () => import('../views/DocsPage.vue')
   },
-  {
-    // 版本修改日志：系统状态页「系统版本」卡片跳转到这里；公开可读，无需登录
-    path: '/changelog',
-    name: 'changelog',
-    component: () => import('../views/ChangelogPage.vue')
-  },
+  // v2.8.0：/changelog 版本修改日志页已移除 —— 日志改为 md 文件随仓库 docs/ 目录分发，
+  // 系统状态页「系统版本」直接跳转 GitHub Releases。
   // 旧入口兼容：统一账户体系下只有一个登录页
   {
     path: '/adminLogin',

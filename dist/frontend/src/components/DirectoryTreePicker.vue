@@ -130,7 +130,9 @@ export default {
     },
     computed: {
         isDesktop() {
-            return this.windowWidth >= 769;
+            /* v2.8.0：平板（≤1024px）也使用居中弹窗 —— 原 769px 起走 popover，
+               平板上弹出层贴着按钮、不在页面窗口居中，与手机端体验不一致 */
+            return this.windowWidth >= 1025;
         }
     },
     watch: {

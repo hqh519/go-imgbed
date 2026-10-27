@@ -229,6 +229,10 @@ class FileManager {
         if (filters.channelName && filters.channelName.length > 0) {
             params += `&channelName=${encodeURIComponent(filters.channelName.join(','))}`;
         }
+        // v2.7.0：上传渠道筛选（Default / WebDAV / API-Web / API-S3）
+        if (filters.uploadSource && filters.uploadSource.length > 0) {
+            params += `&uploadSource=${encodeURIComponent(filters.uploadSource.join(','))}`;
+        }
         // 备份状态筛选：backedup（已备份）/ unbackedup（未备份）
         if (filters.backup && filters.backup.length > 0) {
             params += `&backup=${encodeURIComponent(filters.backup.join(','))}`;

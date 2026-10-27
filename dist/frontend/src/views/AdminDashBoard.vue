@@ -998,6 +998,8 @@ watch: {
     currentPath(val) {
         // 页面切换时，取消选择的内容
         this.tableData.forEach(file => file.selected = false);
+        // v2.7.0：目录记忆 —— 每次切换目录都持久化，重新进入文件管理页时恢复
+        try { sessionStorage.setItem('dashboardCurrentPath', val || ''); } catch (e) { /* 忽略 */ }
     }
 },
 methods: {
@@ -1301,6 +1303,7 @@ methods: {
             fileType: [],
             channel: [],
             channelName: [],
+            uploadSource: [],
             backup: [],
             redirect: [],
             tags: [],
@@ -2865,6 +2868,13 @@ mounted() {
         if (initialFolder) {
             sessionStorage.removeItem('dashboardInitialFolder');
             this.currentPath = initialFolder.replace(/\/+$/, '') ? initialFolder.replace(/\/+$/, '') + '/' : '';
+        } else {
+            // v2.7.0：目录记忆 —— 无显式跳转参数时，恢复上次停留的目录
+            // （例如在 2026/10 下开过历史记录页/其它页面，回到文件管理仍停在 2026/10）
+            const savedPath = sessionStorage.getItem('dashboardCurrentPath');
+            if (savedPath) {
+                this.currentPath = savedPath;
+            }
         }
     }
 
@@ -3072,7 +3082,7 @@ beforeUnmount() {
     justify-content: flex-start;
     gap: 12px;
     padding: 0 10px; /* 与 .content 的 padding 对齐 */
-    margin-top: 12px;
+    margin-top: 4px; /* v2.8.0：与顶行距离再调小一点（原 6px） */
     margin-bottom: 4px; /* 与下方内容的间距 */
 }
 
@@ -3218,7 +3228,7 @@ beforeUnmount() {
         align-items: center;
         gap: 8px;
         padding: 0 5px;
-        margin-top: 8px;
+        margin-top: 2px; /* v2.8.0：与顶行距离再调小一点（原 4px） */
         margin-bottom: 2px;
     }
     .breadcrumb-view-toggle {
@@ -3291,10 +3301,12 @@ beforeUnmount() {
 }
 
 @media (max-width: 768px) {
+    /* v2.7.0：历史记录按钮与「新建目录」按钮的圆角/高度保持一致 */
     .history-btn {
-        height: 24px;
+        height: 28px;
         font-size: 11px;
         padding: 0 8px;
+        border-radius: var(--el-border-radius-base);
     }
 
     .history-btn-text {
@@ -3303,6 +3315,14 @@ beforeUnmount() {
 
     .history-btn-icon {
         margin-right: 0;
+    }
+
+    /* v2.7.0：文件数量统计徽章圆角/高度与「新建目录」按钮一致 */
+    .stats-badge {
+        height: 28px;
+        padding: 0 10px;
+        border-radius: var(--el-border-radius-base);
+        box-sizing: border-box;
     }
 }
 
@@ -3748,6 +3768,20 @@ beforeUnmount() {
     .content {
         grid-template-columns: repeat(4, minmax(0, 1fr));
         gap: 12px;
+    }
+}
+
+/* v2.8.0 #C14：平板竖屏每行 3 个（横向保持现有列数不变） */
+@media (min-width: 769px) and (max-width: 1023px) and (orientation: portrait) {
+    .content {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+}
+
+@media (min-width: 700px) and (max-width: 768px) and (orientation: portrait) {
+    .content {
+        /* iPad 竖屏（768px 落在移动断点内）也按 3 列 */
+        grid-template-columns: repeat(3, minmax(0, 1fr));
     }
 }
 

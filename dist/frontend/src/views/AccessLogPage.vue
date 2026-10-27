@@ -410,9 +410,8 @@ export default {
   padding: 12px 24px;
   border-bottom: 1px solid var(--el-border-color-lighter);
   background: var(--admin-container-bg-color);
-  position: sticky;
-  top: 0;
-  z-index: 10;
+  /* v2.8.0：顶部搜索/筛选栏取消粘滞固定，随页面一起滚动 */
+  position: static;
 }
 
 .topbar-left,

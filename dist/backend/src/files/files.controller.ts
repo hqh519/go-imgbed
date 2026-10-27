@@ -32,7 +32,7 @@ import { UploadService } from '../upload/upload.service';
 import { SettingsService } from '../settings/settings.service';
 import { SysConfigService } from '../settings/sysconfig.service';
 import { AdminGuard, ManageAuthGuard, SESSION_COOKIE, currentSession, isAdminRole, parseSession } from '../auth/auth.guard';
-import { buildDirectoryTree, CHANNEL_LABEL, CopyWithChannel, fileExtOf, fileTypeOf, formatSize, normalizeDir, safeParse, serializeFile } from '../common/file-view';
+import { buildDirectoryTree, CHANNEL_LABEL, CopyWithChannel, fileExtOf, fileTypeOf, formatSize, normalizeDir, normalizeUploadSource, safeParse, serializeFile } from '../common/file-view';
 import { appLog } from '../common/app-log';
 import { frontendAppDir } from '../common/project-paths';
 import { qqwryStatus, saveQqwry } from '../common/qqwry';
@@ -856,6 +856,8 @@ export class ManageController {
     const fFileType = splitCsv(q.fileType);
     const fChannel = splitCsv(q.channel);
     const fChannelName = splitCsv(q.channelName);
+    // v2.7.0：上传渠道筛选（Default / WebDAV / API-Web / API-S3）
+    const fUploadSource = splitCsv(q.uploadSource).map((s) => normalizeUploadSource(s));
     const fBackup = splitCsv(q.backup);
     const fRedirect = splitCsv(q.redirect);
 
@@ -934,6 +936,8 @@ export class ManageController {
         : '';
       if (fChannel.length && !fChannel.includes(chLabel)) return false;
       if (fChannelName.length && !fChannelName.includes(primary?.channel?.name || '')) return false;
+      // v2.7.0：上传渠道筛选（rec.uploadSource 经 normalize 兜底为 'Default'）
+      if (fUploadSource.length && !fUploadSource.includes(normalizeUploadSource((r as unknown as { uploadSource?: string }).uploadSource))) return false;
 
       // 备份状态筛选：已备份 = 除主副本外还有其它 active 副本
       if (fBackup.length) {
@@ -996,7 +1000,10 @@ export class ManageController {
         }
         directoryStats[d] = {
           folders: sub,
-          files: files.filter((r) => (r.folder || '') === d).length,
+          // v2.7.0 修复：统计用 matched（全量过滤集）而不是 files ——
+          // 非递归分支里 files 已被过滤成「当前目录的直接文件」，
+          // 拿它统计子文件夹内的文件数恒为 0（正是文件夹卡片统计不准的根因）
+          files: matched.filter((r) => (r.folder || '') === d).length,
           creator,
           createdAt,
         };

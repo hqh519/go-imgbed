@@ -35,6 +35,40 @@ let AuthController = class AuthController {
         this.sysConfig = sysConfig;
         this.mail = mail;
     }
+    static TOTP_FAIL_MAX = 6;
+    static TOTP_FAIL_WINDOW_MS = 60 * 60 * 1000;
+    static TOTP_LOCK_MS = 30 * 60 * 1000;
+    totpFailStore = new Map();
+    totpLockState(username) {
+        const st = this.totpFailStore.get(username);
+        if (!st)
+            return { locked: false, remainingMs: 0, count: 0 };
+        const now = Date.now();
+        if (st.lockedUntil > now)
+            return { locked: true, remainingMs: st.lockedUntil - now, count: st.count };
+        if (now - st.firstFailAt >= AuthController_1.TOTP_FAIL_WINDOW_MS) {
+            this.totpFailStore.delete(username);
+            return { locked: false, remainingMs: 0, count: 0 };
+        }
+        return { locked: false, remainingMs: 0, count: st.count };
+    }
+    totpRecordFailure(username) {
+        const now = Date.now();
+        const st = this.totpFailStore.get(username);
+        if (!st || now - st.firstFailAt >= AuthController_1.TOTP_FAIL_WINDOW_MS) {
+            this.totpFailStore.set(username, { firstFailAt: now, count: 1, lockedUntil: 0 });
+            return { count: 1, locked: false, remainingMs: 0 };
+        }
+        st.count += 1;
+        if (st.count >= AuthController_1.TOTP_FAIL_MAX) {
+            st.lockedUntil = now + AuthController_1.TOTP_LOCK_MS;
+            return { count: st.count, locked: true, remainingMs: AuthController_1.TOTP_LOCK_MS };
+        }
+        return { count: st.count, locked: false, remainingMs: 0 };
+    }
+    totpClearFailures(username) {
+        this.totpFailStore.delete(username);
+    }
     async authConfig() {
         try {
             const raw = await this.sysConfig.readSecurityRaw();
@@ -293,10 +327,37 @@ let AuthController = class AuthController {
             await this.setSession(res, { user: u.username, role: session.role, totpEnabled: false }, req, true);
             return res.json({ success: true, data: { verified: true } });
         }
+        const lock = this.totpLockState(u.username);
+        if (lock.locked) {
+            const remainMin = Math.max(1, Math.ceil(lock.remainingMs / 60000));
+            app_log_1.appLog.warn('auth', `账户「${u.username}」2FA 验证处于锁定期（窗口内累计错误 ${lock.count} 次），剩余约 ${remainMin} 分钟，拒绝本次验证`);
+            return res.status(400).json({
+                success: false,
+                message: `验证码错误次数过多，已锁定，请约 ${remainMin} 分钟后再试`,
+                code: 'TOTP_LOCKED',
+                data: { locked: true, remainMinutes: remainMin },
+            });
+        }
         const hit = await this.verifySecondFactor(u, String(code || ''));
         if (!hit.ok) {
-            return res.status(400).json({ success: false, message: hit.message || '验证失败', code: 'VERIFY_FAILED' });
+            const fail = this.totpRecordFailure(u.username);
+            if (fail.locked) {
+                app_log_1.appLog.warn('auth', `账户「${u.username}」2FA 验证错误已达 ${fail.count} 次（1 小时窗口），锁定 30 分钟`);
+            }
+            else {
+                app_log_1.appLog.warn('auth', `账户「${u.username}」2FA 验证失败（第 ${fail.count}/${AuthController_1.TOTP_FAIL_MAX} 次，1 小时窗口）`);
+            }
+            const suffix = fail.locked
+                ? `，已锁定 30 分钟`
+                : `（${fail.count}/${AuthController_1.TOTP_FAIL_MAX}，1 小时内累计 6 次将锁定 30 分钟）`;
+            return res.status(400).json({
+                success: false,
+                message: (hit.message || '验证失败') + suffix,
+                code: fail.locked ? 'TOTP_LOCKED' : 'VERIFY_FAILED',
+                data: { locked: fail.locked, failCount: fail.count },
+            });
         }
+        this.totpClearFailures(u.username);
         await this.setSession(res, {
             user: u.username,
             role: session.role,

@@ -117,23 +117,21 @@
                     :rows="fileList.length ? 4 : 14"
                 />
                 <div class="paste-card-actions">
+                    <!-- v2.8.0：左侧「上传」按钮 —— 仅转存模式显示（外链模式不需要上传动作）；
+                         执行等待中链接条目的上传（同文件模式上传按钮） -->
                     <el-button
-                        class="paste-card-upload-button"
+                        v-if="pasteUploadMethod === 'save'"
+                        class="paste-card-upload-button paste-card-start-button"
                         type="primary"
                         :size="pasteCardMethodButtonSize"
-                        @click="handleUploadPasteUrls"
+                        :disabled="!fileList.some(item => item.status === 'waiting' && (item.uploadChannel === 'external' || item.isRemoteUrl))"
+                        @click="startPasteUpload()"
                     >
-                        {{ $t('upload.pasteUploadBtn') }}
+                        {{ $t('uploadForm.uploadNow') }}
                     </el-button>
-                    <!-- v2.6.0：一键清空链接输入框 -->
-                    <el-button
-                        class="paste-card-clear-button"
-                        :size="pasteCardMethodButtonSize"
-                        :disabled="!pastedUrls"
-                        @click="pastedUrls = ''"
-                    >
-                        {{ $t('upload.pasteClear') }}
-                    </el-button>
+                    <!-- v2.8.0：「提取」按钮移除；「转存/外链」改为单击即执行：
+                         转存 = 解析输入框有效链接进列表（待上传，可改名/裁剪），确认后点左侧「上传」；
+                         外链 = 解析有效链接并立即生成外链格式（上传按钮隐藏） -->
                     <div
                         class="paste-card-method-group"
                         :class="{ 'is-external': pasteUploadMethod === 'external' }"
@@ -145,7 +143,7 @@
                             :class="{ 'is-active': pasteUploadMethod === 'save' }"
                             type="button"
                             :aria-pressed="pasteUploadMethod === 'save'"
-                            @click="pasteUploadMethod = 'save'"
+                            @click="onPasteMethodClick('save')"
                         >
                             {{ $t('upload.pasteSave') }}
                         </button>
@@ -154,7 +152,7 @@
                             :class="{ 'is-active': pasteUploadMethod === 'external' }"
                             type="button"
                             :aria-pressed="pasteUploadMethod === 'external'"
-                            @click="pasteUploadMethod = 'external'"
+                            @click="onPasteMethodClick('external')"
                         >
                             {{ $t('upload.pasteExternal') }}
                         </button>
@@ -174,21 +172,36 @@
                         <div class="upload-list-dashboard-action">
                             <div class="modern-action-group">
                                 <!--
-                                    v2.6.0：新增「文件压缩」开关图标按钮（复制按钮前）——
-                                    与「上传设置」弹窗里的「文件压缩」开关是同一个值
-                                    （customerCompress），双向同步：这里点了设置里跟着变，反之亦然。
+                                    v2.7.0：「文件压缩」改为与自动重试同款的下拉开关 ——
+                                    点图标展开「压缩文件 + 开关」，点开关切换（customerCompress，
+                                    与「上传设置」弹窗里的开关双向同步不变）。
                                 -->
                                 <el-tooltip :disabled="disableTooltip" :content="$t('upload.fileCompress')" placement="top" :show-after="1000">
-                                    <button
-                                        type="button"
-                                        class="modern-action-btn modern-action-btn-compress"
-                                        :class="{ 'is-active': customerCompress }"
-                                        :aria-pressed="customerCompress"
-                                        :aria-label="$t('upload.fileCompress')"
-                                        @click="toggleCompress"
-                                    >
-                                        <font-awesome-icon :icon="customerCompress ? 'compress-alt' : 'expand-alt'" />
-                                    </button>
+                                    <el-dropdown>
+                                        <button
+                                            type="button"
+                                            class="modern-action-btn modern-action-btn-compress"
+                                            :class="{ 'is-active': customerCompress }"
+                                            :aria-pressed="customerCompress"
+                                            :aria-label="$t('upload.fileCompress')"
+                                        >
+                                            <font-awesome-icon :icon="customerCompress ? 'compress-alt' : 'expand-alt'" />
+                                        </button>
+                                        <template #dropdown>
+                                            <el-dropdown-menu class="modern-dropdown-menu">
+                                                <el-dropdown-item>
+                                                    <div class="modern-dropdown-item-content">
+                                                        <span>{{ $t('upload.fileCompress') }}</span>
+                                                        <el-switch
+                                                            :model-value="customerCompress"
+                                                            @update:model-value="$emit('update:customerCompress', $event)"
+                                                            size="small"
+                                                        />
+                                                    </div>
+                                                </el-dropdown-item>
+                                            </el-dropdown-menu>
+                                        </template>
+                                    </el-dropdown>
                                 </el-tooltip>
                                 <el-tooltip :disabled="disableTooltip" :content="$t('upload.copyAll')" placement="top" :show-after="1000">
                                     <el-dropdown trigger="hover" @command="copyAll">
@@ -248,6 +261,8 @@
                                             <el-dropdown-menu class="modern-dropdown-menu">
                                                 <el-dropdown-item @click="clearFileList">{{ $t('upload.clearAll') }}</el-dropdown-item>
                                                 <el-dropdown-item @click="clearSuccessList">{{ $t('upload.clearUploaded') }}</el-dropdown-item>
+                                                <!-- v2.7.0：清空链接输入框（原链接输入框旁的独立清空按钮迁到这里） -->
+                                                <el-dropdown-item @click="clearPasteInput">{{ $t('upload.clearPasteInput') }}</el-dropdown-item>
                                             </el-dropdown-menu>
                                         </template>
                                     </el-dropdown>
@@ -1872,6 +1887,15 @@ methods: {
             })
         }
     },
+    /** v2.7.0：清空链接输入框（原「一键清空」按钮逻辑迁入列表右上角删除图标下拉） */
+    clearPasteInput() {
+        if (this.pastedUrls) {
+            this.pastedUrls = ''
+            this.$message({ type: 'success', message: this.$t('upload.pasteInputCleared') })
+        } else {
+            this.$message({ type: 'info', message: this.$t('upload.pasteInputEmpty') })
+        }
+    },
     isEditablePasteTarget(target) {
         const element = target?.nodeType === Node.TEXT_NODE ? target.parentElement : target
         if (!element) return false
@@ -1962,15 +1986,14 @@ methods: {
      * 父组件（UploadHome）用 v-model:customerCompress 接住后，
      * 上传设置弹窗里的「文件压缩」开关与这里是同一个值，天然双向同步。
      */
-    toggleCompress() {
-        this.$emit('update:customerCompress', !this.customerCompress);
-    },
-    handleUploadPasteUrls() {
-        // 用于上传在上传文本框中粘贴的外链
+    /**
+     * v2.7.0：「上传」按钮改为「提取」—— 只解析输入框里的有效链接并加入
+     * 文件列表（等待上传状态，不自动上传；等待中可改名，图片条目可裁剪）。
+     * 实际上传由左侧新增的「上传」按钮（startPasteUpload）执行。
+     */
+    handleExtractPasteUrls() {
         /*
-         * v2.5.0（v20261023-2）：输入内容不再要求「整行都是链接」——
-         * 文案 / 表情 / HTML 代码混排时自动过滤非链接内容，提取出全部有效 URL。
-         * （类似去水印软件：只挑出真实的链接地址参与处理）
+         * 沿用 v2.5.0 的脏文本提取：文案 / 表情 / HTML 混排时自动挑出有效 URL。
          */
         const validUrls = extractUrlsFromText(this.pastedUrls);
         if (!validUrls.length) {
@@ -1980,51 +2003,102 @@ methods: {
             });
             return;
         }
-
-        // 根据粘贴上传方式进行上传
-        if (this.pasteUploadMethod === 'save') {
-            // 正常上传
-            this.uploadFromUrl(validUrls.map(url => {
-                return {
-                    kind: 'string',
-                    getAsString: (callback) => {
-                        callback(url);
-                    }
-                }
-            }));
-        } else if (this.pasteUploadMethod === 'external') {
-            // 仅保存外链，使用 external 渠道上传
-            for (let i = 0; i < validUrls.length; i++) {
-                const url = validUrls[i];
+        // 去重：列表里已有同链接的条目不再重复添加
+        const existing = new Set(this.fileList.map(item => item.srcID || item.url).filter(Boolean));
+        let added = 0;
+        validUrls.forEach((url, i) => {
+            if (existing.has(url)) return;
+            added += 1;
+            if (this.pasteUploadMethod === 'external') {
+                // 外链格式与参考实现（CloudFlare-ImgBed）完全一致：html 带 width=100%
                 const fileName = url.split('/').pop();
-                const mdUrl = `![${fileName}](${url})`;
-                const htmlUrl = `<img src="${url}" alt="${fileName}" />`;
-                const ubbUrl = `[img]${url}[/img]`;
-                // 将 url 作为文件内容，文件名为 URL 的最后一部分
-                const file = new File([], url.split('/').pop(), { type: 'text/plain' });
-                file.uid = Date.now() + i;
-                file.url = url;
                 this.fileList.push({
-                    uid: file.uid,
-                    name: file.name,
+                    uid: Date.now() + i,
+                    name: fileName,
                     url: url,
                     finalURL: url,
-                    mdURL: mdUrl,
-                    htmlURL: htmlUrl,
-                    ubbURL: ubbUrl,
+                    mdURL: `![${fileName}](${url})`,
+                    htmlURL: `<img src="${url}" alt="${fileName}" width=100% />`,
+                    ubbURL: `[img]${url}[/img]`,
                     srcID: url,
-                    status: 'uploading',
+                    status: 'waiting',
                     progreess: 0,
                     serverCompress: false,
                     uploadChannel: 'external',
                     retryCount: 0,
+                    editableName: true,
                 });
-                // 上传
-                this.uploadFile({ file: file, 
-                    onProgress: (evt) => this.handleProgress(evt), 
-                    onSuccess: (response, file) => this.handleSuccess(response, file), 
-                    onError: (error, file) => this.handleError(error, file) });
+            } else {
+                // 转存：远端链接占位条目，「上传」时交给 uploadFromUrl 服务端拉取
+                this.fileList.push({
+                    uid: Date.now() + i,
+                    name: url.split('/').pop() || url,
+                    url: '',
+                    srcID: url,
+                    status: 'waiting',
+                    progreess: 0,
+                    serverCompress: false,
+                    uploadChannel: 'save',
+                    retryCount: 0,
+                    isRemoteUrl: true,
+                    editableName: true,
+                });
             }
+        });
+        if (added > 0) {
+            this.$message({ type: 'success', message: this.$t('upload.extractedCount', { count: added }) });
+        } else {
+            this.$message({ type: 'info', message: this.$t('upload.extractNoNew') });
+        }
+    },
+    /**
+     * v2.8.0：「转存 / 外链」改为单击即执行（不再两步：先切模式再点提取）。
+     * 转存 = 解析输入框有效链接进列表（待上传，可改名 / 裁剪），确认后点左侧「上传」；
+     * 外链 = 解析有效链接并立即生成外链格式（md/html/ubb），左侧「上传」按钮随之隐藏。
+     */
+    onPasteMethodClick(mode) {
+        this.pasteUploadMethod = mode;
+        this.handleExtractPasteUrls();
+        // 外链模式：提取出的外链条目立即按外链通道完成（无需再点上传）；
+        // 只处理外链条目，不误传之前转存进来的待上传条目。
+        if (mode === 'external') this.startPasteUpload(true);
+    },
+    /**
+     * v2.7.0：链接模式的「上传」按钮 —— 把等待中的链接条目按当前方式处理
+     * （外链条目直接记录为成功外链；转存条目走服务端拉取），行为对齐文件模式的上传。
+     * v2.8.0：新增 onlyExternal 参数 —— 外链按钮自动完成时只处理外链条目。
+     */
+    startPasteUpload(onlyExternal = false) {
+        const pending = this.fileList.filter(item => item.status === 'waiting'
+            && (item.uploadChannel === 'external' || (!onlyExternal && item.isRemoteUrl)));
+        if (!pending.length) {
+            this.$message({ type: 'info', message: this.$t('uploadForm.noPendingFiles') });
+            return;
+        }
+        // 外链条目：标记上传中并走 external 通道（不实际上传，仅记录外链）
+        pending.forEach(item => {
+            if (item.uploadChannel !== 'external') return;
+            item.editableName = false;
+            item.status = 'uploading';
+            const mock = new File([], item.name, { type: 'text/plain' });
+            mock.uid = item.uid;
+            mock.url = item.url;
+            this.uploadFile({
+                file: mock,
+                onProgress: (evt) => this.handleProgress(evt),
+                onSuccess: (response, file) => this.handleSuccess(response, file),
+                onError: (error, file) => this.handleError(error, file)
+            });
+        });
+        // 转存条目：移除占位条目后交给 uploadFromUrl（它会重新入列并走服务端拉取）
+        const saveUrls = pending.filter(item => item.isRemoteUrl).map(item => item.srcID);
+        if (saveUrls.length) {
+            const urlSet = new Set(saveUrls);
+            this.fileList = this.fileList.filter(item => !item.isRemoteUrl || !urlSet.has(item.srcID));
+            this.uploadFromUrl(saveUrls.map(url => ({
+                kind: 'string',
+                getAsString: (callback) => { callback(url); }
+            })));
         }
     },
     uploadFromUrl(items) {
@@ -2592,9 +2666,11 @@ beforeDestroy() {
     opacity: 0.8;
     box-shadow: var(--el-upload-dragger-hover-box-shadow);
 }
-/* 有文件（列表展开）时卡片整体收缩，与链接模式的 .upload-card-busy.paste-card 对齐 */
+/* 有文件（列表展开）时卡片整体收缩，与链接模式的 .upload-card-busy.paste-card 对齐。
+   v2.8.0：vh 高度在移动端软键盘弹出（视口骤缩）时会把卡片压得失真，加 px 兜底。 */
 .upload-card-busy.default-card {
     height: var(--upload-card-busy-height);
+    min-height: 150px;
 }
 
 /* 上传时的边缘流光旋转效果（与 .paste-card.is-uploading 完全一致） */
@@ -2794,6 +2870,8 @@ html.dark .el-upload__text :deep(em) {
 }
 .upload-card-busy.paste-card {
     height: var(--upload-card-busy-height);
+    /* v2.8.0：px 兜底，防软键盘弹出时被无限压缩 */
+    min-height: 150px;
 }
 .upload-card-textarea {
     width: 50vw;
@@ -2810,6 +2888,8 @@ html.dark .el-upload__text :deep(em) {
 }
 .upload-card-busy .upload-card-textarea {
     height: 50%;
+    /* v2.8.0：px 兜底，防软键盘弹出时被无限压缩 */
+    min-height: 96px;
 }
 
 .upload-card-textarea:hover {
@@ -3162,6 +3242,8 @@ html.dark .el-upload__text :deep(em) {
     justify-content: space-between;
     align-items: center;
     height: var(--upload-list-inner-height);
+    /* v2.8.0：顶部功能栏（统计+操作按钮行）不允许被压到失真 */
+    min-height: 44px;
     padding: 0 15px;
     box-sizing: border-box;
     width: 100%;
