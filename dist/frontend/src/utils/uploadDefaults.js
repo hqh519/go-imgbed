@@ -11,11 +11,12 @@ export const UPLOAD_DEFAULT_CONFIG_IDS = [
   'showDirectorySuggestions', // 目录候选项
   'defaultUploadFolder', // 默认上传目录
   'defaultUploadNameType', // 默认命名方式
+  'defaultUrlForm', // 默认外链格式
+  'videoTranscodeIncompatible', // 视频兼容转码（v2.8.5 由网页设置迁入）
   'defaultConvertToWebp', // 默认转换 WebP
   'defaultCustomerCompress', // 默认开启压缩
-  'defaultCompressBar', // 默认压缩阈值
+  'defaultCompressBar', // 最小压缩阈值
   'defaultCompressQuality', // 默认压缩期望
-  'defaultUrlForm', // 默认外链格式
   'allowedExtensions', // 允许的上传格式
   'maxUploadSizeMB', // 单文件大小上限
 ];

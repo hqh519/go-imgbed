@@ -16,6 +16,8 @@ import i18n, { initializeLocale } from './locales'
 import { setupAccessTracker } from './utils/accessTracker'
 // 移动端返回键优先关弹窗（v2.3.0）
 import { setupBackGuard } from './utils/backGuard'
+// 主题模式 Cookie（v2.8.5：跨页面主题同步走 Cookie，页面刷新时生效）
+import { readThemeCookie } from './utils/themeCookie'
 
 import * as ElementPlusIconsVue from '@element-plus/icons-vue'
 import 'element-plus/theme-chalk/dark/css-vars.css'
@@ -121,6 +123,23 @@ const presetSiteIcon = (isDarkMode, userConfig) => {
 store.dispatch('fetchUserConfig').then(() => {
     // 优先恢复用户选择；没有持久化选择时使用网页默认语言
     initializeLocale(store.getters.userConfig?.defaultLanguage);
+
+    /*
+     * v2.8.5：主题模式以 Cookie 为准（用户在任意页面切换时写入）。
+     * Cookie 存在则覆盖本地持久化的旧选择；不存在（首次访问 / 清了 Cookie）
+     * 时沿用 localStorage 里 vuex-persistedstate 保存的上次选择，向后兼容。
+     */
+    const cookieTheme = readThemeCookie();
+    if (cookieTheme === 'dark') {
+        store.commit('setCusDarkMode', true);
+        store.commit('setUseDarkMode', true);
+    } else if (cookieTheme === 'light') {
+        store.commit('setCusDarkMode', true);
+        store.commit('setUseDarkMode', false);
+    } else if (cookieTheme === 'auto') {
+        store.commit('setCusDarkMode', false);
+        store.commit('setUseDarkMode', null);
+    }
 
     // 初始化时应用 dark 模式
     initDarkModeClass();

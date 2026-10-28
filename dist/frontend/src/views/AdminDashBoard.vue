@@ -364,6 +364,9 @@
                         @touchstart="handleTouchStart(item, index)"
                         @touchend="handleTouchEnd"
                         @touchmove="handleTouchEnd"
+                        @preview="openHoverPreview(item, $event)"
+                        @previewMove="moveHoverPreview($event)"
+                        @previewEnd="closeHoverPreview"
                     />
                 </template>
             </div>
@@ -408,6 +411,9 @@
                         @touchstart="isFolder(item) ? handleFolderTouchStart(item, index) : handleTouchStart(item, index)"
                         @touchend="handleTouchEnd"
                         @touchmove="handleTouchEnd"
+                        @preview="openHoverPreview(item, $event)"
+                        @previewMove="moveHoverPreview($event)"
+                        @previewEnd="closeHoverPreview"
                     />
                 </template>
             </div>
@@ -472,6 +478,14 @@
             :mode="trashMode ? 'trash' : 'normal'"
             @action="handleBatchAction"
             @clear="clearSelection"
+        />
+        <!-- v2.8.5：悬停预览大图浮层（PC：卡片小眼睛 / 列表缩略图悬停） -->
+        <HoverPreview
+            :visible="hoverPreview.visible"
+            :x="hoverPreview.x"
+            :y="hoverPreview.y"
+            :src="hoverPreview.src"
+            :type="hoverPreview.type"
         />
         <!-- 文件详情弹窗 -->
         <FileDetailDialog
@@ -632,6 +646,7 @@ import FileCard from '@/components/dashboard/FileCard.vue';
 import FolderCard from '@/components/dashboard/FolderCard.vue';
 import MoveFileDialog from '@/components/dashboard/MoveFileDialog.vue';
 import FileListItem from '@/components/dashboard/FileListItem.vue';
+import HoverPreview from '@/components/dashboard/HoverPreview.vue';
 import FileDetailDialog from '@/components/dashboard/FileDetailDialog.vue';
 import BatchActionBar from '@/components/dashboard/BatchActionBar.vue';
 import MobileActionSheet from '@/components/dashboard/MobileActionSheet.vue';
@@ -722,6 +737,8 @@ data() {
         showBatchTagDialog: false, // 批量标签管理对话框
         currentTagFile: '', // 当前标签管理的文件
         viewMode: 'card', // 视图模式：card 或 list
+        // v2.8.5：悬停预览大图（PC 卡片小眼睛 / 列表缩略图）
+        hoverPreview: { visible: false, x: 0, y: 0, src: '', type: 'image' },
         showMobileActionModal: false, // 移动端操作模态框
         mobileActionFile: null, // 当前移动端操作的文件
         mobileActionIndex: -1, // 当前移动端操作的文件索引
@@ -769,6 +786,7 @@ components: {
     FileCard,
     FolderCard,
     FileListItem,
+    HoverPreview,
     FileDetailDialog,
     BatchActionBar,
     MobileActionSheet,
@@ -836,6 +854,7 @@ computed: {
             { value: 'tag', label: this.$t('dashboard.searchTypeTag') },
             { value: 'category', label: this.$t('dashboard.searchTypeCategory') },
             { value: 'user', label: this.$t('dashboard.searchTypeUser') },
+            { value: 'note', label: this.$t('dashboard.searchTypeNote') },
             { value: 'other', label: this.$t('dashboard.searchTypeOther') },
         ];
     },
@@ -1419,6 +1438,7 @@ methods: {
         return withExtUtil(url, ext);
     },
     openDetailDialog(index, key) {
+        this.closeHoverPreview(); // v2.8.5：打开详情时收起悬停预览浮层
         this.detailFile = this.paginatedTableData[index];
         this.showdetailDialog = true;
     },
@@ -2344,6 +2364,38 @@ methods: {
         const path = this.withExt(`/file/${filename}`, this.fileExt(meta || filename));
         return `${path}?from=admin`;
     },
+    /**
+     * v2.8.5：悬停预览大图（PC）。
+     * 触发点：卡片封面「小眼睛」、列表缩略图 —— 鼠标悬停即弹出，
+     * 视频自动播放；浮层定位与比例逻辑在 HoverPreview 组件内。
+     * 触屏设备（hover: none / 粗指针）不启用，避免与长按、滚动冲突。
+     */
+    canHoverPreview() {
+        return window.matchMedia
+            ? window.matchMedia('(hover: hover) and (pointer: fine)').matches
+            : true;
+    },
+    openHoverPreview(item, evt) {
+        if (!item || item.isFolder) return;
+        if (!this.canHoverPreview()) return;
+        if (!this.isImage(item) && !this.isVideo(item)) return;
+        this.hoverPreview = {
+            visible: true,
+            x: evt?.clientX || 0,
+            y: evt?.clientY || 0,
+            src: this.getFileLink(item.name),
+            type: this.isVideo(item) ? 'video' : 'image',
+        };
+    },
+    moveHoverPreview(evt) {
+        if (!this.hoverPreview.visible || !evt) return;
+        this.hoverPreview.x = evt.clientX;
+        this.hoverPreview.y = evt.clientY;
+    },
+    closeHoverPreview() {
+        if (!this.hoverPreview.visible) return;
+        this.hoverPreview.visible = false;
+    },
     handlePageChange(page) {
         this.currentPage = page;
         // 到最后一页时，加载更多数据
@@ -2837,6 +2889,8 @@ mounted() {
     this.initializeBackground('adminBkImg', '.container', false, true);
     this.updateResponsivePageSize();
     window.addEventListener('resize', this.updateResponsivePageSize);
+    // v2.8.5：滚动（含列表内部滚动，capture 捕获）时收起悬停预览浮层
+    window.addEventListener('scroll', this.closeHoverPreview, true);
 
     /*
      * 其他页面通过 URL query / sessionStorage 指定进入本页时的初始视图：
@@ -2914,6 +2968,7 @@ mounted() {
 beforeUnmount() {
     this.cancelSearchIconPress();
     window.removeEventListener('resize', this.updateResponsivePageSize);
+    window.removeEventListener('scroll', this.closeHoverPreview, true);
 }
 
 };
@@ -3375,7 +3430,8 @@ beforeUnmount() {
     /* 工具栏按钮间距：原 8px + 各按钮 margin-left 会叠成 16px，收紧到 6px */
     gap: 6px;
 }
-@media (max-width: 1024px) {
+/* v2.8.5：搜索区拉伸只在手机/平板竖屏生效（≤1023）；平板横屏（1024 起）与 PC 一致 */
+@media (max-width: 1023px) {
     .search-area {
         width: 100%;
         gap: 6px;

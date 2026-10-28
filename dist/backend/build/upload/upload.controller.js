@@ -49,10 +49,14 @@ function fixFilename(name) {
     const raw = String(name || '');
     if (!raw)
         return raw;
+    if (!/[\u0080-\u00FF]/.test(raw))
+        return raw;
     try {
         const restored = Buffer.from(raw, 'latin1').toString('utf8');
-        if (!restored.includes('\uFFFD') && /[^\u0000-\u007F]/.test(restored))
+        if (!restored.includes('\uFFFD') && /[^\u0000-\u007F]/.test(restored)) {
+            console.log(`[upload] multipart 文件名编码已还原: ${raw} -> ${restored}`);
             return restored;
+        }
     }
     catch {
     }

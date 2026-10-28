@@ -107,6 +107,7 @@ import Footer from '@/components/Footer.vue';
 import { mapGetters } from 'vuex';
 import axios from '@/utils/axios';
 import { setLocale } from '@/locales';
+import { writeThemeCookie } from '@/utils/themeCookie';
 import backgroundManager from '@/mixins/backgroundManager';
 
 export default {
@@ -278,11 +279,14 @@ export default {
                 if (this.themeMode === 'auto') {
                     this.$store.commit('setCusDarkMode', true);
                     this.$store.commit('setUseDarkMode', false);
+                    writeThemeCookie('light');
                 } else if (this.themeMode === 'light') {
                     this.$store.commit('setCusDarkMode', true);
                     this.$store.commit('setUseDarkMode', true);
+                    writeThemeCookie('dark');
                 } else {
                     this.$store.commit('setCusDarkMode', false);
+                    writeThemeCookie('auto');
                 }
             } else if (command === 'toggleLanguage') {
                 const next = this.$i18n.locale === 'zh-CN' ? 'en' : 'zh-CN';

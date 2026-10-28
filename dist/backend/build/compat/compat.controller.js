@@ -11,6 +11,7 @@ var __metadata = (this && this.__metadata) || function (k, v) {
 var __param = (this && this.__param) || function (paramIndex, decorator) {
     return function (target, key) { decorator(target, key, paramIndex); }
 };
+var ManageCompatController_1;
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ManageCompatController = exports.PublicCompatController = void 0;
 const common_1 = require("@nestjs/common");
@@ -21,6 +22,7 @@ const auth_guard_1 = require("../auth/auth.guard");
 const settings_service_1 = require("../settings/settings.service");
 const sysconfig_service_1 = require("../settings/sysconfig.service");
 const file_view_1 = require("../common/file-view");
+const app_log_1 = require("../common/app-log");
 const ip_query_1 = require("../common/ip-query");
 function wildcardParam(req) {
     const raw = String(req.params['0'] ?? '');
@@ -74,6 +76,7 @@ exports.PublicCompatController = PublicCompatController = __decorate([
     (0, common_1.Controller)('api')
 ], PublicCompatController);
 let ManageCompatController = class ManageCompatController {
+    static { ManageCompatController_1 = this; }
     settings;
     sysConfig;
     constructor(settings, sysConfig) {
@@ -433,8 +436,20 @@ let ManageCompatController = class ManageCompatController {
             return String(body.ip).trim();
         return '';
     }
+    static CONFIG_SECTIONS = ['page', 'upload', 'others', 'security', 'ai'];
     async batchSettings() {
-        return { settings: { databaseType: 'sqlite', chunkSize: 500 } };
+        const settings = {};
+        for (const section of ManageCompatController_1.CONFIG_SECTIONS) {
+            try {
+                settings[section] =
+                    section === 'security' ? await this.sysConfig.readSecurityRaw() : await this.sysConfig.get(section);
+            }
+            catch (err) {
+                app_log_1.appLog.warn('config', `配置备份：读取分区 ${section} 失败`, err.message);
+            }
+        }
+        app_log_1.appLog.info('config', '导出配置备份', `分区：${Object.keys(settings).join(' / ') || '无'}`);
+        return { settings };
     }
     async indexConfig() {
         return { success: true, chunkSize: 500, databaseType: 'sqlite' };
@@ -462,8 +477,33 @@ let ManageCompatController = class ManageCompatController {
             return { success: false, message: `索引维护失败: ${err.message}` };
         }
     }
-    async restoreChunk() {
-        return { success: true };
+    async restoreChunk(body) {
+        const type = String(body?.type || '');
+        const data = (body?.data || {});
+        if (type !== 'settings')
+            return { success: true, restoredCount: 0, failedCount: 0 };
+        const allowed = ManageCompatController_1.CONFIG_SECTIONS;
+        let restoredCount = 0;
+        let failedCount = 0;
+        for (const [section, value] of Object.entries(data)) {
+            if (!allowed.includes(section) || !value || typeof value !== 'object') {
+                failedCount += 1;
+                continue;
+            }
+            try {
+                if (section === 'security')
+                    await this.sysConfig.writeSecurityRaw(value);
+                else
+                    await this.sysConfig.save(section, value);
+                restoredCount += 1;
+            }
+            catch (err) {
+                failedCount += 1;
+                app_log_1.appLog.error('config', `恢复配置失败：${section}`, err.message);
+            }
+        }
+        app_log_1.appLog.warn('config', `恢复配置：成功 ${restoredCount} 项，失败 ${failedCount} 项`);
+        return { success: restoredCount > 0 || failedCount === 0, restoredCount, failedCount };
     }
     async batchList(q) {
         const limit = Math.min(1000, Math.max(1, Number(q.limit || 500)));
@@ -647,8 +687,9 @@ __decorate([
 ], ManageCompatController.prototype, "indexFinalize", null);
 __decorate([
     (0, common_1.Post)('batch/restore/chunk'),
+    __param(0, (0, common_1.Body)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", []),
+    __metadata("design:paramtypes", [Object]),
     __metadata("design:returntype", Promise)
 ], ManageCompatController.prototype, "restoreChunk", null);
 __decorate([
@@ -676,7 +717,7 @@ __decorate([
     __metadata("design:paramtypes", []),
     __metadata("design:returntype", void 0)
 ], ManageCompatController.prototype, "aiTest", null);
-exports.ManageCompatController = ManageCompatController = __decorate([
+exports.ManageCompatController = ManageCompatController = ManageCompatController_1 = __decorate([
     (0, common_1.Controller)('api/manage'),
     (0, common_1.UseGuards)(auth_guard_1.AdminGuard),
     __metadata("design:paramtypes", [settings_service_1.SettingsService,

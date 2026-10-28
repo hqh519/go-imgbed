@@ -85,16 +85,22 @@
                             :title="bk.full"
                         >{{ bk.short }}</span>
                     </div>
-                    <el-checkbox
-                        v-model="localSelected"
-                        class="card-select"
-                        @click.stop
-                        @change="$emit('update:selected', localSelected)"
-                    ></el-checkbox>
                 </div>
 
                 <div class="overlay-actions" @click.stop>
-                    <!-- v2.6.0：封面「移动」按钮移除，只留 复制 / 打开 -->
+                    <!-- v2.8.5：小眼睛悬停预览大图（仅 PC 悬停触发，父组件判定触屏跳过；仅图片/视频才有预览） -->
+                    <el-tooltip v-if="isImage || isVideo" :disabled="disableTooltip" :content="$t('dashboard.hoverPreview')" placement="top" :show-after="600">
+                        <button
+                            class="overlay-btn"
+                            data-role="preview-eye"
+                            @click.stop="$emit('preview', $event)"
+                            @mouseenter="$emit('preview', $event)"
+                            @mousemove="$emit('previewMove', $event)"
+                            @mouseleave="$emit('previewEnd')"
+                        >
+                            <font-awesome-icon icon="eye"></font-awesome-icon>
+                        </button>
+                    </el-tooltip>
                     <el-tooltip :disabled="disableTooltip" :content="$t('dashboard.copyLink')" placement="top" :show-after="600">
                         <button class="overlay-btn" @click.stop="$emit('copy')">
                             <font-awesome-icon icon="copy"></font-awesome-icon>
@@ -112,6 +118,17 @@
                     <span>{{ viewsCount }}</span>
                 </div>
             </div>
+
+            <!--
+                v2.8.5：选择圆圈从悬浮层移出来单独定位 —— 悬浮层整体 opacity 0，
+                选中项即使鼠标不在卡片上也要能看见勾选状态，只能脱离悬浮层。
+            -->
+            <el-checkbox
+                v-model="localSelected"
+                class="card-select"
+                @click.stop
+                @change="$emit('update:selected', localSelected)"
+            ></el-checkbox>
         </div>
 
         <!-- 下半部分：文件信息（与历史记录卡片一致） -->
@@ -142,7 +159,7 @@ export default {
         previewSrcList: { type: Array, default: () => [] },
         disableTooltip: { type: Boolean, default: false }
     },
-    emits: ['update:selected', 'detail', 'openLink', 'copy', 'move', 'delete', 'download', 'touchstart', 'touchend', 'touchmove'],
+    emits: ['update:selected', 'detail', 'openLink', 'copy', 'move', 'delete', 'download', 'touchstart', 'touchend', 'touchmove', 'preview', 'previewMove', 'previewEnd'],
     data() {
         return {
             localSelected: this.selected,
@@ -425,16 +442,29 @@ export default {
     color: rgba(255, 255, 255, 0.96);
     border: 1px solid rgba(230, 162, 60, 0.72);
 }
-/* v2.7.0：选择圆圈恒靠右上 —— margin-left:auto 不依赖 space-between 的子项数量，
-   移动端隐藏渠道角标后 checkbox 也不会掉到左上角（与文件夹卡片行为一致） */
+/* v2.7.0：选择圆圈恒靠右上 —— 绝对定位，不依赖悬浮层的 flex 布局（
+   移动端隐藏渠道角标后 checkbox 也不会掉到左上角，与文件夹卡片行为一致） */
+/* v2.8.5：选中态必须始终可见（不依赖鼠标悬浮），未选中仍保持「悬浮才出现」 */
 .card-select {
-    flex-shrink: 0;
-    margin-left: auto;
+    position: absolute;
+    top: 5px;
+    right: 8px;
+    z-index: 3;
+    margin: 0;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.25s ease;
+}
+.file-card:hover .card-select,
+.file-card:focus-within .card-select,
+.file-card.is-selected .card-select {
+    opacity: 1;
+    pointer-events: auto;
 }
 /* v2.8.0：手机端/平板端下选择圆圈整体上移 4px（PC 端保持不动） */
 @media (max-width: 1199px) {
     .card-select {
-        margin-top: -4px;
+        top: 1px;
     }
 }
 .card-select :deep(.el-checkbox__inner) {
@@ -443,9 +473,18 @@ export default {
     height: 16px !important;
     min-height: 16px;
     border-radius: 50% !important;
-    /* v2.8.0：未选中时圆圈内部透明（不填充白色）；选中时保持主题色填充 */
+    /* v2.8.0：未选中时圆圈内部透明（不填充白色） */
     background: transparent;
     /* v2.7.0：去掉白色描边覆盖，圆圈颜色与文件夹卡片的选择按钮一致（默认描边） */
+}
+/* v2.8.5：选中时恢复主题色填充（transparent 规则会按级联顺序盖掉 EP 选中态默认背景） */
+.card-select :deep(.el-checkbox__input.is-checked .el-checkbox__inner) {
+    background-color: var(--el-color-primary);
+    border-color: var(--el-color-primary);
+}
+/* v2.8.5：选中态对勾保持白色可见 */
+.card-select :deep(.el-checkbox__input.is-checked .el-checkbox__inner::after) {
+    border-color: #fff;
 }
 /* 中间：复制 / 打开 / 移动 */
 .overlay-actions {

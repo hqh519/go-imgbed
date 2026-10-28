@@ -825,7 +825,7 @@ export class ManageController {
   async list(@Req() req: Request, @Query() q: Record<string, string>) {
     // 「系统状态」页以 action=info 复用本路由，返回索引统计而非文件列表（仅管理员）
     if (q.action === 'info') {
-      if (!this.admin(req)) return { forbidden: true, totalFiles: 0, channelStats: {}, typeStats: {}, uploadTrend: { labels: [], total: [] } };
+      if (!this.admin(req)) return { forbidden: true, totalFiles: 0, channelStats: {}, typeStats: {}, uploadSourceStats: {}, mimeStats: {}, uploadTrend: { labels: [], total: [], groupBy: {} } };
       return this.indexInfo(q);
     }
 
@@ -835,7 +835,7 @@ export class ManageController {
     const recursive = q.recursive === 'true';
     const dir = normalizeDir(q.dir);
     const search = (q.search || '').trim().toLowerCase();
-    // 搜索类型：all(默认) | title 标题 | tag 标签 | category 分类 | user 用户 | other 其他
+    // 搜索类型：all(默认) | title 标题 | tag 标签 | category 分类 | user 用户 | note 备注 | other 其他
     const searchType = (q.searchType || 'all').toLowerCase();
     let count = q.count === undefined ? 50 : Number(q.count);
     if (Number.isNaN(count)) count = 50;
@@ -888,18 +888,21 @@ export class ManageController {
                 ? dirName.includes(search)
                 : searchType === 'user'
                   ? (r.uploader || '').toLowerCase().includes(search)
-                  : searchType === 'other'
-                    ? (r.md5 || '').toLowerCase().includes(search) ||
-                      mime.includes(search) ||
-                      (r.ip || '').includes(search)
-                    : // all：文件名 / 文件ID / 链接 / 分类 / 标签 / md5 / 类型 / 用户
-                      r.originalName.toLowerCase().includes(search) ||
-                      r.name.toLowerCase().includes(search) ||
-                      (r.md5 || '').toLowerCase().includes(search) ||
-                      dirName.includes(search) ||
-                      tagNames.includes(search) ||
-                      mime.includes(search) ||
-                      (r.uploader || '').toLowerCase().includes(search);
+                  : searchType === 'note'
+                    ? (r.note || '').toLowerCase().includes(search)
+                    : searchType === 'other'
+                      ? (r.md5 || '').toLowerCase().includes(search) ||
+                        mime.includes(search) ||
+                        (r.ip || '').includes(search)
+                      : // all：文件名 / 文件ID / 链接 / 分类 / 标签 / md5 / 类型 / 用户 / 备注
+                        r.originalName.toLowerCase().includes(search) ||
+                        r.name.toLowerCase().includes(search) ||
+                        (r.md5 || '').toLowerCase().includes(search) ||
+                        dirName.includes(search) ||
+                        tagNames.includes(search) ||
+                        mime.includes(search) ||
+                        (r.uploader || '').toLowerCase().includes(search) ||
+                        (r.note || '').toLowerCase().includes(search);
         if (!hit) return false;
       }
       const tagNames = r.tags.map((t) => t.tag.name);
@@ -1054,7 +1057,7 @@ export class ManageController {
    *
    * 入参：timezoneOffset(分钟，同 JS getTimezoneOffset) / trendMaxPoints /
    *       trendSeriesLimit / trendStartDate / trendEndDate
-   * 出参：{ totalFiles, lastUpdated, channelStats, typeStats,
+   * 出参：{ totalFiles, lastUpdated, channelStats, typeStats, uploadSourceStats, mimeStats,
    *        newestFile, oldestFile, uploadTrend:{ labels, total, groupBy } }
    */
   private async indexInfo(q: Record<string, string>) {
@@ -1128,10 +1131,14 @@ export class ManageController {
         },
       }));
 
-    // 渠道分布 + 用户分布 + 状态分布（ListType）
+    // 渠道分布 + 用户分布 + 状态分布（ListType）+ 上传接口分布 + 上传类型分布
     const channelStats: Record<string, number> = {};
     const userStats: Record<string, number> = {};
     const typeStats: Record<string, number> = {};
+    /** 上传接口（Default / WebDAV / API-Web / API-S3）—— v2.8.5 */
+    const uploadSourceStats: Record<string, number> = {};
+    /** 上传类型（image / video / audio / other，按 mime 归类）—— v2.8.5 */
+    const mimeStats: Record<string, number> = {};
     for (const r of rows) {
       const p = primaryOf(r);
       const chLabel = p?.channel
@@ -1145,6 +1152,12 @@ export class ManageController {
       const metas = safeParse(r.metas);
       const listType = (metas.ListType as string) || 'None';
       typeStats[listType] = (typeStats[listType] || 0) + 1;
+
+      const sourceLabel = normalizeUploadSource((r as unknown as { uploadSource?: string }).uploadSource);
+      uploadSourceStats[sourceLabel] = (uploadSourceStats[sourceLabel] || 0) + 1;
+
+      const mimeLabel = fileTypeOf(r.mime);
+      mimeStats[mimeLabel] = (mimeStats[mimeLabel] || 0) + 1;
     }
 
     const brief = (r?: (typeof rows)[number]) =>
@@ -1186,6 +1199,9 @@ export class ManageController {
     const byType: Record<string, number[]> = {};
     const byName: Record<string, number[]> = {};
     const byUser: Record<string, number[]> = {};
+    // v2.8.5：新增两个趋势维度 —— 上传接口 / 上传类型
+    const bySource: Record<string, number[]> = {};
+    const byMime: Record<string, number[]> = {};
 
     for (const r of rows) {
       const key = isoDayMs(r.createdAt.getTime() - offMin * 60000);
@@ -1197,12 +1213,18 @@ export class ManageController {
       const typeLabel = p?.channel ? CHANNEL_LABEL[p.channel.type] || p.channel.type : 'Unknown';
       const nameLabel = p?.channel?.name || typeLabel;
       const userLabel = r.uploader || '(匿名)';
+      const sourceLabel = normalizeUploadSource((r as unknown as { uploadSource?: string }).uploadSource);
+      const mimeLabel = fileTypeOf(r.mime);
       if (!byType[typeLabel]) byType[typeLabel] = new Array(labels.length).fill(0);
       if (!byName[nameLabel]) byName[nameLabel] = new Array(labels.length).fill(0);
       if (!byUser[userLabel]) byUser[userLabel] = new Array(labels.length).fill(0);
+      if (!bySource[sourceLabel]) bySource[sourceLabel] = new Array(labels.length).fill(0);
+      if (!byMime[mimeLabel]) byMime[mimeLabel] = new Array(labels.length).fill(0);
       byType[typeLabel][i] += 1;
       byName[nameLabel][i] += 1;
       byUser[userLabel][i] += 1;
+      bySource[sourceLabel][i] += 1;
+      byMime[mimeLabel][i] += 1;
     }
 
     /** 取前 N 条，其余合并为「其他」 */
@@ -1226,6 +1248,8 @@ export class ManageController {
       channelStats,
       userStats,
       typeStats,
+      uploadSourceStats,
+      mimeStats,
       newestFile: brief(rows[totalFiles - 1]),
       oldestFile: brief(rows[0]),
       recentFiles,
@@ -1246,6 +1270,8 @@ export class ManageController {
           channel: { series: buildSeries(byType) },
           channelName: { series: buildSeries(byName) },
           user: { series: buildSeries(byUser) },
+          uploadSource: { series: buildSeries(bySource) },
+          mime: { series: buildSeries(byMime) },
         },
         range: { startDate: isoDayMs(startMs), endDate: isoDayMs(endMs) },
       },
@@ -2265,7 +2291,7 @@ export class UserConfigController {
         .split(',')
         .map((x) => x.trim().replace(/^\./, '').toLowerCase())
         .filter(Boolean),
-      maxUploadSizeMB: Number(pv('maxUploadSizeMB', 150)) || 150,
+      maxUploadSizeMB: Number(pv('maxUploadSizeMB', 1024)) || 1024,
       // 背景图
       wallpaperEnabled: pv('wallpaperEnabled', false) === true,
       // 夜间/白天自动切换（关闭后固定白天样式）

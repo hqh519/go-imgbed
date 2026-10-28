@@ -118,6 +118,25 @@
                         </div>
                     </div>
                 </div>
+                <!--
+                    v2.8.5：原「允许压缩格式」改为「禁止压缩格式」，并挪到「压缩百分比」之后。
+                    语义反转：清单内的格式跳过压缩、原样上传；不在清单内的按现有规则压缩。
+                -->
+                <div class="setting-item" v-if="customerCompress">
+                    <span class="setting-label">
+                        {{ $t('uploadSettings.compressExcludeExtensions') }}
+                        <el-tooltip :content="compressExcludeTooltip" placement="top" raw-content>
+                            <font-awesome-icon icon="question-circle" class="inline-help-icon"/>
+                        </el-tooltip>
+                    </span>
+                    <el-input
+                        :model-value="limitCompressExts"
+                        @update:model-value="$emit('update:limitCompressExts', $event)"
+                        :placeholder="$t('uploadSettings.compressExcludeExtensionsPlaceholder')"
+                        clearable
+                        class="setting-input"
+                    />
+                </div>
             </div>
         </div>
 
@@ -141,20 +160,24 @@
                     />
                 </div>
                 <div class="setting-item">
-                    <span class="setting-label">{{ $t('uploadSettings.maxFileSize') }}</span>
-                    <div class="limit-size-wrapper">
-                        <el-input-number
-                            :model-value="limitMaxSizeMB"
-                            @update:model-value="$emit('update:limitMaxSizeMB', $event)"
-                            :min="0"
-                            :max="102400"
-                            :step="10"
-                            :value-on-clear="0"
-                            controls-position="right"
-                            class="limit-size-input"
-                        />
-                        <span class="limit-size-unit">MB</span>
-                    </div>
+                    <span class="setting-label">
+                        {{ $t('uploadSettings.maxFileSize') }}
+                        <el-tooltip :content="$t('uploadSettings.maxFileSizeTooltip')" placement="top" raw-content>
+                            <font-awesome-icon icon="question-circle" class="inline-help-icon"/>
+                        </el-tooltip>
+                    </span>
+                    <!-- v2.8.5：MB 单位放进输入框（suffix），宽度与「允许的上传格式」完全一致 -->
+                    <el-input
+                        :model-value="limitMaxSizeMB ? String(limitMaxSizeMB) : ''"
+                        @update:model-value="handleMaxSizeInput"
+                        :placeholder="maxSizePlaceholder"
+                        clearable
+                        class="setting-input limit-size-input"
+                    >
+                        <template #suffix>
+                            <span class="limit-size-unit">MB</span>
+                        </template>
+                    </el-input>
                 </div>
             </div>
         </div>
@@ -199,6 +222,7 @@
 <script>
 import ChannelSelect from '@/components/config/ChannelSelect.vue';
 import { resolveChannelLabel } from '@/utils/storageChannels';
+import { COMPRESSIBLE_EXTENSIONS } from '@/utils/upload/compressExtensions';
 
 export default {
     name: 'UploadSettingsDialog',
@@ -225,8 +249,12 @@ export default {
         serverCompress: { type: Boolean, default: true },
         /** 允许的上传格式（本次覆盖，逗号分隔；空 = 跟随后台） */
         limitExtensions: { type: String, default: '' },
+        /** 允许压缩格式覆盖（本次覆盖，逗号分隔；空 = 用内置可压缩清单） */
+        limitCompressExts: { type: String, default: '' },
         /** 单文件大小上限覆盖（MB；0 = 跟随后台） */
-        limitMaxSizeMB: { type: Number, default: 0 }
+        limitMaxSizeMB: { type: Number, default: 0 },
+        /** 后台全局单文件大小上限（MB）—— 仅用于输入框 placeholder 提示 */
+        globalMaxSizeMB: { type: Number, default: 0 }
     },
     emits: [
         'update:modelValue',
@@ -241,6 +269,7 @@ export default {
         'update:compressPercent',
         'update:serverCompress',
         'update:limitExtensions',
+        'update:limitCompressExts',
         'update:limitMaxSizeMB'
     ],
     watch: {
@@ -258,6 +287,7 @@ export default {
         compressBar() { this.notifySaved() },
         compressPercent() { this.notifySaved() },
         limitExtensions() { this.notifySaved() },
+        limitCompressExts() { this.notifySaved() },
         limitMaxSizeMB() { this.notifySaved() }
     },
     methods: {
@@ -272,6 +302,11 @@ export default {
                     this.$message.success(this.$t('uploadSettings.savedToast'))
                 } catch (e) { /* 弹窗关闭瞬间可能拿不到实例，忽略 */ }
             }, 600)
+        },
+        /** 单文件大小上限：纯输入框，只留数字；清空 = 跟随后台（0） */
+        handleMaxSizeInput(val) {
+            const digits = String(val == null ? '' : val).replace(/[^\d]/g, '')
+            this.$emit('update:limitMaxSizeMB', digits ? Number(digits) : 0)
         },
         handleUploadFolderInput(val) {
             // 自动补全前导 /
@@ -296,6 +331,19 @@ export default {
         },
         dialogWidth() {
             return window.innerWidth > 768 ? '50%' : '90%'
+        },
+        /** 单文件大小上限 placeholder：直接显示后台全局值，让「留空跟随后台」有个可读落点 */
+        maxSizePlaceholder() {
+            const global = Number(this.globalMaxSizeMB) || 0
+            return global > 0
+                ? this.$t('uploadSettings.maxFileSizePlaceholder', { mb: global })
+                : this.$t('uploadSettings.maxFileSizePlaceholderNoGlobal')
+        },
+        /** 允许压缩格式 tooltip：带上内置清单，方便对照填写 */
+        compressExcludeTooltip() {
+            return this.$t('uploadSettings.compressExcludeExtensionsTooltip', {
+                list: COMPRESSIBLE_EXTENSIONS.join(',')
+            })
         }
     }
 }
@@ -376,15 +424,11 @@ export default {
 }
 
 /* 「单文件大小上限」输入框 + MB 单位 */
-.limit-size-wrapper {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    flex-shrink: 0;
-}
-
-.limit-size-input {
-    width: 140px !important;
+/* v2.8.5：MB 单位挪进输入框 suffix，宽度完全交给 .setting-input（与「允许的上传格式」一致） */
+.limit-size-input :deep(.el-input__suffix) {
+    color: var(--el-text-color-secondary);
+    font-size: 13px;
+    font-weight: 500;
 }
 
 .limit-size-unit {

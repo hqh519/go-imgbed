@@ -408,7 +408,7 @@
                             <font-awesome-icon icon="question-circle" style="margin-left: 5px; cursor: pointer;"/>
                         </el-tooltip>
                     </template>
-                    <!-- 一行一个域名，后端按行拆分并做「精确 / 子域」匹配 -->
+                    <!-- 一行一条域名（带端口），后端按行拆分后做「域名 + 端口」精确匹配 -->
                     <el-input
                         v-model="accessSettings.allowedDomains"
                         type="textarea"

@@ -108,6 +108,7 @@
 <script>
 import { Link, Delete } from '@element-plus/icons-vue'
 import { copyText } from '@/utils/clipboard'
+import { COMPRESSIBLE_EXTENSIONS } from '@/utils/upload/compressExtensions'
 import img404 from '@/assets/404.png'
 
 const IMAGE_EXTENSIONS = [
@@ -115,17 +116,6 @@ const IMAGE_EXTENSIONS = [
     'jfif', 'pjpeg', 'pjp', 'raw', 'cr2', 'nef', 'dng', 'eps', 'ai', 'emf', 'wmf'
 ]
 const VIDEO_EXTENSIONS = ['mp4', 'webm', 'ogg', 'mkv']
-
-/**
- * 会被后端压缩的格式（与 backend/src/common/compress.ts 的 SKIP 集合取反保持一致）：
- * 图片 jpg/jpeg/png/webp/avif，视频 mp4/webm/mov/m4v/mkv，音频 mp3/m4a/aac/wav/flac/ogg/opus。
- * gif 故意不在内（sharp 压缩会丢帧），svg/heic/tiff/bmp/ico/psd 同理跳过。
- */
-const COMPRESSIBLE_EXTENSIONS = [
-    'jpg', 'jpeg', 'jfif', 'png', 'webp', 'avif',
-    'mp4', 'webm', 'mov', 'm4v', 'mkv',
-    'mp3', 'm4a', 'aac', 'wav', 'flac', 'ogg', 'opus'
-]
 
 export default {
     name: 'UploadFileItem',

@@ -17,6 +17,7 @@ import { AdminGuard } from '../auth/auth.guard';
 import { SettingsService } from '../settings/settings.service';
 import { SysConfigService } from '../settings/sysconfig.service';
 import { serializeFile } from '../common/file-view';
+import { appLog } from '../common/app-log';
 import { ipDisplayBatch } from '../common/ip-query';
 
 /**
@@ -552,9 +553,29 @@ export class ManageCompatController {
    * 这些接口保留是为了让前端的「重建索引 / 导出备份」流程可正常走完。
    */
 
+  /** 配置备份覆盖的分区（sysConfig 的整段 JSON） */
+  private static readonly CONFIG_SECTIONS = ['page', 'upload', 'others', 'security', 'ai'] as const;
+
+  /**
+   * 配置备份（v2.8.5）：
+   * 前端「系统状态 → 配置备份」拿这份数据写 JSON。
+   * 只有 page / upload / others / security / ai 五个分区 —— 不再导出文件记录，
+   * 备份文件小、生成快，恢复时也不会碰已上传的文件。
+   */
   @Get('batch/settings')
   async batchSettings() {
-    return { settings: { databaseType: 'sqlite', chunkSize: 500 } };
+    const settings: Record<string, any> = {};
+    for (const section of ManageCompatController.CONFIG_SECTIONS) {
+      try {
+        // security 必须读【原始存储】：get() 会把口令/密钥脱敏成空串，脱敏值回灌等于抹掉口令
+        settings[section] =
+          section === 'security' ? await this.sysConfig.readSecurityRaw() : await this.sysConfig.get(section);
+      } catch (err) {
+        appLog.warn('config', `配置备份：读取分区 ${section} 失败`, (err as Error).message);
+      }
+    }
+    appLog.info('config', '导出配置备份', `分区：${Object.keys(settings).join(' / ') || '无'}`);
+    return { settings };
   }
 
   @Get('batch/index/config')
@@ -589,9 +610,38 @@ export class ManageCompatController {
     }
   }
 
+  /**
+   * 恢复配置（v2.8.5）：
+   * 前端把备份里的 settings 分批 POST 过来（type='settings'，data = { 分区名: 分区内容 }）。
+   * security 走 writeSecurityRaw —— 备份里的口令是散列/密文，不能再散列一遍；
+   * 其余分区走 save() 的深合并，只覆盖备份里带的字段。
+   * type='files' 的分块（旧版全量备份）这里直接跳过，不写入任何文件表。
+   */
   @Post('batch/restore/chunk')
-  async restoreChunk() {
-    return { success: true };
+  async restoreChunk(@Body() body: { type?: string; data?: Record<string, any> }) {
+    const type = String(body?.type || '');
+    const data = (body?.data || {}) as Record<string, any>;
+    if (type !== 'settings') return { success: true, restoredCount: 0, failedCount: 0 };
+
+    const allowed = ManageCompatController.CONFIG_SECTIONS as readonly string[];
+    let restoredCount = 0;
+    let failedCount = 0;
+    for (const [section, value] of Object.entries(data)) {
+      if (!allowed.includes(section) || !value || typeof value !== 'object') {
+        failedCount += 1;
+        continue;
+      }
+      try {
+        if (section === 'security') await this.sysConfig.writeSecurityRaw(value);
+        else await this.sysConfig.save(section, value);
+        restoredCount += 1;
+      } catch (err) {
+        failedCount += 1;
+        appLog.error('config', `恢复配置失败：${section}`, (err as Error).message);
+      }
+    }
+    appLog.warn('config', `恢复配置：成功 ${restoredCount} 项，失败 ${failedCount} 项`);
+    return { success: restoredCount > 0 || failedCount === 0, restoredCount, failedCount };
   }
 
   /** 导出用：分页返回文件记录（模拟原系统 KV 列表游标） */

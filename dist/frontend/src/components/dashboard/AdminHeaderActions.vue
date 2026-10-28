@@ -51,6 +51,7 @@
 import AdminToggleDark from './AdminToggleDark.vue';
 import LanguageSwitcher from '@/components/LanguageSwitcher.vue';
 import { setLocale } from '@/locales';
+import { writeThemeCookie } from '@/utils/themeCookie';
 
 export default {
     name: 'AdminHeaderActions',
@@ -90,11 +91,14 @@ export default {
                 if (!this.$store.getters.cusDarkMode) {
                     this.$store.commit('setCusDarkMode', true);
                     this.$store.commit('setUseDarkMode', false);
+                    writeThemeCookie('light');
                 } else if (!this.$store.getters.useDarkMode) {
                     this.$store.commit('setCusDarkMode', true);
                     this.$store.commit('setUseDarkMode', true);
+                    writeThemeCookie('dark');
                 } else {
                     this.$store.commit('setCusDarkMode', false);
+                    writeThemeCookie('auto');
                 }
                 return;
             }

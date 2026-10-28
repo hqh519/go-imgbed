@@ -196,8 +196,17 @@ export default {
     height: 16px !important;
     min-height: 16px;
     border-radius: 50% !important;
-    /* v2.8.0：未选中时圆圈内部透明（不填充白色）；选中时保持主题色填充 */
+    /* v2.8.0：未选中时圆圈内部透明（不填充白色） */
     background: transparent;
+}
+/* v2.8.5：选中时恢复主题色填充（transparent 规则会按级联顺序盖掉 EP 选中态默认背景） */
+.card-select :deep(.el-checkbox__input.is-checked .el-checkbox__inner) {
+    background-color: var(--el-color-primary);
+    border-color: var(--el-color-primary);
+}
+/* v2.8.5：选中态对勾保持白色可见 */
+.card-select :deep(.el-checkbox__input.is-checked .el-checkbox__inner::after) {
+    border-color: #fff;
 }
 .overlay-actions {
     display: flex;

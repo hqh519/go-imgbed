@@ -41,7 +41,7 @@ exports.PAGE_CONFIG_DEFAULTS = {
         },
         {
             "id": "ownerName",
-            "label": "图床名称",
+            "label": "网站名称",
             "label_en": "Site Name",
             "placeholder": "Sanyue ImgHub",
             "category": "全局设置",
@@ -49,7 +49,7 @@ exports.PAGE_CONFIG_DEFAULTS = {
         },
         {
             "id": "logoUrl",
-            "label": "图床Logo",
+            "label": "网站Logo",
             "label_en": "Site Logo",
             "category": "全局设置",
             "category_en": "Global Settings"
@@ -158,6 +158,50 @@ exports.PAGE_CONFIG_DEFAULTS = {
             "category_en": "Client Settings"
         },
         {
+            "id": "defaultUrlForm",
+            "label": "默认外链格式",
+            "label_en": "Default URL Format",
+            "type": "select",
+            "options": [
+                {
+                    "label": "URL",
+                    "value": "url",
+                    "label_en": "URL"
+                },
+                {
+                    "label": "Markdown",
+                    "value": "md",
+                    "label_en": "Markdown"
+                },
+                {
+                    "label": "HTML",
+                    "value": "html",
+                    "label_en": "HTML"
+                },
+                {
+                    "label": "BBCode",
+                    "value": "ubb",
+                    "label_en": "BBCode"
+                }
+            ],
+            "default": "url",
+            "tooltip": "上传成功后默认复制/展示的链接格式",
+            "tooltip_en": "Default link format shown/copied after upload",
+            "category": "客户端设置",
+            "category_en": "Client Settings"
+        },
+        {
+            "id": "videoTranscodeIncompatible",
+            "label": "视频兼容转码",
+            "label_en": "Video Compatibility Transcode",
+            "type": "boolean",
+            "default": true,
+            "tooltip": "开启后：上传 H.265/HEVC、ProRes、MPEG-4 Part 2 等浏览器无法播放编码的视频时，服务器自动转码为 H.264（需 ffmpeg，已内置）。已经是 H.264/AV1/VP9 的视频不会转码，无额外开销。与压缩开关相互独立",
+            "tooltip_en": "When on: videos encoded in H.265/HEVC, ProRes or MPEG-4 Part 2 (which browsers cannot play) are automatically transcoded to H.264 (requires ffmpeg, bundled). H.264/AV1/VP9 videos pass through untouched. Independent of the compression switch",
+            "category": "客户端设置",
+            "category_en": "Client Settings"
+        },
+        {
             "id": "defaultConvertToWebp",
             "label": "默认转换WebP",
             "label_en": "Default Convert to WebP",
@@ -181,8 +225,8 @@ exports.PAGE_CONFIG_DEFAULTS = {
         },
         {
             "id": "defaultCompressBar",
-            "label": "默认压缩阈值",
-            "label_en": "Default Compress Threshold",
+            "label": "最小压缩阈值",
+            "label_en": "Min Compress Threshold",
             "placeholder": "5",
             "tooltip": "图片大小超过此值将自动压缩，单位MB，范围1-20",
             "tooltip_en": "Auto-compress when image exceeds this size (MB), range 1-20",
@@ -196,18 +240,6 @@ exports.PAGE_CONFIG_DEFAULTS = {
             "placeholder": "80",
             "tooltip": "压缩后体积占原文件的百分比，范围 10-100。例如填 80 表示把原文件压缩到约 80% 的体积",
             "tooltip_en": "Target size as a percentage of the original (10-100). e.g. 80 means compress to ~80% of original size",
-            "category": "客户端设置",
-            "category_en": "Client Settings"
-        },
-        {
-            "id": "videoTranscodeIncompatible",
-            "label": "视频兼容转码",
-            "label_en": "Video Compatibility Transcode",
-            "type": "boolean",
-            "default": true,
-            "value": true,
-            "tooltip": "开启后：上传 H.265/HEVC、ProRes、MPEG-4 Part 2 等浏览器无法播放编码的视频时，服务器自动转码为 H.264（需 ffmpeg，已内置）。已经是 H.264/AV1/VP9 的视频不会转码，无额外开销。与压缩开关相互独立",
-            "tooltip_en": "When on: videos encoded in H.265/HEVC, ProRes or MPEG-4 Part 2 (which browsers cannot play) are automatically transcoded to H.264 (requires ffmpeg, bundled). H.264/AV1/VP9 videos pass through untouched. Independent of the compression switch",
             "category": "客户端设置",
             "category_en": "Client Settings"
         },
@@ -262,39 +294,6 @@ exports.PAGE_CONFIG_DEFAULTS = {
             "category_en": "Footer Settings"
         },
         {
-            "id": "defaultUrlForm",
-            "label": "默认外链格式",
-            "label_en": "Default URL Format",
-            "type": "select",
-            "options": [
-                {
-                    "label": "URL",
-                    "value": "url",
-                    "label_en": "URL"
-                },
-                {
-                    "label": "Markdown",
-                    "value": "md",
-                    "label_en": "Markdown"
-                },
-                {
-                    "label": "HTML",
-                    "value": "html",
-                    "label_en": "HTML"
-                },
-                {
-                    "label": "BBCode",
-                    "value": "ubb",
-                    "label_en": "BBCode"
-                }
-            ],
-            "default": "url",
-            "tooltip": "上传成功后默认复制/展示的链接格式",
-            "tooltip_en": "Default link format shown/copied after upload",
-            "category": "客户端设置",
-            "category_en": "Client Settings"
-        },
-        {
             "id": "allowedExtensions",
             "label": "允许的上传格式",
             "label_en": "Allowed File Extensions",
@@ -308,10 +307,10 @@ exports.PAGE_CONFIG_DEFAULTS = {
             "id": "maxUploadSizeMB",
             "label": "单文件大小上限",
             "label_en": "Max Upload Size",
-            "placeholder": "200",
-            "default": 200,
-            "tooltip": "单位 MB，留空默认 200。分片/暂存上传已落盘，可放心调大（如 1024）以上传大视频；超过上限仍会被拒绝",
-            "tooltip_en": "Unit: MB. Defaults to 200 when empty. Chunked/staged uploads are written to disk, so a larger value (e.g. 1024) is safe for big videos",
+            "placeholder": "1024",
+            "default": 1024,
+            "tooltip": "单位 MB，留空默认 1024。分片/暂存上传已落盘，可放心调大（如 1024）以上传大视频；超过上限仍会被拒绝",
+            "tooltip_en": "Unit: MB. Defaults to 1024 when empty. Chunked/staged uploads are written to disk, so a larger value (e.g. 1024) is safe for big videos",
             "category": "客户端设置",
             "category_en": "Client Settings"
         }

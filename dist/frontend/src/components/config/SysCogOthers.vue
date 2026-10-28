@@ -306,7 +306,12 @@ mounted() {
             allowedSizes: String(access.imageTransformAllowedSizes || '')
         };
 
-        this.pageSettings = { config: Array.isArray(page?.config) ? page.config : [] };
+        // 未保存过配置时 value 为空：用 default 兜底，避免开关/下拉显示与实际生效值不一致
+        this.pageSettings = {
+            config: (Array.isArray(page?.config) ? page.config : []).map(item => (
+                item.value === undefined ? { ...item, value: item.default } : item
+            ))
+        };
 
         await this.$nextTick();
         this.markSettingsSaved();

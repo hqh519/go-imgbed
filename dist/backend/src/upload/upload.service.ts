@@ -240,10 +240,10 @@ export class UploadService {
         .split(',')
         .map((s: string) => s.trim().replace(/^\./, '').toLowerCase())
         .filter(Boolean);
-      const maxMB = Number(get('maxUploadSizeMB')) || 150;
+      const maxMB = Number(get('maxUploadSizeMB')) || 1024;
       return { exts: exts.length ? exts : UploadService.DEFAULT_EXT, maxMB };
     } catch {
-      return { exts: UploadService.DEFAULT_EXT, maxMB: 100 };
+      return { exts: UploadService.DEFAULT_EXT, maxMB: 1024 };
     }
   }
 
@@ -952,7 +952,7 @@ export class UploadService {
   }
 
   /**
-   * 「视频兼容转码」开关（v2.8.4，后台 → 网页设置）。
+   * 「视频兼容转码」开关（v2.8.4 引入；v2.8.5 起挂在后台 → 其他设置 → 上传相关配置）。
    * 只对浏览器播不了的编码（H.265/HEVC 等）转 H.264，与压缩开关相互独立 ——
    * 即使关闭压缩，华为等设备的 HEVC 视频也会被转码，解决「只有声音没画面」。
    */
@@ -1011,6 +1011,87 @@ export class UploadService {
     // MIME 归一化：以扩展名为准（curl 等会把 mp4/mp3 传成 application/octet-stream）
     mime = this.normalizeMime(originalName, mime);
 
+    // IP 归属地用的请求 IP（后面所有日志都用它）
+    const uploadIp = opts.ip || '';
+
+    // 主渠道 / 备份渠道统一由 StorageChannelService 按优先级解析：
+    //   本次请求显式指定 → API Token 配置 → 「用户管理」账户指定 → 后台「上传设置」全局渠道
+    // （ignoreUploaderChannel：Web 通用 Token 分支跳过「账户指定」一级，见 UploadOptions）
+    // v2.8.5：解析提前到压缩之前 —— 去重需要按渠道范围比对，早点拿到渠道避免白压一遍
+    let main: StorageChannelInfo | null = null;
+    try {
+      main = await this.resolveMainChannel({
+        channelId: opts.channelId,
+        channelType: opts.uploadChannel,
+        uploader: opts.ignoreUploaderChannel ? undefined : opts.uploader,
+        tokenId: opts.tokenId,
+      });
+    } catch (err) {
+      return { id: '', error: (err as Error).message };
+    }
+    if (!main) {
+      const hint = opts.channelId
+        ? `渠道 ID「${opts.channelId}」不存在或已禁用`
+        : opts.uploadChannel
+          ? `没有可用的「${opts.uploadChannel}」渠道，且未设置全局主渠道`
+          : '未指定渠道，且「用户管理」「上传设置」里都没有可用的主渠道';
+      return { id: '', error: `未配置可用的主渠道（${hint}），请先在后台「存储渠道」检查` };
+    }
+
+    /*
+     * 去重（可开关）—— v2.8.5 重做，核心变化：
+     *   1) MD5 与大小一律按「压缩前的原文件」计算，且在压缩之前就查库：
+     *      命中直接返回已有外链，不再做图像审查 / 压缩 / 转码 / 上传，真正的秒传；
+     *   2) 用原始大小比对，而不是压缩后大小 —— 同一份原文件在不同压缩档位下
+     *      压出来的字节数并不稳定（JPEG 重编码、ffmpeg 转码都带浮动），
+     *      拿压缩后的大小 + 压缩后的 MD5 去比，会出现「同一个文件却判不成重复」；
+     *   3) 库里 md5 列从本版起统一存「原始文件内容 MD5」，所以原样上传的历史记录
+     *      也能被命中；老记录里 originalSize 为 0 的，用 size 兜底比较。
+     * 范围（dedupScope）：
+     *   all     —— 全库比较（默认）
+     *   channel —— 只在「同一渠道」内比较（按渠道 ID 比对；渠道名可变，不能作为匹配依据）
+     */
+    const md5 = srcPath ? await this.hashFile(srcPath) : createHash('md5').update(buffer).digest('hex');
+    if (await this.dedupEnabled()) {
+      const scope = await this.dedupScope();
+      const dup = await prisma.fileRecord.findFirst({
+        where: {
+          status: 'active',
+          md5,
+          // 原始大小优先；老数据 originalSize 缺省为 0 时用 size 兜底（未压缩时两者相同）
+          OR: [{ originalSize }, { size: originalSize }],
+        },
+        select: {
+          name: true,
+          originalName: true,
+          copies: { select: { channelId: true, status: true, isPrimary: true } },
+        },
+      });
+      let hit = dup;
+      if (dup && scope === 'channel') {
+        // 取该文件「主渠道」的渠道 ID 与本次目标渠道 ID 比对，不一致则视为不重复
+        const primaryCopy = dup.copies.find((c) => c.isPrimary) || dup.copies[0];
+        if (!primaryCopy || primaryCopy.channelId !== main.id) {
+          hit = null;
+          appLog.info(
+            'upload',
+            `去重跳过：${originalName} 与已有文件 ${dup.name} 内容相同，但渠道不同（去重范围为「仅同一渠道」）`,
+            `目标渠道=${main.name} ｜ 已有文件渠道=${primaryCopy ? primaryCopy.channelId : '未知'}`,
+            uploadIp,
+          );
+        }
+      }
+      if (hit) {
+        appLog.info(
+          'upload',
+          `命中去重：${originalName} 与已有文件 ${hit.originalName}（${hit.name}）内容相同，复用已有外链`,
+          `md5=${md5} ｜ 原始大小=${originalSize}B ｜ 范围=${scope === 'channel' ? `同渠道（${main.name}）` : '全部渠道'}`,
+          uploadIp,
+        );
+        return { id: hit.name, dedup: true, finalName: originalName };
+      }
+    }
+
     /*
      * 图像审查（可开关；接口异常时放行）。
      * 大文件（>64MB 的图片极罕见）跳过：审查接口要求整图上传，读进内存不划算。
@@ -1023,7 +1104,6 @@ export class UploadService {
 
     // IP 归属地（可开关）：主链路只读缓存，未命中则落库后异步补写 ——
     // 归属地查询是外部网络请求（最长 6 秒），绝不能挡在上传主链路上。
-    const uploadIp = opts.ip || '';
     const uploadAddress = await this.cachedAddress(uploadIp);
 
     /*
@@ -1088,62 +1168,6 @@ export class UploadService {
     const dims = srcPath
       ? await readDimensionsFile(srcPath, mime, mime.split('/')[1] || '')
       : await readDimensions(buffer, mime, mime.split('/')[1] || '');
-
-    // 主渠道 / 备份渠道统一由 StorageChannelService 按优先级解析：
-    //   本次请求显式指定 → API Token 配置 → 「用户管理」账户指定 → 后台「上传设置」全局渠道
-    // （ignoreUploaderChannel：Web 通用 Token 分支跳过「账户指定」一级，见 UploadOptions）
-    let main: StorageChannelInfo | null = null;
-    try {
-      main = await this.resolveMainChannel({
-        channelId: opts.channelId,
-        channelType: opts.uploadChannel,
-        uploader: opts.ignoreUploaderChannel ? undefined : opts.uploader,
-        tokenId: opts.tokenId,
-      });
-    } catch (err) {
-      return { id: '', error: (err as Error).message };
-    }
-    if (!main) {
-      const hint = opts.channelId
-        ? `渠道 ID「${opts.channelId}」不存在或已禁用`
-        : opts.uploadChannel
-          ? `没有可用的「${opts.uploadChannel}」渠道，且未设置全局主渠道`
-          : '未指定渠道，且「用户管理」「上传设置」里都没有可用的主渠道';
-      return { id: '', error: `未配置可用的主渠道（${hint}），请先在后台「存储渠道」检查` };
-    }
-
-    // 去重检查（可开关）：先比文件大小（快速过滤），大小一致再比 MD5（精确校验）。
-    // 两者都一致才认定为重复 —— 直接返回已存在文件的外链，不再重复上传到存储渠道。
-    // 范围（dedupScope）：
-    //   all     —— 全库比较（默认）
-    //   channel —— 只在「同一渠道」内比较（按渠道 ID 比对；渠道名可变，不能作为匹配依据）
-    const md5 = srcPath ? await this.hashFile(srcPath) : createHash('md5').update(buffer).digest('hex');
-    if (await this.dedupEnabled()) {
-      const scope = await this.dedupScope();
-      const dup = await prisma.fileRecord.findFirst({
-        where: { status: 'active', size, md5 },
-        select: {
-          name: true,
-          originalName: true,
-          copies: { select: { channelId: true, status: true, isPrimary: true } },
-        },
-      });
-      let hit = dup;
-      if (dup && scope === 'channel') {
-        // 取该文件「主渠道」的渠道 ID 与本次目标渠道 ID 比对，不一致则视为不重复
-        const primaryCopy = dup.copies.find((c) => c.isPrimary) || dup.copies[0];
-        if (!primaryCopy || primaryCopy.channelId !== main.id) hit = null;
-      }
-      if (hit) {
-        appLog.info(
-          'upload',
-          `命中去重：${originalName} 与已有文件 ${hit.originalName}（${hit.name}）内容相同，复用已有外链`,
-          `md5=${md5} ｜ 大小=${size}B ｜ 范围=${scope === 'channel' ? `同渠道（${main.name}）` : '全部渠道'}`,
-          uploadIp,
-        );
-        return { id: hit.name, dedup: true, finalName: originalName };
-      }
-    }
 
     const folder = await this.resolveFolder(opts.uploadFolder);
     const key = this.makeKeyFor(main, originalName, opts.uploadNameType, md5);

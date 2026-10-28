@@ -159,14 +159,27 @@ export default {
             const body = {
                 token: this.token.token || '<Token>',
                 username: '<用户名（可选）>',
-                userstore: 'true'
+                userstore: 'true',
+                compress: 'true',
+                compressPercent: '80',
+                nameType: 'default',
+                autoRetry: 'true'
             }
             return [
                 `POST ${this.uploadApi}`,
                 'Authorization: Bearer ' + (this.token.token || '<Token>'),
                 '',
-                '# multipart 表单字段（file 与 url 二选一）；username / userstore 为可选表单字段：',
+                '# multipart 表单字段（file 与 url 二选一）；下面除 token 外都是可选字段：',
                 JSON.stringify(body, null, 2),
+                '',
+                '# 压缩（v2.8.5 补充）：',
+                '#   compress=true 或 1  → 服务端压缩（图片走 sharp、视频/音频走 ffmpeg；gif 自动跳过）',
+                '#   compress 不传或其它值 → 原样上传，不受后台「默认开启压缩」影响（Web 通用通道只认本参数）',
+                '#   compressPercent      → 压缩到原体积的百分比（10-100），不传用后台默认值',
+                '',
+                '# 其它可选字段：',
+                '#   nameType  → default / index / origin / short（命名方式，不传用后台默认）',
+                '#   autoRetry → true / 1 时主渠道失败自动切备用渠道',
                 '',
                 '# 存储渠道优先级（v1.8.0）：',
                 '#   传了 username 且 userstore 不为 false → 用该账户在「用户管理」里绑定的存储/备份渠道，文件归属该账户',

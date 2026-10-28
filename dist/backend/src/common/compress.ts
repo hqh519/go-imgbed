@@ -107,7 +107,7 @@ async function compressImage(buffer: Buffer, ext: string, percent: number): Prom
       .rotate()
       .png({ compressionLevel: 9, adaptiveFiltering: true, palette: false })
       .toBuffer();
-    if (out.length < buffer.length * 0.98) {
+    if (out.length < buffer.length) {
       return { buffer: out, mime: 'image/png', ext: '.png', compressed: true };
     }
     return keep('png 重编码后没有变小（保持透明优先）');
@@ -164,7 +164,8 @@ async function compressVideo(buffer: Buffer, ext: string, percent: number): Prom
       await run(ffmpegPath, args, { timeout: 10 * 60 * 1000, maxBuffer: 8 * 1024 * 1024 });
       const outBuf = await fsp.readFile(dst);
       if (!outBuf.length) return keep('ffmpeg 输出为空');
-      if (outBuf.length >= buffer.length * 0.95) return keep('转码后体积未明显减小');
+      // v2.8.5：只要求「比原文件小」；压完反而更大/一样大就用原文件
+      if (outBuf.length >= buffer.length) return keep(`压缩后体积未减小（${buffer.length}B → ${outBuf.length}B），保留原文件`);
       return {
         buffer: outBuf,
         mime: outExt === '.webm' ? 'video/webm' : 'video/mp4',
@@ -196,7 +197,8 @@ async function compressAudio(buffer: Buffer, ext: string, percent: number): Prom
       await run(ffmpegPath, args, { timeout: 10 * 60 * 1000, maxBuffer: 8 * 1024 * 1024 });
       const outBuf = await fsp.readFile(dst);
       if (!outBuf.length) return keep('ffmpeg 输出为空');
-      if (outBuf.length >= buffer.length * 0.95) return keep('转码后体积未明显减小');
+      // v2.8.5：只要求「比原文件小」；压完反而更大/一样大就用原文件
+      if (outBuf.length >= buffer.length) return keep(`压缩后体积未减小（${buffer.length}B → ${outBuf.length}B），保留原文件`);
       return {
         buffer: outBuf,
         mime: outExt === '.mp3' ? 'audio/mpeg' : 'audio/mp4',
@@ -335,7 +337,7 @@ async function compressImageFile(srcPath: string, e: string, percent: number, or
       .png({ compressionLevel: 9, adaptiveFiltering: true, palette: false })
       .toFile(out);
     const st = await fsp.stat(out);
-    if (st.size < original * 0.98) {
+    if (st.size < original) {
       return { path: out, size: st.size, mime: 'image/png', ext: '.png', compressed: true };
     }
     await fsp.rm(out, { force: true }).catch(() => undefined);
@@ -351,7 +353,7 @@ async function compressImageFile(srcPath: string, e: string, percent: number, or
     if (lastSize <= target || q <= 20) break;
     q = Math.max(20, Math.round(q * Math.sqrt(target / Math.max(1, lastSize))));
   }
-  if (lastSize && lastSize < original * 0.98) {
+  if (lastSize && lastSize < original) {
     return { path: out, size: lastSize, mime: 'image/webp', ext: '.webp', compressed: true };
   }
   await fsp.rm(out, { force: true }).catch(() => undefined);
@@ -384,9 +386,10 @@ async function compressVideoFile(srcPath: string, e: string, percent: number, or
       ];
   await run(ffmpegPath, args, { timeout: 30 * 60 * 1000, maxBuffer: 16 * 1024 * 1024 });
   const st = await fsp.stat(out);
-  if (st.size >= original * 0.95) {
+  // v2.8.5：压缩后必须比原文件小，否则丢弃压缩产物、继续用原文件
+  if (st.size >= original) {
     await fsp.rm(out, { force: true }).catch(() => undefined);
-    return keep('转码后体积未明显减小');
+    return keep(`压缩后体积未减小（${original}B → ${st.size}B），保留原文件`);
   }
   return {
     path: out,
@@ -417,9 +420,10 @@ async function compressAudioFile(srcPath: string, e: string, percent: number, or
     : ['-y', '-i', srcPath, '-vn', '-c:a', 'aac', '-b:a', `${bitrate}k`, '-movflags', '+faststart', out];
   await run(ffmpegPath, args, { timeout: 30 * 60 * 1000, maxBuffer: 16 * 1024 * 1024 });
   const st = await fsp.stat(out);
-  if (st.size >= original * 0.95) {
+  // v2.8.5：压缩后必须比原文件小，否则丢弃压缩产物、继续用原文件
+  if (st.size >= original) {
     await fsp.rm(out, { force: true }).catch(() => undefined);
-    return keep('转码后体积未明显减小');
+    return keep(`压缩后体积未减小（${original}B → ${st.size}B），保留原文件`);
   }
   return {
     path: out,
@@ -578,6 +582,16 @@ async function transcodeVideoFile(srcPath: string, original: number): Promise<Fi
     if (!st.size) {
       await fsp.rm(out, { force: true }).catch(() => undefined);
       return keep('兼容转码输出为空');
+    }
+    /*
+     * v2.8.5：兼容转码的目的是「让浏览器能播」，与压缩目标不同 ——
+     * 即使转码后体积变大也必须保留（否则又回到「只有声音没画面」），
+     * 但要在日志里留一条记录，便于解释「为什么这个视频没变小」。
+     */
+    if (st.size >= original) {
+      console.warn(
+        `[compress] 兼容转码后体积变大（${original}B → ${st.size}B），为保证浏览器可播放仍使用转码结果`,
+      );
     }
     return { path: out, size: st.size, mime: 'video/mp4', ext: '.mp4', compressed: true };
   } catch (err) {

@@ -1136,7 +1136,7 @@ export default {
 }
 .detail-actions {
     display: flex;
-    justify-content: right;
+    justify-content: flex-start;
     margin-bottom: 10px;
     flex-wrap: wrap;
     gap: 8px;

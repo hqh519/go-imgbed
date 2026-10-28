@@ -635,7 +635,7 @@ let ManageController = class ManageController {
     async list(req, q) {
         if (q.action === 'info') {
             if (!this.admin(req))
-                return { forbidden: true, totalFiles: 0, channelStats: {}, typeStats: {}, uploadTrend: { labels: [], total: [] } };
+                return { forbidden: true, totalFiles: 0, channelStats: {}, typeStats: {}, uploadSourceStats: {}, mimeStats: {}, uploadTrend: { labels: [], total: [], groupBy: {} } };
             return this.indexInfo(q);
         }
         const session = (0, auth_guard_1.currentSession)(req);
@@ -687,18 +687,21 @@ let ManageController = class ManageController {
                             ? dirName.includes(search)
                             : searchType === 'user'
                                 ? (r.uploader || '').toLowerCase().includes(search)
-                                : searchType === 'other'
-                                    ? (r.md5 || '').toLowerCase().includes(search) ||
-                                        mime.includes(search) ||
-                                        (r.ip || '').includes(search)
-                                    :
-                                        r.originalName.toLowerCase().includes(search) ||
-                                            r.name.toLowerCase().includes(search) ||
-                                            (r.md5 || '').toLowerCase().includes(search) ||
-                                            dirName.includes(search) ||
-                                            tagNames.includes(search) ||
+                                : searchType === 'note'
+                                    ? (r.note || '').toLowerCase().includes(search)
+                                    : searchType === 'other'
+                                        ? (r.md5 || '').toLowerCase().includes(search) ||
                                             mime.includes(search) ||
-                                            (r.uploader || '').toLowerCase().includes(search);
+                                            (r.ip || '').includes(search)
+                                        :
+                                            r.originalName.toLowerCase().includes(search) ||
+                                                r.name.toLowerCase().includes(search) ||
+                                                (r.md5 || '').toLowerCase().includes(search) ||
+                                                dirName.includes(search) ||
+                                                tagNames.includes(search) ||
+                                                mime.includes(search) ||
+                                                (r.uploader || '').toLowerCase().includes(search) ||
+                                                (r.note || '').toLowerCase().includes(search);
                 if (!hit)
                     return false;
             }
@@ -910,6 +913,8 @@ let ManageController = class ManageController {
         const channelStats = {};
         const userStats = {};
         const typeStats = {};
+        const uploadSourceStats = {};
+        const mimeStats = {};
         for (const r of rows) {
             const p = primaryOf(r);
             const chLabel = p?.channel
@@ -921,6 +926,10 @@ let ManageController = class ManageController {
             const metas = (0, file_view_1.safeParse)(r.metas);
             const listType = metas.ListType || 'None';
             typeStats[listType] = (typeStats[listType] || 0) + 1;
+            const sourceLabel = (0, file_view_1.normalizeUploadSource)(r.uploadSource);
+            uploadSourceStats[sourceLabel] = (uploadSourceStats[sourceLabel] || 0) + 1;
+            const mimeLabel = (0, file_view_1.fileTypeOf)(r.mime);
+            mimeStats[mimeLabel] = (mimeStats[mimeLabel] || 0) + 1;
         }
         const brief = (r) => r
             ? {
@@ -957,6 +966,8 @@ let ManageController = class ManageController {
         const byType = {};
         const byName = {};
         const byUser = {};
+        const bySource = {};
+        const byMime = {};
         for (const r of rows) {
             const key = isoDayMs(r.createdAt.getTime() - offMin * 60000);
             const i = labelIndex.get(key);
@@ -967,15 +978,23 @@ let ManageController = class ManageController {
             const typeLabel = p?.channel ? file_view_1.CHANNEL_LABEL[p.channel.type] || p.channel.type : 'Unknown';
             const nameLabel = p?.channel?.name || typeLabel;
             const userLabel = r.uploader || '(匿名)';
+            const sourceLabel = (0, file_view_1.normalizeUploadSource)(r.uploadSource);
+            const mimeLabel = (0, file_view_1.fileTypeOf)(r.mime);
             if (!byType[typeLabel])
                 byType[typeLabel] = new Array(labels.length).fill(0);
             if (!byName[nameLabel])
                 byName[nameLabel] = new Array(labels.length).fill(0);
             if (!byUser[userLabel])
                 byUser[userLabel] = new Array(labels.length).fill(0);
+            if (!bySource[sourceLabel])
+                bySource[sourceLabel] = new Array(labels.length).fill(0);
+            if (!byMime[mimeLabel])
+                byMime[mimeLabel] = new Array(labels.length).fill(0);
             byType[typeLabel][i] += 1;
             byName[nameLabel][i] += 1;
             byUser[userLabel][i] += 1;
+            bySource[sourceLabel][i] += 1;
+            byMime[mimeLabel][i] += 1;
         }
         const buildSeries = (map) => {
             const arr = Object.entries(map)
@@ -997,6 +1016,8 @@ let ManageController = class ManageController {
             channelStats,
             userStats,
             typeStats,
+            uploadSourceStats,
+            mimeStats,
             newestFile: brief(rows[totalFiles - 1]),
             oldestFile: brief(rows[0]),
             recentFiles,
@@ -1017,6 +1038,8 @@ let ManageController = class ManageController {
                     channel: { series: buildSeries(byType) },
                     channelName: { series: buildSeries(byName) },
                     user: { series: buildSeries(byUser) },
+                    uploadSource: { series: buildSeries(bySource) },
+                    mime: { series: buildSeries(byMime) },
                 },
                 range: { startDate: isoDayMs(startMs), endDate: isoDayMs(endMs) },
             },
@@ -2091,7 +2114,7 @@ let UserConfigController = class UserConfigController {
                 .split(',')
                 .map((x) => x.trim().replace(/^\./, '').toLowerCase())
                 .filter(Boolean),
-            maxUploadSizeMB: Number(pv('maxUploadSizeMB', 150)) || 150,
+            maxUploadSizeMB: Number(pv('maxUploadSizeMB', 1024)) || 1024,
             wallpaperEnabled: pv('wallpaperEnabled', false) === true,
             autoDarkMode: pv('autoDarkMode', true) !== false,
             bkInterval: Number(pv('bkInterval', 3000)) || 3000,

@@ -94,11 +94,15 @@ function stripAnchor(s: string): string {
   return String(s || '').split('#')[0].trim();
 }
 
-/** 去掉协议前缀，返回 host[:port]（用于站点级兜底比较） */
+/**
+ * 去掉协议前缀与路径，返回 host[:port]（白名单按「域名 + 端口」比对）。
+ * v2.8.5：统一小写、去尾部斜点，避免用户填 Example.COM 或 example.com. 时匹配不上。
+ */
 function hostOf(urlOrHost: string): string {
   const s = stripAnchor(urlOrHost).replace(/^[a-zA-Z][a-zA-Z0-9+.\-]*:\/\//, '');
   const slash = s.indexOf('/');
-  return slash === -1 ? s : s.slice(0, slash);
+  const host = slash === -1 ? s : s.slice(0, slash);
+  return host.trim().toLowerCase().replace(/\.+$/, '');
 }
 
 /**
@@ -240,7 +244,7 @@ async function bootstrap() {
           const sources = sourceAddressesOf(req);
           if (!lists.white.some((entry) => sourceAllowed(entry, sources))) {
             console.error(
-              `[security] 白名单拦截 ip=${ip} referer=${String(req.headers.referer || '-')} path=${req.originalUrl || req.url}`,
+              `[security] 白名单拦截 ip=${ip} referer=${String(req.headers.referer || '-')} path=${req.originalUrl || req.url} ｜ 放行清单=${lists.white.join(',') || '(空)'}`,
             );
             return res.status(403).send('Forbidden: source not in whitelist');
           }

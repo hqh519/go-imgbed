@@ -325,6 +325,7 @@ import { copyText } from '@/utils/clipboard'
 import { fileLink, getLinkPrefix } from '@/utils/fileLink'
 // v2.5.0（v20261023-2）：链接模式输入框自动从脏文本中提取有效 URL
 import { extractUrlsFromText } from '@/utils/urlExtract'
+import { parseExtList } from '@/utils/upload/compressExtensions'
 
 const COPY_FORMATS = [
     { value: 'url', label: 'URL', initial: 'Url', icon: 'link' },
@@ -439,6 +440,7 @@ props: {
      * 上传限制的「本次覆盖」值（来自上传设置弹窗）：
      *   limitExtensions —— 逗号分隔的扩展名，如 'jpg,png,mp4'；空 = 跟随后台
      *   limitMaxSizeMB  —— 单文件大小上限（MB）；0 / 空 = 跟随后台
+     *   limitCompressExts —— 禁止压缩的格式（逗号分隔）；空 = 不做排除，全部按规则压缩
      * 只存在内存里，刷新页面即恢复后台全局设置。
      */
     limitExtensions: {
@@ -449,6 +451,12 @@ props: {
     limitMaxSizeMB: {
         type: Number,
         default: 0,
+        required: false
+    },
+    /** 禁止压缩格式（本次覆盖，逗号分隔；空 = 不排除任何格式） */
+    limitCompressExts: {
+        type: String,
+        default: '',
         required: false
     }
 },
@@ -571,12 +579,20 @@ computed: {
             ? v
             : ['jpg', 'png', 'gif', 'jpeg', 'webp', 'bmp', 'mp4', 'webm', 'mov', 'm4v', 'mp3', 'm4a', 'aac', 'ogg']
     },
-    /** 单文件大小上限（MB）：上传设置覆盖优先，其次系统设置，默认 200 */
+    /**
+     * 允许压缩的格式（v2.8.5）：
+     * v2.8.5：上传设置里的「禁止压缩格式」清单 —— 清单内的格式跳过压缩、原样上传；
+     * 留空则所有可压缩格式（内置 COMPRESSIBLE_EXTENSIONS）都按规则压缩。
+     */
+    compressExcludedExts() {
+        return parseExtList(this.limitCompressExts)
+    },
+    /** 单文件大小上限（MB）：上传设置覆盖优先，其次系统设置，默认 1024 */
     maxUploadSizeMB() {
         const local = Number(this.limitMaxSizeMB)
         if (Number.isFinite(local) && local > 0) return local
         const v = Number(this.userConfig?.maxUploadSizeMB)
-        return Number.isFinite(v) && v > 0 ? v : 200
+        return Number.isFinite(v) && v > 0 ? v : 1024
     },
     /** 文件选择器 accept 属性（与服务端白名单保持一致） */
     acceptAttr() {
@@ -966,18 +982,21 @@ methods: {
         return name.substring(0, keepStart) + '...' + name.slice(-4) + ext
     },
     async uploadFile(file) {
+        const pendingItem = this.fileList.find(item => item.uid === file.file.uid)
         // 如果fileList中不存在该文件，说明已被删除，直接返回
-        if (!this.fileList.find(item => item.uid === file.file.uid)) {
+        if (!pendingItem) {
             return
         }
 
-        // 手动上传模式：关闭「自动上传」后文件仅入列等待，用户点「上传」才真正发送
-        if (!this.autoUpload && !this.forcedUpload) {
-            const pendingItem = this.fileList.find(item => item.uid === file.file.uid)
-            if (pendingItem) {
-                pendingItem.status = 'waiting'
-                pendingItem.editableName = true
-            }
+        /*
+         * 手动上传模式：关闭「自动上传」后文件仅入列等待，用户点「上传」才真正发送
+         * （可先改文件名）。外链条目例外 —— 它不产生任何网络请求，只是把已经生成好的
+         * 外链格式标记为完成，若也被这道闸门拦住，点「外链」后条目会一直停在等待中，
+         * 表现为「列表里显示了文件，但没有外链格式」（v2.8.5 修复）。
+         */
+        if (!this.autoUpload && !this.forcedUpload && pendingItem.uploadChannel !== 'external') {
+            pendingItem.status = 'waiting'
+            pendingItem.editableName = true
             return
         }
 
@@ -1951,9 +1970,11 @@ methods: {
         const ext = (processed.name.split('.').pop() || '').toLowerCase()
         const isImage = String(processed.type || '').startsWith('image/')
         const isGif = processed.type === 'image/gif' || ext === 'gif'
+        // v2.8.5：禁止压缩格式闸门 —— 命中清单 → 原样上传，不做 WebP 之外的任何处理
+        const extExcluded = this.compressExcludedExts.includes(ext)
         let serverCompress = false
 
-        if (this.customerCompress && !isGif) {
+        if (this.customerCompress && !isGif && !extExcluded) {
             if (isImage) {
                 // 已转 WebP：本身已是压缩产物，不再二次压缩
                 if (!convertedToWebp && processed.size / 1024 / 1024 > this.compressBar) {
@@ -2151,7 +2172,25 @@ methods: {
             if (entries.length) await this.uploadLocalEntries(entries)
         }
 
-        if (stringItems.length > 0) this.uploadFromUrl(stringItems)
+        if (stringItems.length > 0) {
+            /*
+             * v2.8.5：链接模式下，页面级 Ctrl+V 粘贴的文本一律并入输入框，
+             * 与「在输入框内粘贴」行为一致 —— 修复 Chrome 等浏览器里
+             * 「粘贴后点外链却生成不了外链格式」的问题（原实现无条件走
+             * uploadFromUrl 即转存拉取，绕过了外链模式，输入框始终是空的，
+             * 此时点「外链」只会提示没有待处理条目）。转存/外链统一由
+             * 对应按钮基于输入框内容执行，跨浏览器行为一致。
+             * 文件模式维持原「Ctrl+V 直接拉取上传」行为不变。
+             */
+            if (this.uploadMethod === 'paste') {
+                const text = clipboardData.getData('text/plain') || '';
+                if (text) {
+                    this.pastedUrls = this.pastedUrls ? this.pastedUrls + '\n' + text : text;
+                }
+            } else {
+                this.uploadFromUrl(stringItems);
+            }
+        }
     },
     /**
      * v2.6.0：切换「文件压缩」开关（列表栏压缩按钮）。
@@ -2343,7 +2382,11 @@ methods: {
         const pending = this.fileList.filter(item => item.status === 'waiting'
             && (item.uploadChannel === 'external' || (!onlyExternal && item.isRemoteUrl)));
         if (!pending.length) {
-            this.$message({ type: 'info', message: this.$t('uploadForm.noPendingFiles') });
+            // v2.8.5：外链按钮重复点击时输入框已无新链接，属正常操作，
+            // 不再弹「没有等待上传的文件」提示；「上传」按钮保留该提示。
+            if (!onlyExternal) {
+                this.$message({ type: 'info', message: this.$t('uploadForm.noPendingFiles') });
+            }
             return;
         }
         // 外链条目：标记上传中并走 external 通道（不实际上传，仅记录外链）
@@ -2672,6 +2715,10 @@ beforeDestroy() {
     --upload-card-height: 45vh;
     --upload-card-busy-height: 17vh;
     --upload-list-height: 7vh;
+    /* v20261028：列表区最小收缩高度 = 顶行功能栏的高度下限。
+       空列表卡片固定 7vh，在矮视口（手机 / 矮窗口）下会小于顶栏的 44/52px 下限，
+       导致顶行功能栏被 overflow:hidden 裁掉 —— 卡片一律不得矮于顶栏。 */
+    --upload-list-min: max(var(--upload-list-height), 44px);
     --upload-list-inner-height: var(--upload-list-height);
     /* 列表区封顶高度（滚动阈值）：默认 58vh 兜底；
        JS 会按「头部 + 3 个条目」实测后覆盖（--upload-list-max-h），
@@ -2687,7 +2734,7 @@ beforeDestroy() {
     flex-direction: column;
     justify-content: flex-start;
     align-items: center;
-    height: calc(var(--upload-card-height) + var(--upload-list-height) + var(--upload-list-gap) + var(--upload-card-vertical-padding));
+    height: calc(var(--upload-card-height) + var(--upload-list-min) + var(--upload-list-gap) + var(--upload-card-vertical-padding));
 }
 /* 有文件（列表展开）：外层不再用视口高度硬撑，改由内容自然撑开。
    （v2.0.0：不再用 :has() —— 部分浏览器不支持导致 PC 端列表区被裁；
@@ -2695,15 +2742,16 @@ beforeDestroy() {
 .upload-form.upload-form-busy {
     height: auto;
 }
-/* 列表卡片：高度 = 内容自适应；滚动条由内部 el-scrollbar 的 max-height 触发 */
+/* 列表卡片：高度 = 内容自适应；滚动条由内部 el-scrollbar 的 max-height 触发。
+   v20261028：min-height 不再覆盖基础规则 —— 两种状态共用「不得矮于顶行功能栏」的下限 */
 .upload-list-card.upload-list-busy {
     flex: 0 0 auto;
     height: auto;
-    min-height: var(--upload-list-height);
 }
 .upload-list-card {
     width: 55vw;
     height: var(--upload-list-height);
+    min-height: var(--upload-list-min);
     margin-top: var(--upload-list-gap);
     display: flex;
     flex-direction: column;
@@ -2813,6 +2861,11 @@ beforeDestroy() {
     overflow: hidden;
 }
 @media (max-width: 768px) {
+    /* v20261028：手机端顶行功能栏下限 52px（与 .upload-list-dashboard 移动端下限一致），
+       空列表卡片固定 7vh 在矮视口下会裁掉顶栏 —— 卡片最小高度跟顶栏对齐 */
+    .upload-form {
+        --upload-list-min: max(var(--upload-list-height), 52px);
+    }
     .upload-list-card {
         width: 70vw;
     }
@@ -2996,10 +3049,12 @@ beforeDestroy() {
     box-shadow: var(--el-upload-dragger-hover-box-shadow);
 }
 /* 有文件（列表展开）时卡片整体收缩，与链接模式的 .upload-card-busy.paste-card 对齐。
-   v2.8.0：vh 高度在移动端软键盘弹出（视口骤缩）时会把卡片压得失真，加 px 兜底。 */
+   v2.8.0：vh 高度在移动端软键盘弹出（视口骤缩）时会把卡片压得失真，加 px 兜底。
+   v2.8.5：最小收缩高度 150 → 135（下调 10%），内容超出时区域内部滚动。 */
 .upload-card-busy.default-card {
     height: var(--upload-card-busy-height);
-    min-height: 150px;
+    min-height: 135px;
+    overflow-y: auto;
 }
 
 /* 上传时的边缘流光旋转效果（与 .paste-card.is-uploading 完全一致） */
@@ -3198,9 +3253,12 @@ html.dark .el-upload__text :deep(em) {
     align-items: center;
 }
 .upload-card-busy.paste-card {
-    height: var(--upload-card-busy-height);
-    /* v2.8.0：px 兜底，防软键盘弹出时被无限压缩 */
-    min-height: 150px;
+    /* v20261028：固定 17vh + overflow-y:auto 会把「输入框 96px 下限 + 按钮行」裁出
+       滚动条/切边（17vh < 内容高时）。改为 height:auto 由内容撑开：收缩效果靠
+       min-height 17vh 保留，任何视口下都不出现内部滚动条、不遮挡输入框和按钮。 */
+    height: auto;
+    min-height: var(--upload-card-busy-height);
+    overflow: visible;
 }
 .upload-card-textarea {
     width: 50vw;
@@ -3216,8 +3274,9 @@ html.dark .el-upload__text :deep(em) {
     overflow: hidden;
 }
 .upload-card-busy .upload-card-textarea {
-    height: 50%;
-    /* v2.8.0：px 兜底，防软键盘弹出时被无限压缩 */
+    /* v20261028：50% + min 96px 在矮卡里会裁掉 rows=4 的内层输入框上下边框；
+       改为高度跟随内层内容（rows=4），卡片随内容撑开，永不再裁 */
+    height: auto;
     min-height: 96px;
 }
 
@@ -3367,15 +3426,17 @@ html.dark .el-upload__text :deep(em) {
     background: color-mix(in srgb, var(--primary-color, #2563EB) 10%, transparent) !important;
 }
 
-.paste-card-method-btn.is-active {
-    color: #fff !important;
-    background: var(--primary-color, #2563EB) !important;
-    border-color: var(--primary-color, #2563EB) !important;
+/* v2.8.5：点击「转存 / 外链」后不再填充主题色底（去掉点击背景色），
+   保持与未点击时一致的基础外观，仅保留极轻的边框强调 */
+.paste-card-method-btn.is-active,
+.paste-card-method-btn.is-active:hover,
+.paste-card-method-btn:active {
+    color: var(--primary-color-accent, var(--el-color-primary)) !important;
+    background: color-mix(in srgb, var(--primary-color, #2563EB) 10%, transparent) !important;
+    border-color: color-mix(in srgb, var(--primary-color, #2563EB) 52%, var(--glass-border, rgba(128, 128, 128, 0.25))) !important;
 }
-
-.paste-card-method-btn.is-active:hover {
-    color: #fff !important;
-    background: color-mix(in srgb, var(--primary-color, #2563EB) 88%, #000) !important;
+.paste-card-method-btn:active {
+    transform: translateY(0) !important;
 }
 
 .upload-card-busy .paste-card-method-btns {
@@ -3511,8 +3572,9 @@ html.dark .el-upload__text :deep(em) {
 
     .upload-card-busy.paste-card {
         height: var(--upload-card-busy-height);
-        /* v2.8.2：收缩下限与「文件」模式外层区域一致（原 min-height:0 会被软键盘压没） */
-        min-height: 150px;
+        /* v2.8.2：收缩下限与「文件」模式外层区域一致（原 min-height:0 会被软键盘压没）
+           v2.8.5：150 → 135（与文件模式同步下调 10%） */
+        min-height: 135px;
         max-height: var(--upload-card-busy-height);
         padding: 5px;
     }
@@ -3560,7 +3622,11 @@ html.dark .el-upload__text :deep(em) {
 
     .paste-card-actions {
         flex: 0 0 auto;
-        width: 100% !important;
+        /* v2.8.5：按钮行宽对齐输入框（输入框为 calc(100% - 4px)），
+           上传按钮左缘对齐输入框左边框、外链按钮右缘对齐右边框 */
+        width: calc(100% - 4px) !important;
+        margin-left: auto;
+        margin-right: auto;
         margin-top: 8px;
         gap: 6px;
     }
@@ -3639,6 +3705,21 @@ html.dark .el-upload__text :deep(em) {
 /* 收缩态直接跟随卡片内容区，避免固定 vh 与边框产生亚像素误差 */
 .upload-list-card:not(.upload-list-busy) .upload-list-dashboard {
     height: 100%;
+}
+
+/*
+ * v2.8.5：移动端软键盘弹出时（视觉视口骤缩，7vh 会变得极小），
+ * 列表顶行功能栏不再被压小 —— 保持默认加载状态的高度，压缩/复制/重试/删除完整可见。
+ */
+@media (max-width: 768px) {
+    .upload-list-dashboard {
+        min-height: 52px;
+        height: auto;
+        padding: 4px 10px;
+    }
+    .upload-list-dashboard-action {
+        flex-shrink: 0;
+    }
 }
 
 /* Enhanced Starry Sky Effect */

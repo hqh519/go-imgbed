@@ -109,6 +109,9 @@
               <el-radio-button label="channelName">{{ $t('sysStatus.byChannelName') }}</el-radio-button>
               <!-- 用户趋势：按上传用户分组 -->
               <el-radio-button label="user">{{ $t('sysStatus.byUser') }}</el-radio-button>
+              <!-- v2.8.5：新增「上传接口」「类型」两个维度 -->
+              <el-radio-button label="uploadSource">{{ $t('sysStatus.byUploadSource') }}</el-radio-button>
+              <el-radio-button label="mime">{{ $t('sysStatus.byMime') }}</el-radio-button>
             </el-radio-group>
           </div>
         </div>
@@ -176,6 +179,41 @@
         </div>
       </div>
 
+      <!-- 上传类型分布 - 饼状图（v2.8.5：图片 / 视频 / 音频 / 其他，按 mime 归类；v2.8.5 修：与「上传接口分布」互换位置） -->
+      <div class="chart-card">
+        <div class="chart-header">
+          <font-awesome-icon icon="image" />
+          <span>{{ $t('sysStatus.mimeDistribution') }}</span>
+        </div>
+        <div class="chart-content">
+          <div v-if="Object.keys(indexInfo.mimeStats || {}).length === 0" class="empty-state">
+            <font-awesome-icon icon="inbox" />
+            <span>{{ $t('sysStatus.noData') }}</span>
+          </div>
+          <div v-else class="pie-chart-container">
+            <div class="pie-chart-wrapper">
+              <Doughnut :data="mimeChartData" :options="chartOptions" />
+              <div class="chart-center-text">
+                <div class="center-value">{{ Object.keys(indexInfo.mimeStats).length }}</div>
+                <div class="center-label">{{ $t('sysStatus.mimeTypes') }}</div>
+              </div>
+            </div>
+            <div class="chart-legend">
+              <div
+                v-for="(count, type, index) in indexInfo.mimeStats"
+                :key="type"
+                class="legend-item"
+              >
+                <span class="legend-color" :style="{ background: getTypeChartColor(index) }"></span>
+                <span class="legend-label">{{ fileTypeLabel(type) }}</span>
+                <span class="legend-value">{{ count.toLocaleString() }}</span>
+                <span class="legend-percent">{{ getPercentage(count, indexInfo.totalFiles) }}%</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- 上传用户分布 - 饼状图 -->
       <div class="chart-card">
         <div class="chart-header">
@@ -203,6 +241,41 @@
               >
                 <span class="legend-color" :style="{ background: getTypeChartColor(index) }"></span>
                 <span class="legend-label">{{ user }}</span>
+                <span class="legend-value">{{ count.toLocaleString() }}</span>
+                <span class="legend-percent">{{ getPercentage(count, indexInfo.totalFiles) }}%</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 上传接口分布 - 饼状图（v2.8.5：网页上传 / WebDAV / API-Web / API-S3） -->
+      <div class="chart-card">
+        <div class="chart-header">
+          <font-awesome-icon icon="plug" />
+          <span>{{ $t('sysStatus.uploadSourceDistribution') }}</span>
+        </div>
+        <div class="chart-content">
+          <div v-if="Object.keys(indexInfo.uploadSourceStats || {}).length === 0" class="empty-state">
+            <font-awesome-icon icon="inbox" />
+            <span>{{ $t('sysStatus.noData') }}</span>
+          </div>
+          <div v-else class="pie-chart-container">
+            <div class="pie-chart-wrapper">
+              <Doughnut :data="sourceChartData" :options="chartOptions" />
+              <div class="chart-center-text">
+                <div class="center-value">{{ Object.keys(indexInfo.uploadSourceStats).length }}</div>
+                <div class="center-label">{{ $t('sysStatus.sourceTypes') }}</div>
+              </div>
+            </div>
+            <div class="chart-legend">
+              <div
+                v-for="(count, source, index) in indexInfo.uploadSourceStats"
+                :key="source"
+                class="legend-item"
+              >
+                <span class="legend-color" :style="{ background: getChartColor(index) }"></span>
+                <span class="legend-label">{{ uploadSourceLabel(source) }}</span>
                 <span class="legend-value">{{ count.toLocaleString() }}</span>
                 <span class="legend-percent">{{ getPercentage(count, indexInfo.totalFiles) }}%</span>
               </div>
@@ -735,6 +808,30 @@ export default {
         }]
       }
     },
+    // 上传接口分布图表数据（v2.8.5）
+    sourceChartData() {
+      const stats = this.indexInfo.uploadSourceStats || {}
+      return {
+        labels: Object.keys(stats),
+        datasets: [{
+          data: Object.values(stats),
+          backgroundColor: this.channelColors.slice(0, Object.keys(stats).length),
+          borderWidth: 0
+        }]
+      }
+    },
+    // 上传类型分布图表数据（v2.8.5）
+    mimeChartData() {
+      const stats = this.indexInfo.mimeStats || {}
+      return {
+        labels: Object.keys(stats),
+        datasets: [{
+          data: Object.values(stats),
+          backgroundColor: this.typeColors.slice(0, Object.keys(stats).length),
+          borderWidth: 0
+        }]
+      }
+    },
     // 上传用户分布图表数据
     userChartData() {
       const stats = this.indexInfo.userStats || {}
@@ -1018,11 +1115,37 @@ export default {
       return this.trendColors[index % this.trendColors.length]
     },
     // 格式化趋势序列名称
+    /** 上传接口展示名（Default / WebDAV / API-Web / API-S3 → 文案） */
+    uploadSourceLabel(raw) {
+      const key = String(raw || '')
+      const map = {
+        Default: 'filter.uploadSourceDefault',
+        WebDAV: 'filter.uploadSourceWebdav',
+        'API-Web': 'filter.uploadSourceApiWeb',
+        'API-S3': 'filter.uploadSourceApiS3'
+      }
+      return map[key] ? this.$t(map[key]) : key || this.$t('sysStatus.unknown')
+    },
+    /** 上传类型展示名（image / video / audio / other → 图片 / 视频 / 音频 / 其他） */
+    fileTypeLabel(raw) {
+      const key = String(raw || '')
+      const map = {
+        image: 'filter.image',
+        video: 'filter.video',
+        audio: 'filter.audio',
+        other: 'filter.other'
+      }
+      return map[key] ? this.$t(map[key]) : key || this.$t('sysStatus.unknown')
+    },
     formatTrendSeriesName(series) {
       if (series?.isOther || series?.name === '__other__') {
         return this.$t('sysStatus.otherChannels')
       }
-      return series?.name || this.$t('sysStatus.unknown')
+      const name = series?.name || this.$t('sysStatus.unknown')
+      // 新增维度：上传接口 / 上传类型的原始值是英文枚举，展示前翻译一下
+      if (this.trendGroupBy === 'uploadSource') return this.uploadSourceLabel(name)
+      if (this.trendGroupBy === 'mime') return this.fileTypeLabel(name)
+      return name
     },
     // 十六进制颜色转换为 rgba
     hexToRgba(hex, alpha) {
@@ -1174,7 +1297,7 @@ export default {
       }
     },
 
-    // 备份数据 - 使用前端辅助备份流程
+    // 配置备份（v2.8.5：只导出配置项，不再遍历文件记录）
     async backupData() {
       if (this.isProcessing) {
         this.$message.warning(this.$t('sysStatus.operationInProgress'))
@@ -1195,8 +1318,10 @@ export default {
       try {
         const result = await this.currentBackupGenerator.generateBackup()
         
-        // 成功完成
-        const settingsMsg = result.settingsCount > 0 ? this.$t('sysStatus.backupSuccessWithSettings', { fileCount: result.fileCount.toLocaleString(), settingsCount: result.settingsCount }) : this.$t('sysStatus.backupSuccess', { count: result.fileCount.toLocaleString() })
+        // 成功完成（配置备份：只报配置项数量）
+        const settingsMsg = result.settingsCount > 0
+          ? this.$t('sysStatus.backupSuccessWithSettings', { settingsCount: result.settingsCount })
+          : this.$t('sysStatus.backupSuccess', { count: result.settingsCount })
         this.$message.success(settingsMsg)
       } catch (error) {
         // 错误处理
@@ -1305,7 +1430,7 @@ export default {
         await new Promise(resolve => setTimeout(resolve, 500))
         await this.rebuildIndex()
       } catch (error) {
-        console.error('恢复数据失败:', error)
+        console.error('恢复配置失败:', error)
         
         // 出错时重置状态
         this.restoring = false

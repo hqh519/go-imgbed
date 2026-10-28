@@ -109,11 +109,11 @@ let UploadService = class UploadService {
                 .split(',')
                 .map((s) => s.trim().replace(/^\./, '').toLowerCase())
                 .filter(Boolean);
-            const maxMB = Number(get('maxUploadSizeMB')) || 150;
+            const maxMB = Number(get('maxUploadSizeMB')) || 1024;
             return { exts: exts.length ? exts : UploadService_1.DEFAULT_EXT, maxMB };
         }
         catch {
-            return { exts: UploadService_1.DEFAULT_EXT, maxMB: 100 };
+            return { exts: UploadService_1.DEFAULT_EXT, maxMB: 1024 };
         }
     }
     signatureOk(buf, ext) {
@@ -683,13 +683,61 @@ let UploadService = class UploadService {
         }
         const originalSize = opts.originalSize && opts.originalSize > 0 ? opts.originalSize : size;
         mime = this.normalizeMime(originalName, mime);
+        const uploadIp = opts.ip || '';
+        let main = null;
+        try {
+            main = await this.resolveMainChannel({
+                channelId: opts.channelId,
+                channelType: opts.uploadChannel,
+                uploader: opts.ignoreUploaderChannel ? undefined : opts.uploader,
+                tokenId: opts.tokenId,
+            });
+        }
+        catch (err) {
+            return { id: '', error: err.message };
+        }
+        if (!main) {
+            const hint = opts.channelId
+                ? `渠道 ID「${opts.channelId}」不存在或已禁用`
+                : opts.uploadChannel
+                    ? `没有可用的「${opts.uploadChannel}」渠道，且未设置全局主渠道`
+                    : '未指定渠道，且「用户管理」「上传设置」里都没有可用的主渠道';
+            return { id: '', error: `未配置可用的主渠道（${hint}），请先在后台「存储渠道」检查` };
+        }
+        const md5 = srcPath ? await this.hashFile(srcPath) : (0, crypto_1.createHash)('md5').update(buffer).digest('hex');
+        if (await this.dedupEnabled()) {
+            const scope = await this.dedupScope();
+            const dup = await prisma_1.prisma.fileRecord.findFirst({
+                where: {
+                    status: 'active',
+                    md5,
+                    OR: [{ originalSize }, { size: originalSize }],
+                },
+                select: {
+                    name: true,
+                    originalName: true,
+                    copies: { select: { channelId: true, status: true, isPrimary: true } },
+                },
+            });
+            let hit = dup;
+            if (dup && scope === 'channel') {
+                const primaryCopy = dup.copies.find((c) => c.isPrimary) || dup.copies[0];
+                if (!primaryCopy || primaryCopy.channelId !== main.id) {
+                    hit = null;
+                    app_log_1.appLog.info('upload', `去重跳过：${originalName} 与已有文件 ${dup.name} 内容相同，但渠道不同（去重范围为「仅同一渠道」）`, `目标渠道=${main.name} ｜ 已有文件渠道=${primaryCopy ? primaryCopy.channelId : '未知'}`, uploadIp);
+                }
+            }
+            if (hit) {
+                app_log_1.appLog.info('upload', `命中去重：${originalName} 与已有文件 ${hit.originalName}（${hit.name}）内容相同，复用已有外链`, `md5=${md5} ｜ 原始大小=${originalSize}B ｜ 范围=${scope === 'channel' ? `同渠道（${main.name}）` : '全部渠道'}`, uploadIp);
+                return { id: hit.name, dedup: true, finalName: originalName };
+            }
+        }
         if (mime.startsWith('image/') && size <= 64 * 1024 * 1024) {
             const reviewBuffer = buffer.length ? buffer : await fs_1.promises.readFile(srcPath);
             const rejected = await this.moderate(reviewBuffer, mime);
             if (rejected)
                 return { id: '', error: rejected };
         }
-        const uploadIp = opts.ip || '';
         const uploadAddress = await this.cachedAddress(uploadIp);
         const wantCompress = opts.serverCompress ?? (await this.defaultServerCompress());
         const wantTranscode = await this.videoTranscodeEnabled();
@@ -733,48 +781,6 @@ let UploadService = class UploadService {
         const dims = srcPath
             ? await (0, compress_1.readDimensionsFile)(srcPath, mime, mime.split('/')[1] || '')
             : await (0, compress_1.readDimensions)(buffer, mime, mime.split('/')[1] || '');
-        let main = null;
-        try {
-            main = await this.resolveMainChannel({
-                channelId: opts.channelId,
-                channelType: opts.uploadChannel,
-                uploader: opts.ignoreUploaderChannel ? undefined : opts.uploader,
-                tokenId: opts.tokenId,
-            });
-        }
-        catch (err) {
-            return { id: '', error: err.message };
-        }
-        if (!main) {
-            const hint = opts.channelId
-                ? `渠道 ID「${opts.channelId}」不存在或已禁用`
-                : opts.uploadChannel
-                    ? `没有可用的「${opts.uploadChannel}」渠道，且未设置全局主渠道`
-                    : '未指定渠道，且「用户管理」「上传设置」里都没有可用的主渠道';
-            return { id: '', error: `未配置可用的主渠道（${hint}），请先在后台「存储渠道」检查` };
-        }
-        const md5 = srcPath ? await this.hashFile(srcPath) : (0, crypto_1.createHash)('md5').update(buffer).digest('hex');
-        if (await this.dedupEnabled()) {
-            const scope = await this.dedupScope();
-            const dup = await prisma_1.prisma.fileRecord.findFirst({
-                where: { status: 'active', size, md5 },
-                select: {
-                    name: true,
-                    originalName: true,
-                    copies: { select: { channelId: true, status: true, isPrimary: true } },
-                },
-            });
-            let hit = dup;
-            if (dup && scope === 'channel') {
-                const primaryCopy = dup.copies.find((c) => c.isPrimary) || dup.copies[0];
-                if (!primaryCopy || primaryCopy.channelId !== main.id)
-                    hit = null;
-            }
-            if (hit) {
-                app_log_1.appLog.info('upload', `命中去重：${originalName} 与已有文件 ${hit.originalName}（${hit.name}）内容相同，复用已有外链`, `md5=${md5} ｜ 大小=${size}B ｜ 范围=${scope === 'channel' ? `同渠道（${main.name}）` : '全部渠道'}`, uploadIp);
-                return { id: hit.name, dedup: true, finalName: originalName };
-            }
-        }
         const folder = await this.resolveFolder(opts.uploadFolder);
         const key = this.makeKeyFor(main, originalName, opts.uploadNameType, md5);
         const chain = [main];

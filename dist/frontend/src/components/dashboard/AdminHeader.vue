@@ -1,6 +1,6 @@
 <template>
     <header class="admin-header-spacer" :class="{ 'has-search': !!$slots.search }" :style="{ '--admin-header-reserved-space': reservedSpace }">
-        <div ref="headerContent" class="admin-header-content" :class="{ 'is-scroll-hidden': scrollHidden }" :style="{ '--admin-header-scroll-progress': headerScrollProgress }">
+        <div ref="headerContent" class="admin-header-content" :class="{ 'is-scroll-hidden': scrollHidden, 'is-scrolled': headerScrolled }" :style="{ '--admin-header-scroll-progress': headerScrollProgress }">
             <DashboardTabs :active-tab="activeTab" />
             <div class="admin-header-tools">
                 <div v-if="$slots.search" class="admin-header-search">
@@ -38,6 +38,8 @@ export default {
             isMobile: window.innerWidth <= 1024,
             reservedSpace: null,
             headerScrollProgress: 0,
+            // v2.8.5：移动端顶栏背景「有/无」两态标记 —— 只做整档切换，不做透明度渐变
+            headerScrolled: false,
             // 滚动方向：向下滚 → 顶栏上滑隐藏；向上滚 → 立刻显示（与移动端侧边菜单一致）
             scrollHidden: false,
             lastScrollY: 0
@@ -55,6 +57,7 @@ export default {
             const scroller = this.getHeaderScrollElements()?.scrollOffsetElement || document.scrollingElement;
             const y = Math.max(0, scroller?.scrollTop || 0);
             this.headerScrollProgress = Math.min(y / 80, 1);
+            this.headerScrolled = y > 0;
             this.updateScrollHidden(y, scroller);
         },
         /**
@@ -162,11 +165,12 @@ export default {
 }
 
 /*
- * v20261027：两行布局断点 768 → 1024 —— 平板（含竖屏）同样使用：
+ * v2.8.5：两行布局断点 1024 → 1023 —— 平板横屏（宽 1024 起）改回 PC 单行布局，
+ *          平板竖屏（768）与手机继续使用两行紧凑布局：
  *   第一行右侧：标签筛选 / 刷新 / 回收站 / 更多菜单（靠右对齐）
  *   第二行：搜索框（宽度 90%）+ 筛选按钮（跟在搜索框后面）
  */
-@media (max-width: 1024px) {
+@media (max-width: 1023px) {
     .admin-header-spacer {
         height: var(--admin-header-reserved-space, 76px);
     }
@@ -291,8 +295,8 @@ export default {
     transition: opacity 0.15s ease;
 }
 
-/* v20261027：紧凑顶栏的尺寸/换行参数扩展到平板（≤1024） */
-@media (max-width: 1024px) {
+/* v2.8.5：紧凑顶栏的尺寸/换行参数覆盖手机与平板竖屏（≤1023） */
+@media (max-width: 1023px) {
     .admin-header-content {
         --admin-header-gutter: calc(4px + 8px * var(--admin-header-scroll-progress, 0));
         --admin-header-action-size: 32px;
@@ -304,6 +308,20 @@ export default {
         gap: 4px 6px;
         border-radius: 14px;
     }
+
+    /*
+     * v2.8.5：手机 / 平板竖屏顶栏背景改为「无 / 有」两态硬切换。
+     * 原来 ::before 的透明度跟着滚动进度 0→1 连续变化，与尺寸过渡叠在一起
+     * 就会出现「滚动时顶栏一边缩一边变色」的闪烁感；这里不再跟随进度，
+     * 只在页面离开顶部时整块出现，且不做任何过渡。
+     */
+    .admin-header-content::before {
+        opacity: 0;
+        transition: none;
+    }
+    .admin-header-content.is-scrolled::before {
+        opacity: 1;
+    }
 }
 
 @media (max-width: 768px) {
@@ -312,6 +330,13 @@ export default {
     .admin-header-content {
         position: absolute;
         transform: translateX(-50%) !important;
+        /*
+         * v2.8.5：移动端彻底去掉滚动带来的「伸缩」感 ——
+         * ① 宽度不再随滚动进度从 4px 涨到 12px（--admin-header-gutter 固定）；
+         * ② 所有几何过渡（width / padding / transform）关闭，顶栏滚动时完全静止。
+         */
+        --admin-header-gutter: 4px;
+        transition: none !important;
     }
     .admin-header-content.is-scroll-hidden {
         transform: translateX(-50%) !important;

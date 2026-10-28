@@ -78,7 +78,11 @@ const ZH = {
         { t: '文件上传', d: '点击或拖拽文件到上传区，可多选；也可选择整个文件夹（会保留相对目录结构）。上传目录可在顶部输入框填写，留空即根目录。' },
         { t: '粘贴板上传', d: '切到「粘贴板上传」后，可直接粘贴图片/文件，或粘贴一个或多个 URL。' },
         { t: '转存（URL 上传）', d: '粘贴外链后选择「转存」：服务端会把该 URL 的文件抓取回来，再按当前渠道重新上传，返回本站外链。选择「外链」则只登记外链、不落盘。' },
-        { t: '文件命名方式', d: '默认 / 仅前缀 / 仅原名 / 短链接四种，可在上传页设置中调整。' }
+        { t: '文件命名方式', d: '默认 / 仅前缀 / 仅原名 / 短链接四种，可在上传页设置中调整。' },
+        { t: '上传设置（仅本次生效）', d: '「上传设置 → 上传限制」里的允许上传格式、单文件大小上限都只对当前页面本次上传生效，刷新页面即恢复跟随后台；单文件大小上限留空时，输入框提示里会直接显示后台全局值。' },
+        { t: '禁止压缩格式', d: '位置在「上传设置 → 文件压缩 → 压缩百分比」之后：清单内的格式跳过压缩、原样上传（例如填 mp4 就不压视频）；留空则不排除任何格式，可压缩类型全部按规则压缩。内置可压缩清单：jpg/jpeg/jfif/png/webp/avif、mp4/webm/mov/m4v/mkv、mp3/m4a/aac/wav/flac/ogg/opus。' },
+        { t: '压缩体积保障', d: '压缩/重编码后只要体积没有变小（等于或大于原文件），直接丢弃压缩产物、继续上传原文件，不会出现「越压越大」；唯一例外是视频兼容转码 —— 为保证浏览器能正常播放，H.265/HEVC 转 H.264 后即使变大也保留，系统日志会记录体积变化。' },
+        { t: '视频兼容转码', d: '开关在「其他设置 → 上传相关配置 → 视频兼容转码」：上传 H.265/HEVC、ProRes 等浏览器放不了的编码时，服务端自动转 H.264（需 ffmpeg）；已是 H.264/AV1/VP9 的视频不转码，与压缩开关相互独立。' }
       ]
     },
     {
@@ -134,17 +138,21 @@ const ZH = {
     },
     {
       id: 'dedup',
-      title: '五、上传去重',
+      title: '五、上传去重（秒传）',
       items: [
-        { t: '判定规则', d: '先比文件大小（快速过滤），大小一致再比 MD5（精确校验）；判定为重复时不再上传，直接返回已有外链。' },
-        { t: '去重范围：所有渠道之间', d: '只要大小与 MD5 相同即视为重复（默认模式，最省空间）。' },
-        { t: '去重范围：仅同一渠道内', d: '先比对渠道名称，渠道名相同再比大小与 MD5 —— 可让同一份文件分别落到不同渠道。' }
+        { t: '判定规则', d: '上传一开始就按「压缩前的原文件」算 MD5 与大小并查库：MD5 相同且大小一致即判定重复，直接返回已有外链，不再做图像审查、压缩、转码和上传。' },
+        { t: '为什么用原始大小', d: '同一份原文件在不同压缩档位下压出来的字节数并不稳定（JPEG 重编码、ffmpeg 转码都有浮动）。用压缩后的体积比对，会出现「同一个文件却判不成重复」，所以统一按原始大小 + 原始 MD5 比对。' },
+        { t: 'MD5 口径', d: '文件记录里的 MD5 存的是原始文件内容的 MD5，原样上传的历史记录同样能被命中；老数据缺失原始大小时用当前大小兜底。' },
+        { t: '去重范围：所有渠道之间', d: '只要 MD5 与大小相同即视为重复（默认模式，最省空间）。' },
+        { t: '去重范围：仅同一渠道内', d: '按渠道 ID 比对（渠道名可改，不作依据）：同一份文件可以分别落到不同渠道。' },
+        { t: '开关位置', d: '后台「存储与分发设置」里去重开关与去重范围可随时切换，关闭后每次都真实上传。' }
       ]
     },
     {
       id: 'backup',
-      title: '六、备份与一键备份',
+      title: '六、备份、配置备份与一键备份',
       items: [
+        { t: '配置备份 / 恢复配置', d: '系统状态页「系统管理 → 配置备份」把系统配置项（网页 / 安全 / 其他 / AI 各设置分区，含白名单、邮箱通知、页面设置等）导出成 JSON；「恢复配置」用该文件回灌，同名配置项被覆盖。不含文件记录、存储渠道与 API Token。' },
         { t: '自动双写', d: '设置好备份渠道后，新上传的文件会自动异步写入备份渠道。' },
         { t: '一键备份所选', d: '入口在「文件管理」右上角的批量操作：勾选文件后点「一键备份所选」，系统会检测哪些文件还没有备份，仅对未备份的补备份，并返回成功/失败/跳过数量。' },
         { t: '备份标识', d: '卡片视图左上角、列表视图「备份渠道」列都会展示已备份的渠道；文件详情里点击渠道可打开该文件在该渠道上的直链。' }
@@ -174,7 +182,7 @@ const ZH = {
       title: '八、历史记录与系统状态',
       items: [
         { t: '历史记录', d: '上传页右上角「更多」→ 历史记录；文件管理右上角也有「历史记录」入口。记录保存在本机浏览器（localStorage），可切换网格/列表视图、复制链接、删除单条或清空全部。' },
-        { t: '系统状态', d: '展示文件总数、渠道分布、状态分布、上传趋势；「最近上传」列出最近 20 条记录，下方是今日 / 昨日 / 本周 / 本月 / 本年上传数量、累计占用空间与文件夹数量统计（点击上传数量可跳到历史记录）。' },
+        { t: '系统状态', d: '展示文件总数、上传渠道分布、上传接口分布、上传用户分布、上传类型分布与文件状态分布；上传趋势可按「渠道类型 / 渠道名称 / 用户 / 上传接口 / 类型」五个维度切换，并支持自选日期区间。「最近上传」列出最近 20 条记录，上方是今日 / 昨日 / 本周 / 本月 / 本年上传数量、累计占用空间与文件夹数量统计（点击上传数量可跳到历史记录）。' },
         { t: '系统日志', d: '记录写操作（上传 / 保存 / 删除）与 4xx、5xx、慢请求；支持按级别、作用域、关键词过滤与导出。' }
       ]
     },
@@ -184,9 +192,10 @@ const ZH = {
       items: [
         { t: '双重认证', d: '用户端与管理端可分别设置访问密码；开启后需要登录才能上传 / 进入后台。' },
         { t: '白名单模式', d: '开启后只有白名单文件可被访问，其余请求返回白名单提示图。' },
-        { t: '域名过滤', d: '限制哪些 Referer 域名可以引用本站文件，防止被外站盗链。' },
+        { t: '放行地址（来源域名）', d: '一行一条「域名:端口」，如 192.168.1.3:5505、img.example.com:8443。按访问来源的域名 + 端口精确匹配，路径与参数不参与；同域不同端口视为不同来源；直接粘贴完整地址会自动截取域名部分。' },
         { t: '图片审查与 IP 查询', d: '上传时自动调用配置的审查渠道给出标签，可据此屏蔽不通过的图片。' },
-        { t: 'API Token', d: '为脚本 / 第三方程序签发带权限与有效期的 Token，可随时吊销。' }
+        { t: 'API Token', d: '为脚本 / 第三方程序签发带权限与有效期的 Token，可随时吊销。支持「S3 协议」与「Web 通用」两种接入方式。' },
+        { t: 'Web 通用接入的 compress 参数', d: '在自定义 Body 里带 compress=true 或 1 才会压缩（图片走 sharp、视频/音频走 ffmpeg，gif 自动跳过）；不传则原样上传，不受后台「默认开启压缩」影响。compressPercent 可选，指定压到原体积的百分比（10-100）。' }
       ]
     },
     {
@@ -296,7 +305,11 @@ const EN = {
         { t: 'File upload', d: 'Click or drag files into the drop area (multi-select). You can also pick a whole folder; the relative directory structure is preserved. Fill the folder input on top to target a directory, leave empty for root.' },
         { t: 'Clipboard upload', d: 'Switch to clipboard mode, then paste an image/file or one or more URLs.' },
         { t: 'Transfer (URL upload)', d: '"Transfer" makes the server fetch the URL and re-upload it through the current channel, returning a local link. "External" only registers the link without storing the file.' },
-        { t: 'Naming', d: 'Default / prefix only / original name / short link — configurable in the upload settings.' }
+        { t: 'Naming', d: 'Default / prefix only / original name / short link — configurable in the upload settings.' },
+        { t: 'Upload settings (this session only)', d: 'Allowed formats and max file size in the upload settings dialog apply to the current page only and reset on refresh; when max file size is left empty, the placeholder shows the global value from the backend.' },
+        { t: 'Excluded compression formats', d: 'Sits right after File compression → Compression target (%): formats in this list skip compression and upload as-is (e.g. add mp4 to stop compressing video). Leave empty to exclude nothing — every compressible type follows the compression rules. Built-in compressible list: jpg/jpeg/jfif/png/webp/avif, mp4/webm/mov/m4v/mkv, mp3/m4a/aac/wav/flac/ogg/opus.' },
+        { t: 'Size guarantee', d: 'If compression/re-encoding does not make the file smaller (equal or larger than the original), the result is discarded and the original is uploaded — never "compressed" into a bigger file. The only exception is video compatibility transcode: H.265/HEVC → H.264 is kept even when larger so browsers can play it, and the size change is written to the system log.' },
+        { t: 'Video compatibility transcode', d: 'Settings → Others → Upload-related config → Video compatibility transcode: H.265/HEVC, ProRes and other browser-unfriendly codecs are transcoded to H.264 on the server (ffmpeg required). H.264/AV1/VP9 files pass through; independent of the compression switch.' }
       ]
     },
     {
@@ -352,17 +365,21 @@ const EN = {
     },
     {
       id: 'dedup',
-      title: '5. Deduplication',
+      title: '5. Deduplication (instant upload)',
       items: [
-        { t: 'Rule', d: 'Size is compared first (fast filter), then MD5 (exact check). Duplicates are not uploaded again; the existing link is returned.' },
-        { t: 'Scope: across all channels', d: 'Same size + same MD5 means duplicate (default, saves the most space).' },
-        { t: 'Scope: within the same channel', d: 'Channel name is compared first, then size and MD5 — lets the same file live in different channels.' }
+        { t: 'Rule', d: 'MD5 and size are computed from the ORIGINAL file before compression, then looked up right away: same MD5 and same size means duplicate — the existing link is returned without review, compression, transcoding or upload.' },
+        { t: 'Why the original size', d: 'The compressed byte count of the same source file is not stable across quality settings (JPEG re-encoding, ffmpeg transcoding both vary). Comparing post-compression sizes makes the same file look like a new one, so the original size + original MD5 are used.' },
+        { t: 'MD5 semantics', d: 'The MD5 stored on a record is the MD5 of the original file content, so older as-is uploads still match. Legacy rows without an original size fall back to the current size.' },
+        { t: 'Scope: across all channels', d: 'Same MD5 + same size means duplicate (default, saves the most space).' },
+        { t: 'Scope: within the same channel', d: 'Compared by channel ID (names can change), so the same file can live in different channels.' },
+        { t: 'Toggle', d: 'The dedup switch and scope live in the storage/distribution settings; turn it off to always upload for real.' }
       ]
     },
     {
       id: 'backup',
-      title: '6. Backups',
+      title: '6. Backups & Config Backup',
       items: [
+        { t: 'Config backup / restore', d: 'On the System Status page, "Config Backup" exports the settings sections (page / security / others / AI, including whitelist, mail and page settings) as JSON; "Restore Config" writes it back, overwriting items with the same key. File records, storage channels and API tokens are not included.' },
         { t: 'Automatic mirroring', d: 'With a backup channel configured, every new upload is mirrored asynchronously.' },
         { t: 'Backup selected', d: 'Open File Management and use the batch action "Backup selected". The system detects which files lack a backup and only backs those up, reporting success / failed / skipped.' },
         { t: 'Backup badges', d: 'Card view shows backup channels next to the channel badge; list view has a dedicated "Backup Channel" column. In file details you can click a channel to open that file on that channel.' }
@@ -392,7 +409,7 @@ const EN = {
       title: '8. History & Status',
       items: [
         { t: 'History', d: 'Top-right "More" → History on the upload page; File Management also has a History button. Records live in the local browser (localStorage) and can be viewed as grid/list, copied, deleted individually or cleared.' },
-        { t: 'System status', d: 'File totals, channel/status distribution and upload trend. "Recent uploads" lists the latest 20 records, followed by today / yesterday / week / month / year counts, total space used and folder count (click a count to open History).' },
+        { t: 'System status', d: 'File totals plus channel, upload API, user, file type and status distributions. The upload trend can be grouped by channel type, channel name, user, upload API and file type, with a selectable date range. "Recent uploads" lists the latest 20 records, followed by today / yesterday / week / month / year counts, total space used and folder count (click a count to open History).' },
         { t: 'Logs', d: 'Records writes (upload / save / delete) plus 4xx, 5xx and slow requests, with level/scope/keyword filters and export.' }
       ]
     },
@@ -402,9 +419,10 @@ const EN = {
       items: [
         { t: 'Two auth layers', d: 'Separate passwords for the user side and the admin console.' },
         { t: 'Whitelist mode', d: 'Only whitelisted files stay reachable; other requests get the whitelist notice image.' },
-        { t: 'Domain filter', d: 'Restrict which Referer domains may hotlink your files.' },
+        { t: 'Allowed source hosts', d: 'One "host:port" per line, e.g. 192.168.1.3:5505 or img.example.com:8443. Matching is exact on the source host + port; paths and query strings are ignored, and the same host on another port counts as a different source. Pasting a full URL works too — only the host part is kept.' },
         { t: 'Image review & IP lookup', d: 'Optional review provider tags uploads so you can block rejected content.' },
-        { t: 'API tokens', d: 'Issue scoped, expiring tokens for scripts and third-party tools; revoke any time.' }
+        { t: 'API tokens', d: 'Issue scoped, expiring tokens for scripts and third-party tools; revoke any time. Both "S3 protocol" and "Web generic" access are supported.' },
+        { t: 'compress field (Web generic)', d: 'Send compress=true or 1 in the custom Body to compress (images via sharp, video/audio via ffmpeg, GIF skipped); omit it to upload as-is — the global "default compression" setting does not apply to this channel. compressPercent optionally sets the target size (10-100 % of the original).' }
       ]
     },
     {

@@ -21,8 +21,14 @@
                 @change="handleSelectChange"
             />
         </div>
-        <!-- 2. 缩略图 -->
-        <div class="list-col list-col-preview" @click="handlePreviewClick">
+        <!-- 2. 缩略图（v2.8.5：PC 悬停弹出大图预览，父组件判定触屏/类型后跳过） -->
+        <div
+            class="list-col list-col-preview"
+            @click="handlePreviewClick"
+            @mouseenter="$emit('preview', $event)"
+            @mousemove="$emit('previewMove', $event)"
+            @mouseleave="$emit('previewEnd')"
+        >
             <template v-if="isFolder">
                 <font-awesome-icon icon="folder-open" class="list-folder-icon"/>
             </template>
@@ -122,7 +128,7 @@ export default {
         selected: { type: Boolean, default: false },
         fileLink: { type: String, default: '' }
     },
-    emits: ['update:selected', 'enter', 'detail', 'copy', 'folderCopy', 'move', 'delete', 'download', 'openLink', 'touchstart', 'touchend', 'touchmove'],
+    emits: ['update:selected', 'enter', 'detail', 'copy', 'folderCopy', 'move', 'delete', 'download', 'openLink', 'touchstart', 'touchend', 'touchmove', 'preview', 'previewMove', 'previewEnd'],
     data() {
         return {
             localSelected: this.selected

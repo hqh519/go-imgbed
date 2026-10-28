@@ -59,35 +59,36 @@
 </template>
   
 <script>
+import { writeThemeCookie } from '@/utils/themeCookie';
+
 export default {
   name: 'ToggleDark',
-  data() {
-    return {
-      isDark: this.$store.getters.useDarkMode,
-      isAuto: !this.$store.getters.cusDarkMode,
-    };
-  },
   computed: {
-    // v2.4.0：「夜间/白天强制切换」已移除，按钮不再有隐藏态
+    isDark() {
+      return this.$store.getters.useDarkMode;
+    },
+    isAuto() {
+      return !this.$store.getters.cusDarkMode;
+    },
   },
   methods: {
     handleToggleClick() {
       // 三种状态循环：亮色 -> 暗色 -> 跟随系统 -> 亮色
       if (this.isAuto) {
         // 当前是自动模式，切换到亮色
-        this.isDark = false;
-        this.isAuto = false;
         this.$store.commit('setCusDarkMode', true);
         this.$store.commit('setUseDarkMode', false);
+        writeThemeCookie('light');
       } else if (!this.isDark) {
         // 当前是亮色，切换到暗色
-        this.isDark = true;
         this.$store.commit('setCusDarkMode', true);
         this.$store.commit('setUseDarkMode', true);
+        writeThemeCookie('dark');
       } else {
         // 当前是暗色，切换到跟随系统
-        this.isAuto = true;
         this.$store.commit('setCusDarkMode', false);
+        this.$store.commit('setUseDarkMode', null);
+        writeThemeCookie('auto');
       }
     }
   }

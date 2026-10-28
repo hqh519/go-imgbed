@@ -1,8 +1,10 @@
 /**
- * BackupGenerator - 备份数据生成类
- * 
- * 处理前端辅助备份功能，获取所有文件记录（包含分块文件的 value），
- * 构建完整的备份 JSON 文件，并触发浏览器下载。
+ * BackupGenerator - 配置备份生成类
+ *
+ * v2.8.5：「备份数据 / 恢复数据」改为「配置备份 / 恢复配置」——
+ * 只导出配置项（各设置页配置 + 存储渠道 + API Token 等），不再遍历文件记录。
+ * 这样备份文件很小、生成很快，恢复时也不会碰已上传的文件；
+ * 旧版「含文件记录」的备份文件仍可正常恢复（RestoreProcessor 兼容 files 缺省）。
  */
 
 import BatchProcessor from '@/utils/batchProcessor';
@@ -22,6 +24,8 @@ class BackupGenerator {
    */
   constructor(options = {}) {
     this.onProgress = options.onProgress || (() => {});
+    /** v2.8.5：true = 只备份配置项（默认）；false = 兼容旧行为，连文件记录一起备份 */
+    this.configOnly = options.configOnly !== false;
     this.processor = null;
   }
 
@@ -38,12 +42,15 @@ class BackupGenerator {
    * @throws {Error} 当备份过程中发生错误时抛出
    */
   async generateBackup() {
-    // 获取所有文件记录（包含分块文件的 value）
-    this.processor = new BatchProcessor({
-      onProgress: (p) => this.onProgress({ ...p, phase: 'fetching' })
-    });
+    let records = [];
 
-    const records = await this.processor.fetchAllRecords(true);
+    if (!this.configOnly) {
+      // 兼容旧行为：拉取所有文件记录（包含分块文件的 value）
+      this.processor = new BatchProcessor({
+        onProgress: (p) => this.onProgress({ ...p, phase: 'fetching' })
+      });
+      records = await this.processor.fetchAllRecords(true);
+    }
 
     // 构建备份数据
     this.onProgress({ phase: 'building', message: '正在构建备份数据...' });
@@ -51,6 +58,7 @@ class BackupGenerator {
     const backupData = {
       timestamp: Date.now(),
       version: packageInfo.version,
+      configOnly: this.configOnly === true,
       data: {
         fileCount: records.length,
         files: {},
@@ -66,7 +74,7 @@ class BackupGenerator {
       };
     }
 
-    // 3. 获取系统设置
+    // 3. 获取系统设置（配置备份的主体）
     const settings = await this.fetchSettings();
     backupData.data.settings = settings;
 
@@ -118,7 +126,9 @@ class BackupGenerator {
     const a = document.createElement('a');
     a.href = url;
     // 使用日期作为文件名的一部分
-    a.download = `imgbed_backup_${new Date().toISOString().split('T')[0]}.json`;
+    // 配置备份（默认）→ imgbed_config_日期.json；含文件的旧格式 → imgbed_backup_日期.json
+    const prefix = this.configOnly ? 'imgbed_config' : 'imgbed_backup';
+    a.download = `${prefix}_${new Date().toISOString().split('T')[0]}.json`;
     
     // 触发下载
     document.body.appendChild(a);

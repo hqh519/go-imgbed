@@ -218,6 +218,7 @@
             :backupChannel="backupChannel"
             :compressPercent="compressPercent"
             :limitExtensions="limitExtensions"
+            :limitCompressExts="limitCompressExts"
             :limitMaxSizeMB="limitMaxSizeMB"
             class="upload"
         />
@@ -287,7 +288,9 @@
             v-model:compressPercent="compressPercent"
             v-model:serverCompress="serverCompress"
             v-model:limitExtensions="limitExtensions"
+            v-model:limitCompressExts="limitCompressExts"
             v-model:limitMaxSizeMB="limitMaxSizeMB"
+            :globalMaxSizeMB="Number(userConfig?.maxUploadSizeMB) || 0"
         />
     </div>
     <Footer class="footer"/>
@@ -308,6 +311,7 @@ import Footer from '@/components/Footer.vue'
 import ToggleDark from '@/components/ToggleDark.vue'
 import Logo from '@/components/Logo.vue'
 import { setLocale } from '@/locales'
+import { writeThemeCookie } from '@/utils/themeCookie'
 import UploadSettingsDialog from '@/components/upload/UploadSettingsDialog.vue'
 import DirectoryTreePicker from '@/components/DirectoryTreePicker.vue'
 import DirectorySuggestionInput from '@/components/DirectorySuggestionInput.vue'
@@ -340,6 +344,7 @@ export default {
             autoRetry: true, //失败自动切换
             compressPercent: 80, //压缩期望百分比（压到原体积的 x%）
             limitExtensions: '', // 允许的上传格式覆盖（仅本次页面生效，刷新清空）
+            limitCompressExts: '', // 允许压缩格式覆盖（仅本次页面生效，刷新清空）
             limitMaxSizeMB: 0, // 单文件大小上限覆盖（MB，0 = 跟随后台）
             customDomain: '', //自定义访问域名（所有文件链接统一使用）
             autoUpload: localStorage.getItem('goimgbed_autoUpload') !== '0', //自动上传（记忆模式：记住上次选择，刷新不重置）
@@ -655,15 +660,18 @@ export default {
                     this.themeMode = 'light'
                     this.$store.commit('setCusDarkMode', true)
                     this.$store.commit('setUseDarkMode', false)
+                    writeThemeCookie('light')
                 } else if (this.themeMode === 'light') {
                     // 切换到暗色
                     this.themeMode = 'dark'
                     this.$store.commit('setCusDarkMode', true)
                     this.$store.commit('setUseDarkMode', true)
+                    writeThemeCookie('dark')
                 } else {
                     // 切换到自动
                     this.themeMode = 'auto'
                     this.$store.commit('setCusDarkMode', false)
+                    writeThemeCookie('auto')
                 }
             } else if (command === 'viewDocs') {
                 this.openDocsPage()

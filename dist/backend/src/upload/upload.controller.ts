@@ -74,9 +74,18 @@ function isBlockedFetchHost(hostname: string): boolean {
 function fixFilename(name?: string): string {
   const raw = String(name || '');
   if (!raw) return raw;
+  /*
+   * v2.8.5 加固：只有当原值呈现「latin1 误解码」特征（含 U+0080–U+00FF 高位字符）
+   * 时才尝试还原。正确解码的中文/日文文件名字符码都 > 0xFF，不会落入该区间，
+   * 直接原样返回 —— 杜绝「本已正确的名字被二次转换成乱码」的误伤类。
+   */
+  if (!/[\u0080-\u00FF]/.test(raw)) return raw;
   try {
     const restored = Buffer.from(raw, 'latin1').toString('utf8');
-    if (!restored.includes('\uFFFD') && /[^\u0000-\u007F]/.test(restored)) return restored;
+    if (!restored.includes('\uFFFD') && /[^\u0000-\u007F]/.test(restored)) {
+      console.log(`[upload] multipart 文件名编码已还原: ${raw} -> ${restored}`);
+      return restored;
+    }
   } catch {
     /* 忽略，返回原值 */
   }
