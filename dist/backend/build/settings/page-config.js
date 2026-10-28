@@ -200,6 +200,18 @@ exports.PAGE_CONFIG_DEFAULTS = {
             "category_en": "Client Settings"
         },
         {
+            "id": "videoTranscodeIncompatible",
+            "label": "视频兼容转码",
+            "label_en": "Video Compatibility Transcode",
+            "type": "boolean",
+            "default": true,
+            "value": true,
+            "tooltip": "开启后：上传 H.265/HEVC、ProRes、MPEG-4 Part 2 等浏览器无法播放编码的视频时，服务器自动转码为 H.264（需 ffmpeg，已内置）。已经是 H.264/AV1/VP9 的视频不会转码，无额外开销。与压缩开关相互独立",
+            "tooltip_en": "When on: videos encoded in H.265/HEVC, ProRes or MPEG-4 Part 2 (which browsers cannot play) are automatically transcoded to H.264 (requires ffmpeg, bundled). H.264/AV1/VP9 videos pass through untouched. Independent of the compression switch",
+            "category": "客户端设置",
+            "category_en": "Client Settings"
+        },
+        {
             "id": "uploadBkImg",
             "label": "上传页背景图",
             "label_en": "Upload Background",

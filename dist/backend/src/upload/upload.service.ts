@@ -952,6 +952,24 @@ export class UploadService {
   }
 
   /**
+   * 「视频兼容转码」开关（v2.8.4，后台 → 网页设置）。
+   * 只对浏览器播不了的编码（H.265/HEVC 等）转 H.264，与压缩开关相互独立 ——
+   * 即使关闭压缩，华为等设备的 HEVC 视频也会被转码，解决「只有声音没画面」。
+   */
+  private async videoTranscodeEnabled(): Promise<boolean> {
+    try {
+      const page: any = await this.sysConfig.get('page');
+      const item = (page?.config || []).find((x: any) => x.id === 'videoTranscodeIncompatible');
+      // 未保存过时 value 可能是 undefined，此时回退到 default 字段（默认开）
+      if (!item) return true;
+      if (item.value === undefined || item.value === null || item.value === '') return item.default !== false;
+      return item.value === true || item.value === 'true';
+    } catch {
+      return true;
+    }
+  }
+
+  /**
    * 核心上传入口 —— 主渠道同步 → 建记录 → 备份渠道异步（低优先级，自动让路）。
    * 返回对外文件标识（/file/:id）。
    *
@@ -1016,9 +1034,13 @@ export class UploadService {
      *     API Token / WebDAV 这类"没有前端开关"的入口因此也会跟随后台默认值；
      *   · 压缩失败 / 压不动 → 原文件照常上传（需求明确要求"跳过压缩直接上传"）。
      * v2.8.3：大文件走 compressFile（输入/输出都是磁盘路径，不再整份读内存）。
+     * v2.8.4：新增「视频兼容转码」—— 与压缩开关独立，只对浏览器播不了的编码
+     *   （H.265/HEVC 等，华为手机默认录像编码）转 H.264，解决「只有声音没画面」。
      */
     const wantCompress = opts.serverCompress ?? (await this.defaultServerCompress());
-    if (wantCompress) {
+    const wantTranscode = await this.videoTranscodeEnabled();
+    const isVideo = (mime || '').startsWith('video/');
+    if (wantCompress || (wantTranscode && isVideo)) {
       const srcExt = originalName.includes('.') ? String(originalName.split('.').pop() || '') : '';
       const pct =
         opts.compressPercent && opts.compressPercent > 0 ? opts.compressPercent : await this.defaultCompressPercent();
@@ -1026,7 +1048,7 @@ export class UploadService {
       if (size > COMPRESS_MAX_BYTES) {
         console.log(`[upload] 跳过压缩：文件 ${(size / 1024 / 1024).toFixed(1)}MB 超过压缩上限`);
       } else if (srcPath) {
-        const r = await compressFile(srcPath, mime, srcExt, pct);
+        const r = await compressFile(srcPath, mime, srcExt, pct, { videoTranscode: wantTranscode, videoCompress: wantCompress === true });
         if (r.compressed) {
           srcPath = r.path;
           size = r.size;
@@ -1042,7 +1064,7 @@ export class UploadService {
           appLog.info('upload', `跳过压缩：${r.reason}`, originalName, uploadIp);
         }
       } else {
-        const r = await compressMedia(buffer, mime, srcExt, pct);
+        const r = await compressMedia(buffer, mime, srcExt, pct, { videoTranscode: wantTranscode, videoCompress: wantCompress === true });
         if (r.compressed) {
           const before = buffer.length;
           buffer = r.buffer;

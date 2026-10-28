@@ -44,23 +44,40 @@ const SKIP = new Set(['gif', 'svg', 'heic', 'heif', 'tiff', 'tif', 'bmp', 'ico',
 let ffmpegChecked = false;
 let ffmpegPath = '';
 
+/**
+ * ffmpeg 二进制定位顺序：
+ *   1) 环境变量 FFMPEG_PATH（显式指定，优先级最高）
+ *   2) ffmpeg-static 依赖自带的静态二进制（v2.8.4 起随 npm 依赖分发，镜像内开箱即用）
+ *   3) PATH 里的 ffmpeg（系统安装）
+ */
+function resolveFfmpegStatic(): string {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const p = require('ffmpeg-static') as string;
+    return p || '';
+  } catch {
+    return '';
+  }
+}
+
 /** ffmpeg 是否可用（结果进程内缓存；可用 FFMPEG_PATH 指定绝对路径） */
 export function ffmpegAvailable(): boolean {
   if (ffmpegChecked) return !!ffmpegPath;
   ffmpegChecked = true;
   const envPath = String(process.env.FFMPEG_PATH || '').trim();
-  for (const bin of [envPath, 'ffmpeg'].filter(Boolean)) {
+  const staticPath = resolveFfmpegStatic();
+  for (const bin of [envPath, staticPath, 'ffmpeg'].filter(Boolean)) {
     try {
       execFileSync(bin, ['-version'], { stdio: 'ignore', timeout: 5000 });
       ffmpegPath = bin;
-      console.log(`[compress] ffmpeg 可用：${bin}（视频 / 音频压缩已启用）`);
+      console.log(`[compress] ffmpeg 可用：${bin === staticPath ? 'ffmpeg-static 内置二进制' : bin}（视频 / 音频压缩与转码已启用）`);
       return true;
     } catch {
       /* 试下一个 */
     }
   }
   ffmpegPath = '';
-  console.log('[compress] 未检测到 ffmpeg：视频 / 音频将跳过压缩（图片压缩不受影响）');
+  console.log('[compress] 未检测到 ffmpeg：视频 / 音频将跳过压缩与转码（图片压缩不受影响）');
   return false;
 }
 
@@ -194,6 +211,13 @@ async function compressAudio(buffer: Buffer, ext: string, percent: number): Prom
 
 /* ---------------- 统一入口 ---------------- */
 
+export interface CompressOptions {
+  /** v2.8.4：视频兼容转码 —— 遇到 HEVC 等浏览器不支持的编码时自动转 H.264（与压缩开关相互独立） */
+  videoTranscode?: boolean;
+  /** v2.8.4：是否允许视频压缩重编码。显式传 false 时只做兼容转码、不做压缩（默认 undefined = 允许，兼容旧调用） */
+  videoCompress?: boolean;
+}
+
 /**
  * 按 MIME / 扩展名分派到对应的压缩器。
  * 永远不抛异常 —— 失败一律返回原 buffer + reason，调用方无需 try/catch。
@@ -203,11 +227,12 @@ export async function compressMedia(
   mime: string,
   ext: string,
   percent: number,
+  opts?: CompressOptions,
 ): Promise<CompressResult> {
   const e = String(ext || '').toLowerCase().replace(/^\./, '');
   try {
     if ((mime || '').startsWith('image/')) return await compressImage(buffer, e, percent);
-    if ((mime || '').startsWith('video/')) return await compressVideo(buffer, e, percent);
+    if ((mime || '').startsWith('video/')) return await processVideoBuffer(buffer, e, percent, opts);
     if ((mime || '').startsWith('audio/')) return await compressAudio(buffer, e, percent);
     return { buffer, mime: '', ext: '', compressed: false, reason: `${mime || e} 不支持压缩` };
   } catch (err) {
@@ -257,6 +282,7 @@ export async function compressFile(
   mime: string,
   ext: string,
   percent: number,
+  opts?: CompressOptions,
 ): Promise<FileCompressResult> {
   const e = String(ext || '').toLowerCase().replace(/^\./, '');
   let original = 0;
@@ -277,7 +303,7 @@ export async function compressFile(
   if (SKIP.has(e)) return keep(`${e} 格式按规则不压缩`);
   try {
     if ((mime || '').startsWith('image/')) return await compressImageFile(srcPath, e, percent, original);
-    if ((mime || '').startsWith('video/')) return await compressVideoFile(srcPath, e, percent, original);
+    if ((mime || '').startsWith('video/')) return await processVideoFile(srcPath, e, percent, original, opts);
     if ((mime || '').startsWith('audio/')) return await compressAudioFile(srcPath, e, percent, original);
     return keep(`${mime || e} 不支持压缩`);
   } catch (err) {
@@ -402,6 +428,202 @@ async function compressAudioFile(srcPath: string, e: string, percent: number, or
     ext: outExt,
     compressed: true,
   };
+}
+
+/* ---------------- v2.8.4：视频编码探测与兼容转码 ---------------- */
+
+/*
+ * 背景：华为 / 新款安卓手机默认用 H.265(HEVC) 录像，绝大多数浏览器在 <video> 里
+ * 解不了 HEVC 视频轨（音频 AAC 正常）→ 表现为「只有声音、没有画面」。
+ * 这里只对**浏览器不兼容的编码**做转码，已是 H.264 / AV1 / VP9 的视频一律放行，
+ * 避免「全量转码」带来的 CPU 浪费与时长等待。
+ */
+
+/** mp4/mov 容器里浏览器普遍播放不了的视频编码（采样描述 fourcc） */
+const VIDEO_CODEC_INCOMPATIBLE = new Set([
+  'hvc1', 'hev1', // H.265 / HEVC（华为、iPhone 高效格式）
+  'dvh1', 'dva1', // Dolby Vision（HEVC 底座）
+  'vvc1', // H.266 / VVC
+  'mp4v', // MPEG-4 Part 2（老设备 / 行车记录仪常见）
+  'ap4h', 'apcn', 'apch', 'apcs', 'apco', // Apple ProRes（Final Cut 导出）
+]);
+
+interface Mp4Box {
+  type: string;
+  /** payload 起始偏移（相对传入 buffer） */
+  start: number;
+  /** payload 长度 */
+  size: number;
+}
+
+function parseMp4Boxes(buf: Buffer, start: number, end: number): Mp4Box[] {
+  const out: Mp4Box[] = [];
+  let p = start;
+  while (p + 8 <= end) {
+    let size = buf.readUInt32BE(p);
+    const type = buf.toString('latin1', p + 4, p + 8);
+    let header = 8;
+    if (size === 1) {
+      if (p + 16 > end) break;
+      const hi = buf.readUInt32BE(p + 8);
+      const lo = buf.readUInt32BE(p + 12);
+      size = hi * 4294967296 + lo;
+      header = 16;
+    } else if (size === 0) {
+      size = end - p;
+    }
+    if (size < header) break;
+    out.push({ type, start: p + header, size: Math.min(size - header, end - p - header) });
+    p += size;
+  }
+  return out;
+}
+
+/** 从 moov 里收集所有 stsd 采样描述 fourcc（视频轨 + 音频轨都在里面，靠白名单筛视频编码） */
+function collectStsdFourccs(buf: Buffer, range: { start: number; size: number }): string[] {
+  const found: string[] = [];
+  const walk = (start: number, end: number) => {
+    for (const box of parseMp4Boxes(buf, start, end)) {
+      const bs = box.start;
+      const be = box.start + box.size;
+      if (['moov', 'trak', 'mdia', 'minf', 'stbl'].includes(box.type)) {
+        walk(bs, be);
+      } else if (box.type === 'stsd') {
+        // stsd payload: 4 字节 version/flags + 4 字节 entryCount + N 个采样描述
+        let p = bs + 8;
+        while (p + 8 <= be) {
+          const size = buf.readUInt32BE(p);
+          if (size < 8) break;
+          found.push(buf.toString('latin1', p + 4, p + 8).trim());
+          p += size;
+        }
+      }
+    }
+  };
+  walk(range.start, range.start + range.size);
+  return found;
+}
+
+/** 探测磁盘上 mp4/mov 视频的编码 fourcc；非 mp4 容器（mkv/webm/avi 等）或解析失败返回空串 */
+export async function probeVideoCodecFile(srcPath: string): Promise<string> {
+  let fh: import('fs/promises').FileHandle | null = null;
+  try {
+    fh = await fsp.open(srcPath, 'r');
+    const stat = await fh.stat();
+    // 逐盒扫描顶层 box 定位 moov（moov 可能在头也可能在尾，逐个跳过 mdat）
+    let offset = 0;
+    for (let guard = 0; guard < 64 && offset + 8 <= stat.size; guard++) {
+      const head = Buffer.alloc(16);
+      const { bytesRead } = await fh.read(head, 0, 16, offset);
+      if (bytesRead < 8) return '';
+      let size = head.readUInt32BE(0);
+      const type = head.toString('latin1', 4, 8);
+      let header = 8;
+      if (size === 1) {
+        if (bytesRead < 16) return '';
+        size = head.readUInt32BE(8) * 4294967296 + head.readUInt32BE(12);
+        header = 16;
+      } else if (size === 0) {
+        size = stat.size - offset;
+      }
+      if (size < header) return '';
+      if (type === 'moov') {
+        const cap = Math.min(size, 64 * 1024 * 1024); // moov 正常只有几 MB，兜个底
+        const moov = Buffer.alloc(cap);
+        await fh.read(moov, 0, cap, offset + header);
+        const fourccs = collectStsdFourccs(moov, { start: 0, size: cap });
+        return fourccs.find((c) => VIDEO_CODEC_INCOMPATIBLE.has(c)) || fourccs.find((c) => ['avc1', 'av01', 'vp09'].includes(c)) || '';
+      }
+      offset += size;
+    }
+    return '';
+  } catch {
+    return '';
+  } finally {
+    await fh?.close().catch(() => undefined);
+  }
+}
+
+/** Buffer 版探测（小文件内存路径用） */
+export function probeVideoCodecBuffer(buf: Buffer): string {
+  try {
+    if (buf.length < 16 || buf.toString('latin1', 4, 8) !== 'ftyp') return '';
+    for (const box of parseMp4Boxes(buf, 0, buf.length)) {
+      if (box.type === 'moov') {
+        const fourccs = collectStsdFourccs(buf, box);
+        return fourccs.find((c) => VIDEO_CODEC_INCOMPATIBLE.has(c)) || fourccs.find((c) => ['avc1', 'av01', 'vp09'].includes(c)) || '';
+      }
+    }
+    return '';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * 兼容转码（磁盘 → 磁盘）：把 HEVC / ProRes / MPEG-4 Part 2 等转成 H.264 mp4。
+ * 与「压缩」不同：**不要求产物比原文件小** —— 哪怕变大也换，目的就是能在浏览器里播。
+ * -movflags +faststart 顺带把 moov 挪到头部，边下边播体验更好。
+ */
+async function transcodeVideoFile(srcPath: string, original: number): Promise<FileCompressResult> {
+  const keep = (reason: string): FileCompressResult => ({ path: srcPath, size: original, mime: '', ext: '', compressed: false, reason });
+  const out = `${srcPath}.h264.mp4`;
+  try {
+    await run(
+      ffmpegPath,
+      ['-y', '-i', srcPath, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '24', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', '-c:a', 'aac', '-b:a', '128k', out],
+      { timeout: 60 * 60 * 1000, maxBuffer: 16 * 1024 * 1024 },
+    );
+    const st = await fsp.stat(out);
+    if (!st.size) {
+      await fsp.rm(out, { force: true }).catch(() => undefined);
+      return keep('兼容转码输出为空');
+    }
+    return { path: out, size: st.size, mime: 'video/mp4', ext: '.mp4', compressed: true };
+  } catch (err) {
+    await fsp.rm(out, { force: true }).catch(() => undefined);
+    return keep(`兼容转码失败：${(err as Error).message}`);
+  }
+}
+
+/** 视频处理统一入口（文件版）：不兼容编码 → 兼容转码；否则按压缩策略走 */
+async function processVideoFile(srcPath: string, e: string, percent: number, original: number, opts?: CompressOptions): Promise<FileCompressResult> {
+  const keep = (reason: string): FileCompressResult => ({ path: srcPath, size: original, mime: '', ext: '', compressed: false, reason });
+  if (opts?.videoTranscode && ['mp4', 'mov', 'm4v'].includes(e)) {
+    const codec = await probeVideoCodecFile(srcPath);
+    if (VIDEO_CODEC_INCOMPATIBLE.has(codec)) {
+      console.log(`[compress] 检测到浏览器不兼容编码 ${codec}，开始兼容转码 → H.264`);
+      return transcodeVideoFile(srcPath, original);
+    }
+    if (codec) console.log(`[compress] 视频编码 ${codec} 浏览器可播，无需转码`);
+  }
+  if (opts?.videoCompress === false) return keep('视频编码兼容，且未开启视频压缩');
+  return compressVideoFile(srcPath, e, percent, original);
+}
+
+/** 视频处理统一入口（内存版） */
+async function processVideoBuffer(buffer: Buffer, e: string, percent: number, opts?: CompressOptions): Promise<CompressResult> {
+  const keep = (reason: string): CompressResult => ({ buffer, mime: '', ext: '', compressed: false, reason });
+  if (opts?.videoTranscode && ['mp4', 'mov', 'm4v'].includes(e)) {
+    const codec = probeVideoCodecBuffer(buffer);
+    if (VIDEO_CODEC_INCOMPATIBLE.has(codec)) {
+      if (!ffmpegAvailable()) return keep('未安装 ffmpeg，HEVC 视频跳过兼容转码');
+      const outExt = '.mp4';
+      try {
+        return await withTempFiles([`.${e}`, outExt], async ([src, dst]) => {
+          await fsp.writeFile(src, buffer);
+          await run(ffmpegPath, ['-y', '-i', src, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '24', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', '-c:a', 'aac', '-b:a', '128k', dst], { timeout: 30 * 60 * 1000, maxBuffer: 16 * 1024 * 1024 });
+          const outBuf = await fsp.readFile(dst);
+          if (!outBuf.length) return keep('兼容转码输出为空');
+          return { buffer: outBuf, mime: 'video/mp4', ext: outExt, compressed: true };
+        });
+      } catch (err) {
+        return keep(`兼容转码失败：${(err as Error).message}`);
+      }
+    }
+  }
+  if (opts?.videoCompress === false) return keep('视频编码兼容，且未开启视频压缩');
+  return compressVideo(buffer, e, percent);
 }
 
 /** 从磁盘路径读取图片尺寸（大图不整份读内存） */

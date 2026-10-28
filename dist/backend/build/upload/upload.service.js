@@ -646,6 +646,20 @@ let UploadService = class UploadService {
             return true;
         }
     }
+    async videoTranscodeEnabled() {
+        try {
+            const page = await this.sysConfig.get('page');
+            const item = (page?.config || []).find((x) => x.id === 'videoTranscodeIncompatible');
+            if (!item)
+                return true;
+            if (item.value === undefined || item.value === null || item.value === '')
+                return item.default !== false;
+            return item.value === true || item.value === 'true';
+        }
+        catch {
+            return true;
+        }
+    }
     async upload(input, opts) {
         this.activeUploads += 1;
         try {
@@ -678,14 +692,16 @@ let UploadService = class UploadService {
         const uploadIp = opts.ip || '';
         const uploadAddress = await this.cachedAddress(uploadIp);
         const wantCompress = opts.serverCompress ?? (await this.defaultServerCompress());
-        if (wantCompress) {
+        const wantTranscode = await this.videoTranscodeEnabled();
+        const isVideo = (mime || '').startsWith('video/');
+        if (wantCompress || (wantTranscode && isVideo)) {
             const srcExt = originalName.includes('.') ? String(originalName.split('.').pop() || '') : '';
             const pct = opts.compressPercent && opts.compressPercent > 0 ? opts.compressPercent : await this.defaultCompressPercent();
             if (size > COMPRESS_MAX_BYTES) {
                 console.log(`[upload] 跳过压缩：文件 ${(size / 1024 / 1024).toFixed(1)}MB 超过压缩上限`);
             }
             else if (srcPath) {
-                const r = await (0, compress_1.compressFile)(srcPath, mime, srcExt, pct);
+                const r = await (0, compress_1.compressFile)(srcPath, mime, srcExt, pct, { videoTranscode: wantTranscode, videoCompress: wantCompress === true });
                 if (r.compressed) {
                     srcPath = r.path;
                     size = r.size;
@@ -699,7 +715,7 @@ let UploadService = class UploadService {
                 }
             }
             else {
-                const r = await (0, compress_1.compressMedia)(buffer, mime, srcExt, pct);
+                const r = await (0, compress_1.compressMedia)(buffer, mime, srcExt, pct, { videoTranscode: wantTranscode, videoCompress: wantCompress === true });
                 if (r.compressed) {
                     const before = buffer.length;
                     buffer = r.buffer;

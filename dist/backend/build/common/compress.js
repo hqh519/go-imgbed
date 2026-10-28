@@ -37,6 +37,8 @@ exports.ffmpegAvailable = ffmpegAvailable;
 exports.compressMedia = compressMedia;
 exports.readDimensions = readDimensions;
 exports.compressFile = compressFile;
+exports.probeVideoCodecFile = probeVideoCodecFile;
+exports.probeVideoCodecBuffer = probeVideoCodecBuffer;
 exports.readDimensionsFile = readDimensionsFile;
 const child_process_1 = require("child_process");
 const fs_1 = require("fs");
@@ -51,23 +53,33 @@ const AUDIO_OK = new Set(['mp3', 'wav', 'm4a', 'aac', 'flac', 'ogg', 'opus']);
 const SKIP = new Set(['gif', 'svg', 'heic', 'heif', 'tiff', 'tif', 'bmp', 'ico', 'apng', 'psd']);
 let ffmpegChecked = false;
 let ffmpegPath = '';
+function resolveFfmpegStatic() {
+    try {
+        const p = require('ffmpeg-static');
+        return p || '';
+    }
+    catch {
+        return '';
+    }
+}
 function ffmpegAvailable() {
     if (ffmpegChecked)
         return !!ffmpegPath;
     ffmpegChecked = true;
     const envPath = String(process.env.FFMPEG_PATH || '').trim();
-    for (const bin of [envPath, 'ffmpeg'].filter(Boolean)) {
+    const staticPath = resolveFfmpegStatic();
+    for (const bin of [envPath, staticPath, 'ffmpeg'].filter(Boolean)) {
         try {
             (0, child_process_1.execFileSync)(bin, ['-version'], { stdio: 'ignore', timeout: 5000 });
             ffmpegPath = bin;
-            console.log(`[compress] ffmpeg 可用：${bin}（视频 / 音频压缩已启用）`);
+            console.log(`[compress] ffmpeg 可用：${bin === staticPath ? 'ffmpeg-static 内置二进制' : bin}（视频 / 音频压缩与转码已启用）`);
             return true;
         }
         catch {
         }
     }
     ffmpegPath = '';
-    console.log('[compress] 未检测到 ffmpeg：视频 / 音频将跳过压缩（图片压缩不受影响）');
+    console.log('[compress] 未检测到 ffmpeg：视频 / 音频将跳过压缩与转码（图片压缩不受影响）');
     return false;
 }
 function clampQuality(percent) {
@@ -190,13 +202,13 @@ async function compressAudio(buffer, ext, percent) {
         return keep(`ffmpeg 转码失败：${err.message}`);
     }
 }
-async function compressMedia(buffer, mime, ext, percent) {
+async function compressMedia(buffer, mime, ext, percent, opts) {
     const e = String(ext || '').toLowerCase().replace(/^\./, '');
     try {
         if ((mime || '').startsWith('image/'))
             return await compressImage(buffer, e, percent);
         if ((mime || '').startsWith('video/'))
-            return await compressVideo(buffer, e, percent);
+            return await processVideoBuffer(buffer, e, percent, opts);
         if ((mime || '').startsWith('audio/'))
             return await compressAudio(buffer, e, percent);
         return { buffer, mime: '', ext: '', compressed: false, reason: `${mime || e} 不支持压缩` };
@@ -218,7 +230,7 @@ async function readDimensions(buffer, mime, ext) {
     }
     return {};
 }
-async function compressFile(srcPath, mime, ext, percent) {
+async function compressFile(srcPath, mime, ext, percent, opts) {
     const e = String(ext || '').toLowerCase().replace(/^\./, '');
     let original = 0;
     try {
@@ -243,7 +255,7 @@ async function compressFile(srcPath, mime, ext, percent) {
         if ((mime || '').startsWith('image/'))
             return await compressImageFile(srcPath, e, percent, original);
         if ((mime || '').startsWith('video/'))
-            return await compressVideoFile(srcPath, e, percent, original);
+            return await processVideoFile(srcPath, e, percent, original, opts);
         if ((mime || '').startsWith('audio/'))
             return await compressAudioFile(srcPath, e, percent, original);
         return keep(`${mime || e} 不支持压缩`);
@@ -370,6 +382,180 @@ async function compressAudioFile(srcPath, e, percent, original) {
         ext: outExt,
         compressed: true,
     };
+}
+const VIDEO_CODEC_INCOMPATIBLE = new Set([
+    'hvc1', 'hev1',
+    'dvh1', 'dva1',
+    'vvc1',
+    'mp4v',
+    'ap4h', 'apcn', 'apch', 'apcs', 'apco',
+]);
+function parseMp4Boxes(buf, start, end) {
+    const out = [];
+    let p = start;
+    while (p + 8 <= end) {
+        let size = buf.readUInt32BE(p);
+        const type = buf.toString('latin1', p + 4, p + 8);
+        let header = 8;
+        if (size === 1) {
+            if (p + 16 > end)
+                break;
+            const hi = buf.readUInt32BE(p + 8);
+            const lo = buf.readUInt32BE(p + 12);
+            size = hi * 4294967296 + lo;
+            header = 16;
+        }
+        else if (size === 0) {
+            size = end - p;
+        }
+        if (size < header)
+            break;
+        out.push({ type, start: p + header, size: Math.min(size - header, end - p - header) });
+        p += size;
+    }
+    return out;
+}
+function collectStsdFourccs(buf, range) {
+    const found = [];
+    const walk = (start, end) => {
+        for (const box of parseMp4Boxes(buf, start, end)) {
+            const bs = box.start;
+            const be = box.start + box.size;
+            if (['moov', 'trak', 'mdia', 'minf', 'stbl'].includes(box.type)) {
+                walk(bs, be);
+            }
+            else if (box.type === 'stsd') {
+                let p = bs + 8;
+                while (p + 8 <= be) {
+                    const size = buf.readUInt32BE(p);
+                    if (size < 8)
+                        break;
+                    found.push(buf.toString('latin1', p + 4, p + 8).trim());
+                    p += size;
+                }
+            }
+        }
+    };
+    walk(range.start, range.start + range.size);
+    return found;
+}
+async function probeVideoCodecFile(srcPath) {
+    let fh = null;
+    try {
+        fh = await fs_1.promises.open(srcPath, 'r');
+        const stat = await fh.stat();
+        let offset = 0;
+        for (let guard = 0; guard < 64 && offset + 8 <= stat.size; guard++) {
+            const head = Buffer.alloc(16);
+            const { bytesRead } = await fh.read(head, 0, 16, offset);
+            if (bytesRead < 8)
+                return '';
+            let size = head.readUInt32BE(0);
+            const type = head.toString('latin1', 4, 8);
+            let header = 8;
+            if (size === 1) {
+                if (bytesRead < 16)
+                    return '';
+                size = head.readUInt32BE(8) * 4294967296 + head.readUInt32BE(12);
+                header = 16;
+            }
+            else if (size === 0) {
+                size = stat.size - offset;
+            }
+            if (size < header)
+                return '';
+            if (type === 'moov') {
+                const cap = Math.min(size, 64 * 1024 * 1024);
+                const moov = Buffer.alloc(cap);
+                await fh.read(moov, 0, cap, offset + header);
+                const fourccs = collectStsdFourccs(moov, { start: 0, size: cap });
+                return fourccs.find((c) => VIDEO_CODEC_INCOMPATIBLE.has(c)) || fourccs.find((c) => ['avc1', 'av01', 'vp09'].includes(c)) || '';
+            }
+            offset += size;
+        }
+        return '';
+    }
+    catch {
+        return '';
+    }
+    finally {
+        await fh?.close().catch(() => undefined);
+    }
+}
+function probeVideoCodecBuffer(buf) {
+    try {
+        if (buf.length < 16 || buf.toString('latin1', 4, 8) !== 'ftyp')
+            return '';
+        for (const box of parseMp4Boxes(buf, 0, buf.length)) {
+            if (box.type === 'moov') {
+                const fourccs = collectStsdFourccs(buf, box);
+                return fourccs.find((c) => VIDEO_CODEC_INCOMPATIBLE.has(c)) || fourccs.find((c) => ['avc1', 'av01', 'vp09'].includes(c)) || '';
+            }
+        }
+        return '';
+    }
+    catch {
+        return '';
+    }
+}
+async function transcodeVideoFile(srcPath, original) {
+    const keep = (reason) => ({ path: srcPath, size: original, mime: '', ext: '', compressed: false, reason });
+    const out = `${srcPath}.h264.mp4`;
+    try {
+        await run(ffmpegPath, ['-y', '-i', srcPath, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '24', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', '-c:a', 'aac', '-b:a', '128k', out], { timeout: 60 * 60 * 1000, maxBuffer: 16 * 1024 * 1024 });
+        const st = await fs_1.promises.stat(out);
+        if (!st.size) {
+            await fs_1.promises.rm(out, { force: true }).catch(() => undefined);
+            return keep('兼容转码输出为空');
+        }
+        return { path: out, size: st.size, mime: 'video/mp4', ext: '.mp4', compressed: true };
+    }
+    catch (err) {
+        await fs_1.promises.rm(out, { force: true }).catch(() => undefined);
+        return keep(`兼容转码失败：${err.message}`);
+    }
+}
+async function processVideoFile(srcPath, e, percent, original, opts) {
+    const keep = (reason) => ({ path: srcPath, size: original, mime: '', ext: '', compressed: false, reason });
+    if (opts?.videoTranscode && ['mp4', 'mov', 'm4v'].includes(e)) {
+        const codec = await probeVideoCodecFile(srcPath);
+        if (VIDEO_CODEC_INCOMPATIBLE.has(codec)) {
+            console.log(`[compress] 检测到浏览器不兼容编码 ${codec}，开始兼容转码 → H.264`);
+            return transcodeVideoFile(srcPath, original);
+        }
+        if (codec)
+            console.log(`[compress] 视频编码 ${codec} 浏览器可播，无需转码`);
+    }
+    if (opts?.videoCompress === false)
+        return keep('视频编码兼容，且未开启视频压缩');
+    return compressVideoFile(srcPath, e, percent, original);
+}
+async function processVideoBuffer(buffer, e, percent, opts) {
+    const keep = (reason) => ({ buffer, mime: '', ext: '', compressed: false, reason });
+    if (opts?.videoTranscode && ['mp4', 'mov', 'm4v'].includes(e)) {
+        const codec = probeVideoCodecBuffer(buffer);
+        if (VIDEO_CODEC_INCOMPATIBLE.has(codec)) {
+            if (!ffmpegAvailable())
+                return keep('未安装 ffmpeg，HEVC 视频跳过兼容转码');
+            const outExt = '.mp4';
+            try {
+                return await withTempFiles([`.${e}`, outExt], async ([src, dst]) => {
+                    await fs_1.promises.writeFile(src, buffer);
+                    await run(ffmpegPath, ['-y', '-i', src, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '24', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', '-c:a', 'aac', '-b:a', '128k', dst], { timeout: 30 * 60 * 1000, maxBuffer: 16 * 1024 * 1024 });
+                    const outBuf = await fs_1.promises.readFile(dst);
+                    if (!outBuf.length)
+                        return keep('兼容转码输出为空');
+                    return { buffer: outBuf, mime: 'video/mp4', ext: outExt, compressed: true };
+                });
+            }
+            catch (err) {
+                return keep(`兼容转码失败：${err.message}`);
+            }
+        }
+    }
+    if (opts?.videoCompress === false)
+        return keep('视频编码兼容，且未开启视频压缩');
+    return compressVideo(buffer, e, percent);
 }
 async function readDimensionsFile(path, mime, ext) {
     try {
