@@ -251,10 +251,12 @@ export default {
                 { label: this.$t('filter.unbackedUp'), value: 'unbackedup' }
             ];
         },
-        // v2.7.0：上传渠道选项（与后端 UPLOAD_SOURCES 对齐）
+        // v2.7.0：上传渠道选项（与后端 UPLOAD_SOURCES 对齐；v2.8.6 新增 Upload / Fetch）
         uploadSourceOptions() {
             return [
                 { label: this.$t('filter.uploadSourceDefault'), value: 'Default' },
+                { label: this.$t('filter.uploadSourceUpload'), value: 'Upload' },
+                { label: this.$t('filter.uploadSourceFetch'), value: 'Fetch' },
                 { label: this.$t('filter.uploadSourceWebdav'), value: 'WebDAV' },
                 { label: this.$t('filter.uploadSourceApiWeb'), value: 'API-Web' },
                 { label: this.$t('filter.uploadSourceApiS3'), value: 'API-S3' }

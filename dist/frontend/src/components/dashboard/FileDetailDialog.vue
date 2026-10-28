@@ -228,8 +228,8 @@
             </el-descriptions-item>
             <!-- 上传用户：记录该文件由哪个账户上传 -->
             <el-descriptions-item :label="$t('dashboard.uploadUser')">{{ file?.metadata?.UploadUser || $t('fileDetail.unknown') }}</el-descriptions-item>
-            <!-- 上传渠道：Default（前端上传页）/ WebDAV / API-Web / API-S3 -->
-            <el-descriptions-item :label="$t('fileDetail.uploadChannel')">{{ file?.metadata?.UploadSource || 'Default' }}</el-descriptions-item>
+            <!-- 上传渠道：Default（历史网页上传）/ Upload（文件模式）/ Fetch（链接模式）/ WebDAV / API-Web / API-S3 -->
+            <el-descriptions-item :label="$t('fileDetail.uploadChannel')">{{ uploadSourceLabel(file?.metadata?.UploadSource) }}</el-descriptions-item>
             <!-- 上传时长 / 上传速度：由后端记录的「开始 → 落库」时间差与文件体积算出 -->
             <el-descriptions-item :label="$t('fileDetail.uploadDuration')">{{ uploadDurationText }}</el-descriptions-item>
             <el-descriptions-item :label="$t('fileDetail.uploadSpeed')">{{ uploadSpeedText }}</el-descriptions-item>
@@ -719,6 +719,24 @@ export default {
         }
     },
     methods: {
+        /**
+         * 上传渠道展示名（v2.8.6）：
+         *   Default = 历史网页上传 ｜ Upload = 文件模式 ｜ Fetch = 链接模式转存
+         *   WebDAV / API-Web / API-S3 = 对外通道
+         * 未知值原样返回，避免历史数据被吞掉。
+         */
+        uploadSourceLabel(raw) {
+            const key = String(raw || 'Default');
+            const map = {
+                Default: 'filter.uploadSourceDefault',
+                Upload: 'filter.uploadSourceUpload',
+                Fetch: 'filter.uploadSourceFetch',
+                WebDAV: 'filter.uploadSourceWebdav',
+                'API-Web': 'filter.uploadSourceApiWeb',
+                'API-S3': 'filter.uploadSourceApiS3'
+            };
+            return map[key] ? this.$t(map[key]) : key;
+        },
         /**
          * 补拉详情接口：拿到「限时截止时间」与「作者备注」。
          * 列表接口为了性能与隐私不下发这两项，所以每次打开弹窗按需取一次。

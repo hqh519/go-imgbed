@@ -121,15 +121,16 @@ html.dark .mobile-drawer {
     border-radius: 2px;
 }
 .mobile-drawer-close {
-    width: 32px;
-    height: 32px;
+    /* v2.8.6b：关闭按钮调小（原 32×32 / 16px 图标），不再喧宾夺主 */
+    width: 24px;
+    height: 24px;
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 16px;
+    font-size: 13px;
     color: var(--el-text-color-secondary);
     cursor: pointer;
-    border-radius: 8px;
+    border-radius: 6px;
     transition: all 0.2s ease;
     background: transparent;
 }

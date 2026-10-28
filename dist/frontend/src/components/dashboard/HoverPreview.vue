@@ -2,7 +2,10 @@
     <!--
         v2.8.5：后台文件管理「悬停预览大图」浮层（仅 PC）。
         - 视频自动播放（静音循环），图片按原始比例展示
-        - 智能左右定位：锚点在屏幕左半 → 浮层在锚点右侧，反之在左侧
+        - v2.8.6b：锚定定位 —— 传入眼睛按钮矩形（anchor）时，浮层贴着眼睛弹出，
+          自动比较 上/下/左/右 四个方向的可视空间，哪边大放哪边，且永不覆盖眼睛；
+          PC 悬停与移动端长按都走这一套
+        - 未传 anchor 时保持旧行为：跟随鼠标智能左右定位
         - 媒体比例未知（未加载完成）时按 90vh 高度占位，加载后按真实比例收敛
         - 地址与卡片/列表缩略图同源（/file/xxx?from=admin），浏览器缓存复用
     -->
@@ -43,6 +46,11 @@ export default {
         y: { type: Number, default: 0 },
         src: { type: String, default: '' },
         type: { type: String, default: 'image' }, // 'image' | 'video'
+        // v2.8.6：触屏长按预览 —— 浮层居中显示（不再跟随手指位置，避免贴边）
+        touch: { type: Boolean, default: false },
+        // v2.8.6b：锚定矩形（眼睛按钮 getBoundingClientRect 的 JSON）
+        // { left, top, right, bottom, width, height } —— 传入后走「贴眼四向择大」定位
+        anchor: { type: Object, default: null },
     },
     data() {
         return {
@@ -64,6 +72,20 @@ export default {
                     w = maxW;
                     h = w / this.ratio;
                 }
+            }
+            if (this.anchor) {
+                return this.anchoredStyle(innerW, innerH, maxW, w, h);
+            }
+            if (this.touch) {
+                // 触屏（无锚点兜底）：始终居中，尺寸按 90% 视口收敛
+                const style = {
+                    top: `${Math.max((innerH - h) / 2, 8)}px`,
+                    left: `${Math.max((innerW - (w === null ? maxW : w)) / 2, 8)}px`,
+                    height: `${h}px`,
+                };
+                if (w !== null) style.width = `${w}px`;
+                else style.maxWidth = `${maxW}px`;
+                return style;
             }
             // 智能左右：锚点在左半屏 → 浮层放右侧；否则放左侧
             const onRight = this.x <= innerW / 2;
@@ -104,6 +126,77 @@ export default {
             const w = el.videoWidth || el.naturalWidth;
             const h = el.videoHeight || el.naturalHeight;
             if (w && h) this.ratio = w / h;
+        },
+        /**
+         * v2.8.6b：贴眼四向择大定位。
+         * 先比较眼睛矩形四周 上/下/左/右 的可视空间选一侧，
+         * 再把浮层尺寸收缩到该侧的可用空间内（保持宽高比），
+         * 与眼睛保持 gap 间距 —— 任何视口下都贴着眼弹出且不覆盖眼睛。
+         */
+        anchoredStyle(innerW, innerH, maxW, w, h) {
+            const a = this.anchor;
+            const gap = 10;
+            const edge = 8;
+            const centerX = (a.left + a.right) / 2;
+            const centerY = (a.top + a.bottom) / 2;
+            const space = {
+                top: a.top,
+                bottom: innerH - a.bottom,
+                left: a.left,
+                right: innerW - a.right,
+            };
+            // 选空间最大的一侧
+            let side = 'right';
+            let best = -1;
+            for (const key of ['right', 'bottom', 'top', 'left']) {
+                if (space[key] > best) {
+                    best = space[key];
+                    side = key;
+                }
+            }
+            // 该侧的可用绘制区域（扣除 gap 与视口留边）
+            const availW = side === 'left'
+                ? a.left - gap - edge
+                : side === 'right'
+                    ? innerW - edge - gap - a.right
+                    : innerW - edge * 2;
+            const availH = side === 'top'
+                ? a.top - gap - edge
+                : side === 'bottom'
+                    ? innerH - edge - gap - a.bottom
+                    : innerH - edge * 2;
+            // 尺寸收缩：比例已知按比例缩放进可用区域；未知则直接取可用区域（封顶 90% 视口）
+            let outW;
+            let outH;
+            if (w !== null) {
+                const scale = Math.min(availW / w, availH / h, 1);
+                outW = w * scale;
+                outH = h * scale;
+            } else {
+                outH = Math.min(innerH * 0.9, availH);
+                outW = Math.min(innerW * 0.9, availW, outH * 1.35);
+            }
+            let top;
+            let left;
+            if (side === 'top') {
+                top = a.top - gap - outH;
+                left = Math.min(Math.max(centerX - outW / 2, edge), innerW - outW - edge);
+            } else if (side === 'bottom') {
+                top = a.bottom + gap;
+                left = Math.min(Math.max(centerX - outW / 2, edge), innerW - outW - edge);
+            } else if (side === 'left') {
+                left = a.left - gap - outW;
+                top = Math.min(Math.max(centerY - outH / 2, edge), innerH - outH - edge);
+            } else {
+                left = a.right + gap;
+                top = Math.min(Math.max(centerY - outH / 2, edge), innerH - outH - edge);
+            }
+            return {
+                top: `${top}px`,
+                left: `${left}px`,
+                height: `${outH}px`,
+                width: `${outW}px`,
+            };
         },
     },
 };

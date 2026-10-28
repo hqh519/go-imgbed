@@ -732,9 +732,16 @@ methods: {
         // 上传限制覆盖：只在用户真的在「上传设置」里填过时才带，避免无谓传参
         const limitExts = this.localExtensions.join(',')
         const limitMB = Number(this.limitMaxSizeMB) > 0 ? Number(this.limitMaxSizeMB) : 0
+        /*
+         * 上传来源（v2.8.6）：后端落库 FileRecord.uploadSource。
+         *   「文件」模式 → Upload ｜「链接」模式转存 → Fetch
+         * 只影响后台「上传接口」统计与筛选，不影响渠道选择。
+         */
+        const source = this.uploadMethod === 'paste' ? 'Fetch' : 'Upload'
         return '&compressPercent=' + (p.compressPercent || 0) +
             '&backupChannel=' + encodeURIComponent(p.backupChannel || '') +
             '&originalSize=' + originalSize +
+            '&uploadSource=' + source +
             (limitExts ? '&allowedExtensions=' + encodeURIComponent(limitExts) : '') +
             (limitMB ? '&maxFileSizeMB=' + limitMB : '')
     },
@@ -2279,11 +2286,19 @@ methods: {
             this.$message({ type: 'warning', message: this.$t('upload.noValidUrlFound') });
             return;
         }
-        // 去重：列表里已有同链接（srcID）的条目不再重复拉取
+        // 去重：列表里已有同链接（srcID）的条目不再重复拉取；
+        // 输入框内部完全相同的链接也只保留一条（重复转存同链接没有意义）
         const existing = new Set(this.fileList.map(item => item.srcID || item.url).filter(Boolean));
-        const newUrls = validUrls.filter(url => !existing.has(url));
+        const uniqueUrls = Array.from(new Set(validUrls));
+        const dupInInput = validUrls.length - uniqueUrls.length;
+        const newUrls = uniqueUrls.filter(url => !existing.has(url));
+        const dupInList = uniqueUrls.length - newUrls.length;
+        const skippedDup = dupInInput + dupInList;
+        if (skippedDup > 0) {
+            // 明确告知「消失的文件」去哪了：重复链接被自动跳过（可感知，不静默）
+            this.$message({ type: 'info', message: this.$t('upload.pasteDuplicateSkipped', { count: skippedDup }) });
+        }
         if (!newUrls.length) {
-            this.$message({ type: 'info', message: this.$t('upload.extractNoNew') });
             return;
         }
         // 拉取期间给出可感知的加载提示（拉取完成后关闭）
@@ -2337,19 +2352,21 @@ methods: {
                     }
                     const file = payload.file;
                     // beforeUpload 只做校验 + 入列（压缩延后到点「上传」时）
-                    const processed = await this.beforeUpload(file);
-                    if (processed instanceof File) {
-                        const item = this.fileList.find(f => f.uid === file.uid);
-                        if (item) {
-                            // 链接模式固定「手动上传」语义：等待用户点「上传」。
-                            // 注意：不要设置 uploadChannel —— 上传时会把它作为渠道名
-                            // 发给后端，必须沿用全局所选渠道（与文件模式条目一致）；
-                            // 这里只记录 srcID 供再次转存同链接时去重。
-                            item.status = 'waiting';
-                            item.editableName = true;
-                            item.srcID = newUrls[i];
-                            okCount += 1;
-                        }
+                    await this.beforeUpload(file);
+                    // v2.8.6b 修复：手动模式 beforeUpload resolve false（v2.8.3 契约），
+                    // 旧代码 `processed instanceof File` 恒为假 → srcID 从未写入 →
+                    // 「列表里已有同链接不再重复拉取」的去重彻底失效，重复转存会无限堆积条目。
+                    // 改为按 uid 直接找回条目（beforeUpload 失败会 reject，走 catch 不会到这里）
+                    const item = this.fileList.find(f => f.uid === file.uid);
+                    if (item) {
+                        // 链接模式固定「手动上传」语义：等待用户点「上传」。
+                        // 注意：不要设置 uploadChannel —— 上传时会把它作为渠道名
+                        // 发给后端，必须沿用全局所选渠道（与文件模式条目一致）；
+                        // 这里只记录 srcID 供再次转存同链接时去重。
+                        item.status = 'waiting';
+                        item.editableName = true;
+                        item.srcID = newUrls[i];
+                        okCount += 1;
                     }
                 } catch (e) {
                     // beforeUpload 内部已弹过具体错误提示，这里只记录便于排查
@@ -3265,13 +3282,32 @@ html.dark .el-upload__text :deep(em) {
     height: 70%;
     border-radius: 16px;
     background: color-mix(in srgb, var(--primary-color) 4%, var(--glass-bg));
-    border: 1px solid var(--glass-border);
+    /* v2.8.6b：边框改由 ::after 覆盖层绘制 —— 收缩态下 1px 实体边框的顶边
+       会被合成层吞掉显示不出来（左右/下正常）；::after 绝对定位 + z-index
+       恒在最上层，配合 top:2px 让四条边任意状态都可见（见下方说明） */
     box-shadow: none;
     transition: background-color 0.22s ease, border-color 0.22s ease, box-shadow 0.22s ease;
     box-sizing: border-box;
     display: flex;
     position: relative;
     overflow: hidden;
+}
+.upload-card-textarea::after {
+    content: '';
+    position: absolute;
+    /* top:2px —— 收缩态下该区域的合成层会把顶部 0~2px 的绘制吞掉
+       （wrapper 边框/outline/::after 顶边均不可见，实测偏移），
+       顶边线下移 2px 即稳定显示；其余三边正常贴边 */
+    top: 2px;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    border: 1px solid var(--glass-border);
+    border-radius: 16px;
+    box-sizing: border-box;
+    pointer-events: none;
+    z-index: 2;
+    transition: border-color 0.22s ease;
 }
 .upload-card-busy .upload-card-textarea {
     /* v20261028：50% + min 96px 在矮卡里会裁掉 rows=4 的内层输入框上下边框；
@@ -3282,13 +3318,16 @@ html.dark .el-upload__text :deep(em) {
 
 .upload-card-textarea:hover {
     background: color-mix(in srgb, var(--primary-color) 6%, var(--glass-bg));
+}
+.upload-card-textarea:hover::after {
     border-color: var(--glass-border-hover);
 }
 
 .upload-card-textarea:focus-within {
     background: color-mix(in srgb, var(--primary-color) 7%, var(--glass-bg));
+}
+.upload-card-textarea:focus-within::after {
     border-color: color-mix(in srgb, var(--primary-color) 45%, var(--glass-border));
-    box-shadow: none;
 }
 
 .upload-card-textarea :deep(.el-textarea__inner) {
@@ -3671,6 +3710,51 @@ html.dark .el-upload__text :deep(em) {
         padding: 0 8px;
         font-size: 10px;
         border-radius: 6px;
+    }
+}
+
+/* ============================================================
+   v2.8.6：PC 收缩态（列表有文件）「链接 / 文件」两模式统一
+   ─ 问题①：收缩态卡片高度由内容撑开且无内边距，输入框上边框与外层虚线上边贴在一起；
+   ─ 问题②：链接模式卡高 ≈167px、文件模式卡高 = max(17vh,135px) ≈135px，
+            切换模式时整块区域高度跳变。
+   方案：两模式共用 --upload-card-busy-h（max(17vh,168px)）+ 12px 内边距，
+   内层（输入框 / 拖拽区）一律 flex:1 撑满剩余高度 —— 高度天然一致，
+   输入框与虚线框之间也留出了间隔；输入框下限约 3 行（1.6 × 14px 三行 + 上下 16px 内边距）。
+   仅作用于桌面端：移动端沿用既有 135px 下限 + 5px 内边距的调优结果。
+   ============================================================ */
+@media (min-width: 769px) {
+    .upload-form {
+        /* 12 + 12 内边距 + 约 101px 输入框 + 10px 间距 + 32px 按钮行 ≈ 167 → 取整 168 */
+        --upload-card-busy-h: max(var(--upload-card-busy-height), 168px);
+        --upload-card-busy-padding: 12px;
+    }
+
+    .upload-card-busy.default-card,
+    .upload-card-busy.paste-card {
+        height: var(--upload-card-busy-h);
+        min-height: 0;
+        padding: var(--upload-card-busy-padding);
+        overflow: hidden;
+    }
+
+    .upload-card-busy .default-upload-dragger,
+    .upload-card-busy .upload-card-textarea {
+        flex: 1 1 auto;
+        height: auto;
+        min-height: 0;
+    }
+
+    /* 输入框高度下限 ≈ 3 行可见文本，卡片再矮也不会把边框裁掉 */
+    .upload-card-busy .upload-card-textarea {
+        min-height: calc(3 * 1.6 * 14px + 34px);
+    }
+
+    /* 容器撑满后，内层 textarea 跟着拉伸填满（flex 默认 align-items:stretch） */
+    .upload-card-busy .upload-card-textarea :deep(.el-textarea__inner) {
+        height: 100%;
+        min-height: 0;
+        box-sizing: border-box;
     }
 }
 

@@ -692,7 +692,18 @@ export default {
     padding: 10px 12px;
   }
 
+  /* v2.8.6：之前整页是「100vh + 内部滚动」，顶栏在滚动容器之外 →
+     视觉上等于常驻粘滞，手机上一屏被筛选栏吃掉一大半。
+     移动端改为自然文档流（页面整体滚动），搜索/筛选栏随页面滚走。 */
+  .access-page {
+    height: auto;
+    min-height: 100vh;
+    min-height: 100dvh;
+  }
+
   .access-body {
+    flex: 0 0 auto;
+    overflow-y: visible;
     padding: 14px 12px 60px;
   }
 

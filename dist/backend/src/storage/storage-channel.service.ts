@@ -90,6 +90,25 @@ export class StorageChannelService {
     }
   }
 
+  /**
+   * 按渠道 ID 查渠道 —— **不区分是否启用**。
+   *
+   * 只给「把停用渠道当作错误报出来」的场景用（v2.8.6）：
+   * 上传时显式指定了渠道 ID，如果该渠道存在但被停用，必须明确报错，
+   * 不能静默换成全局主渠道 —— 否则用户以为传到了 A 渠道，实际落到别处。
+   * 判定「能不能真正写入」仍然只走 findById（它是唯一认 enabled 的入口）。
+   */
+  async findRawById(key?: string): Promise<{ id: string; code: string; name: string; type: string; enabled: boolean } | null> {
+    const k = String(key || '').trim();
+    if (!k) return null;
+    const c =
+      (await prisma.channel.findUnique({ where: { code: k } })) ||
+      (await prisma.channel.findUnique({ where: { id: k } })) ||
+      null;
+    if (!c) return null;
+    return { id: c.id, code: c.code, name: c.name, type: c.type, enabled: c.enabled };
+  }
+
   /** 按渠道 ID 查启用中的渠道（兼容 6 位 code 与主键 id） */
   async findById(key?: string): Promise<StorageChannelInfo | null> {
     const k = String(key || '').trim();

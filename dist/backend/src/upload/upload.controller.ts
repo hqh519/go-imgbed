@@ -9,6 +9,7 @@ import { OptionalAuthGuard, currentSession } from '../auth/auth.guard';
 import { UploadService } from './upload.service';
 import { SettingsService } from '../settings/settings.service';
 import { NO_BACKUP_VALUES } from '../storage/storage-channel.service';
+import { isClientUploadSource, normalizeUploadSource } from '../common/file-view';
 import { resolveVideoFromHtml } from './video-resolve';
 import { appLog } from '../common/app-log';
 import {
@@ -196,6 +197,11 @@ export class UploadController {
       allowedExtensions?: string;
       /** 前端上传设置临时指定的单文件大小上限（MB）—— 传了覆盖后台全局配置 */
       maxFileSizeMB?: string;
+      /**
+       * 上传来源（v2.8.6）：前端上传页「文件」模式传 Upload，「链接」模式传 Fetch。
+       * 只接受这两个值（防止伪造 WebDAV / API-* 来源），未传时按 Default（老客户端）。
+       */
+      uploadSource?: string;
     },
     @Body() body: Record<string, string>,
     @Req() req: Request & { session?: { user: string } },
@@ -242,6 +248,14 @@ export class UploadController {
     const overrideMaxMB = Number(q.maxFileSizeMB || 0) || 0;
 
     const arrivedAt = Number((req as unknown as { _arrivedAt?: number })._arrivedAt) || Date.now();
+    /*
+     * 上传来源（v2.8.6）：
+     *   「链接」模式转存的文件由服务端暂存后再提交（带 stagingId）→ 一律记 Fetch，
+     *   前端声明了合法来源（Upload / Fetch）按其声明走，
+     *   没声明（curl、老前端、第三方客户端）→ 归一化为 Default。
+     */
+    const declaredSource = isClientUploadSource(q.uploadSource) ? normalizeUploadSource(q.uploadSource) : '';
+    const uploadSource = q.stagingId ? 'Fetch' : declaredSource || 'Default';
     const opts = {
       uploadChannel: q.uploadChannel,
       // 渠道一律按 ID 匹配；兼容老前端传来的 channelName 参数名（其值同样是渠道 ID）
@@ -274,8 +288,8 @@ export class UploadController {
       autoRetry: q.autoRetry === 'true' || q.autoRetry === '1',
       // 账户关闭了「类型和大小限制」→ 跳过白名单与大小上限
       skipFileLimits: !enforceLimits,
-      // 上传渠道：走「默认」通道（前端上传页）
-      uploadSource: 'Default',
+      // 上传渠道：前端「文件」模式 = Upload，「链接」模式转存 = Fetch，其它入口 = Default
+      uploadSource,
       // 上传开始时间（请求到达时刻）→ 详情页「上传时长 / 上传速度」
       uploadStartedAt: new Date(arrivedAt),
       // 前端临时指定的格式/大小限制（空值表示沿用后台全局设置）

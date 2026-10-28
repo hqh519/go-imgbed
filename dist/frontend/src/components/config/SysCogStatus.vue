@@ -1115,11 +1115,13 @@ export default {
       return this.trendColors[index % this.trendColors.length]
     },
     // 格式化趋势序列名称
-    /** 上传接口展示名（Default / WebDAV / API-Web / API-S3 → 文案） */
+    /** 上传接口展示名（Default / Upload / Fetch / WebDAV / API-Web / API-S3 → 文案） */
     uploadSourceLabel(raw) {
       const key = String(raw || '')
       const map = {
         Default: 'filter.uploadSourceDefault',
+        Upload: 'filter.uploadSourceUpload',
+        Fetch: 'filter.uploadSourceFetch',
         WebDAV: 'filter.uploadSourceWebdav',
         'API-Web': 'filter.uploadSourceApiWeb',
         'API-S3': 'filter.uploadSourceApiS3'
@@ -3056,6 +3058,18 @@ html.dark .legend-item:hover {
   .trend-controls {
     width: 100%;
     justify-content: stretch;
+    /* v2.8.6：5 个分组标签在窄屏装不下时改为横向滑动查看，
+       不再让 flex:1 把每个标签压扁导致文字换行、按钮错位 */
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    padding-bottom: 2px;
+  }
+
+  .trend-controls::-webkit-scrollbar {
+    display: none;
   }
 
   .trend-date-dialog :deep(.el-dialog__body) {
@@ -3063,16 +3077,19 @@ html.dark .legend-item:hover {
   }
 
   .trend-group-switch {
-    width: 100%;
+    width: auto;
+    max-width: none;
+    flex: 0 0 auto;
   }
 
   .trend-group-switch :deep(.el-radio-button) {
-    flex: 1;
+    flex: 0 0 auto;
   }
 
   .trend-group-switch :deep(.el-radio-button__inner) {
-    width: 100%;
-    padding: 0 10px;
+    width: auto;
+    padding: 0 12px;
+    white-space: nowrap;
   }
 
   .line-chart-wrapper,

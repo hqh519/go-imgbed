@@ -1,1 +1,0 @@
-import{aL as i,aM as r}from"./index-CyaG3pl-.js";let t=!1;async function n(e,a={}){e.startsWith("/api")||(e=`/api${e}`),a.credentials="include",a.headers={...a.headers};const s=await fetch(e,a);return s.status===401&&!t&&(t=!0,i.commit("setAdminLoggedIn",!1),r.push("/adminLogin").finally(()=>{t=!1})),s}export{n as f};

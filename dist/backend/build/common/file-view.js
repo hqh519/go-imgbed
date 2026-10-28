@@ -1,7 +1,8 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.CHANNEL_SHORT = exports.CHANNEL_LABEL = exports.UPLOAD_SOURCES = void 0;
+exports.CHANNEL_SHORT = exports.CHANNEL_LABEL = exports.CLIENT_UPLOAD_SOURCES = exports.UPLOAD_SOURCES = void 0;
 exports.normalizeUploadSource = normalizeUploadSource;
+exports.isClientUploadSource = isClientUploadSource;
 exports.buildUploadTiming = buildUploadTiming;
 exports.channelShort = channelShort;
 exports.fileTypeOf = fileTypeOf;
@@ -14,10 +15,14 @@ exports.buildDirectoryTree = buildDirectoryTree;
 exports.buildMetadata = buildMetadata;
 exports.serializeFile = serializeFile;
 exports.normalizeDir = normalizeDir;
-exports.UPLOAD_SOURCES = ['Default', 'WebDAV', 'API-Web', 'API-S3'];
+exports.UPLOAD_SOURCES = ['Default', 'Upload', 'Fetch', 'WebDAV', 'API-Web', 'API-S3'];
+exports.CLIENT_UPLOAD_SOURCES = ['Upload', 'Fetch'];
 function normalizeUploadSource(raw) {
     const v = String(raw || '').trim();
     return exports.UPLOAD_SOURCES.includes(v) ? v : 'Default';
+}
+function isClientUploadSource(raw) {
+    return exports.CLIENT_UPLOAD_SOURCES.includes(String(raw || '').trim());
 }
 function buildUploadTiming(rec) {
     const start = rec.uploadStartedAt ? new Date(rec.uploadStartedAt).getTime() : 0;

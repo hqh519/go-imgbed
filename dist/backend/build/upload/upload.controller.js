@@ -24,6 +24,7 @@ const auth_guard_1 = require("../auth/auth.guard");
 const upload_service_1 = require("./upload.service");
 const settings_service_1 = require("../settings/settings.service");
 const storage_channel_service_1 = require("../storage/storage-channel.service");
+const file_view_1 = require("../common/file-view");
 const video_resolve_1 = require("./video-resolve");
 const app_log_1 = require("../common/app-log");
 const upload_session_1 = require("./upload-session");
@@ -117,6 +118,8 @@ let UploadController = class UploadController {
             .filter(Boolean);
         const overrideMaxMB = Number(q.maxFileSizeMB || 0) || 0;
         const arrivedAt = Number(req._arrivedAt) || Date.now();
+        const declaredSource = (0, file_view_1.isClientUploadSource)(q.uploadSource) ? (0, file_view_1.normalizeUploadSource)(q.uploadSource) : '';
+        const uploadSource = q.stagingId ? 'Fetch' : declaredSource || 'Default';
         const opts = {
             uploadChannel: q.uploadChannel,
             channelId: q.channelId ?? q.channelName,
@@ -131,7 +134,7 @@ let UploadController = class UploadController {
             backupChannelId,
             autoRetry: q.autoRetry === 'true' || q.autoRetry === '1',
             skipFileLimits: !enforceLimits,
-            uploadSource: 'Default',
+            uploadSource,
             uploadStartedAt: new Date(arrivedAt),
             limitsOverride: {
                 exts: overrideExts.length ? overrideExts : undefined,

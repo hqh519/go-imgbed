@@ -12,17 +12,30 @@ export type FileTypeName = 'image' | 'video' | 'audio' | 'other';
 /**
  * 「上传渠道」—— 文件是从哪个入口传上来的（落库 FileRecord.uploadSource）。
  * 后台文件详情的「上传用户」后面会显示这个值。
- *   Default —— go-imgbed 前端上传页
+ *   Default —— 历史数据（v2.8.6 之前的前端上传页，统一按此归类）
+ *   Upload  —— 前端上传页「文件」模式（v2.8.6 起）
+ *   Fetch   —— 前端上传页「链接」模式转存 / 链接暂存提交（v2.8.6 起）
  *   WebDAV  —— 对外 WebDAV
  *   API-Web —— API Token 的「Web 通用」通道
  *   API-S3  —— API Token 的「S3 协议」通道
  */
-export const UPLOAD_SOURCES = ['Default', 'WebDAV', 'API-Web', 'API-S3'] as const;
+export const UPLOAD_SOURCES = ['Default', 'Upload', 'Fetch', 'WebDAV', 'API-Web', 'API-S3'] as const;
 
-/** 归一化上传渠道值：空值/未知值一律按 Default（历史数据的文件都是前端上传页传的） */
+/** 前端上传页允许声明的来源（其它来源只能由服务端通道自己写死，不接受外部指定） */
+export const CLIENT_UPLOAD_SOURCES = ['Upload', 'Fetch'] as const;
+
+/**
+ * 归一化上传渠道值：空值/未知值一律按 Default（历史数据的文件都是前端上传页传的）。
+ * 注意：调用方若想把前端声明的来源透传进来，必须先确认它在白名单内（见 CLIENT_UPLOAD_SOURCES）。
+ */
 export function normalizeUploadSource(raw?: string | null): string {
   const v = String(raw || '').trim();
   return (UPLOAD_SOURCES as readonly string[]).includes(v) ? v : 'Default';
+}
+
+/** 前端上传页声明的来源是否合法（只认 Upload / Fetch，避免伪造 WebDAV / API-* 来源） */
+export function isClientUploadSource(raw?: string | null): boolean {
+  return (CLIENT_UPLOAD_SOURCES as readonly string[]).includes(String(raw || '').trim());
 }
 
 /**

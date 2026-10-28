@@ -208,6 +208,7 @@
 </template>
 
 <script>
+import { splitFileName } from '../utils/fileName';
 import fetchWithAuth from '@/utils/fetchWithAuth';
 import { copyText } from '@/utils/clipboard';
 import { fileLink } from '@/utils/fileLink';
@@ -345,9 +346,7 @@ export default {
      * 宽度不足时呈现 `cover-2…10-18.png` 效果，且随容器宽度自适应。
      */
     nameParts(item) {
-      const full = String(item?.metadata?.FileName || item?.name || '');
-      if (full.length <= 24) return { start: full, end: '' };
-      return { start: full.slice(0, -12), end: full.slice(-12) };
+      return splitFileName(String(item?.metadata?.FileName || item?.name || ''));
     },
     /** 文件外链：全站统一出口（自定义访问域名优先）+ File_ID + 原扩展名 */
     urlOf(item) {
@@ -601,6 +600,15 @@ export default {
   .history-topbar {
     position: static;
   }
+
+  /* v2.8.6：同访问记录页 —— 移动端改为自然文档流，
+     顶部搜索/筛选栏随页面一起滚动，不再常驻吃掉半屏高度 */
+  .history-page {
+    height: auto;
+    min-height: 100vh;
+    min-height: 100dvh;
+  }
+
 }
 
 .topbar-left,
@@ -943,6 +951,10 @@ export default {
   }
 
   .history-body {
+    /* v2.8.6：取消内部滚动（基础规则 overflow-y:auto 在此覆盖）——
+       页面整体滚动，顶部搜索/筛选栏随内容滚走 */
+    flex: 0 0 auto;
+    overflow-y: visible;
     padding: 16px 12px 60px;
   }
 

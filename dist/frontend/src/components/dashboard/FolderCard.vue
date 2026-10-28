@@ -63,6 +63,7 @@
 </template>
 
 <script>
+import { splitFileName } from '../../utils/fileName';
 export default {
     name: 'FolderCard',
     props: {
@@ -88,10 +89,9 @@ export default {
          * v2.8.0：文件夹名中间省略（与 FileCard 文件名同规则）：
          * ≤24 全显，否则保留头部与尾部各 12 字符，中段由 CSS 按宽度自动省略。
          */
+        /* v2.8.6：文件夹名中间省略统一口径 */
         folderNameParts() {
-            const name = this.folderName || '';
-            if (name.length <= 24) return { start: name, end: '' };
-            return { start: name.slice(0, -12), end: name.slice(-12) };
+            return splitFileName(this.folderName || '');
         },
         /** 「X 个子文件夹 · Y 个文件」；统计缺失时显示占位 */
         statsText() {

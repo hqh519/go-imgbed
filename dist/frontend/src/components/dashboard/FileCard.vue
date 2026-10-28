@@ -88,19 +88,6 @@
                 </div>
 
                 <div class="overlay-actions" @click.stop>
-                    <!-- v2.8.5：小眼睛悬停预览大图（仅 PC 悬停触发，父组件判定触屏跳过；仅图片/视频才有预览） -->
-                    <el-tooltip v-if="isImage || isVideo" :disabled="disableTooltip" :content="$t('dashboard.hoverPreview')" placement="top" :show-after="600">
-                        <button
-                            class="overlay-btn"
-                            data-role="preview-eye"
-                            @click.stop="$emit('preview', $event)"
-                            @mouseenter="$emit('preview', $event)"
-                            @mousemove="$emit('previewMove', $event)"
-                            @mouseleave="$emit('previewEnd')"
-                        >
-                            <font-awesome-icon icon="eye"></font-awesome-icon>
-                        </button>
-                    </el-tooltip>
                     <el-tooltip :disabled="disableTooltip" :content="$t('dashboard.copyLink')" placement="top" :show-after="600">
                         <button class="overlay-btn" @click.stop="$emit('copy')">
                             <font-awesome-icon icon="copy"></font-awesome-icon>
@@ -141,15 +128,42 @@
                 <span class="upload-time">{{ uploadDate }}</span>
                 <span class="upload-size">{{ fileSizeDisplay }}</span>
             </div>
-            <div v-if="uploadUser" class="upload-user" :title="$t('dashboard.uploadUser')">
-                <font-awesome-icon icon="user" />
-                {{ uploadUser }}
+            <!-- v2.8.6：第三行 —— 左侧预览小眼睛（与上传用户同色），右侧上传用户 -->
+            <div class="card-footer">
+                <el-tooltip
+                    v-if="isImage || isVideo"
+                    :disabled="disableTooltip"
+                    :content="$t('dashboard.hoverPreview')"
+                    placement="top"
+                    :show-after="600"
+                >
+                    <button
+                        type="button"
+                        class="card-eye-btn"
+                        data-role="preview-eye"
+                        :aria-label="$t('dashboard.hoverPreview')"
+                        @click.stop
+                        @mouseenter="handleEyeEnter"
+                        @mouseleave="$emit('previewEnd')"
+                        @touchstart.stop.prevent="handleEyeTouchStart"
+                        @touchmove.stop="handleEyeTouchMove"
+                        @touchend.stop="handleEyeTouchEnd"
+                        @touchcancel.stop="handleEyeTouchEnd"
+                    >
+                        <font-awesome-icon icon="eye"></font-awesome-icon>
+                    </button>
+                </el-tooltip>
+                <span v-if="uploadUser" class="upload-user" :title="uploadUser">
+                    <font-awesome-icon icon="user" />
+                    {{ uploadUser }}
+                </span>
             </div>
         </div>
     </div>
 </template>
 
 <script>
+import { splitFileName } from '../../utils/fileName';
 export default {
     name: 'FileCard',
     props: {
@@ -164,7 +178,10 @@ export default {
         return {
             localSelected: this.selected,
             videoLoading: true,
-            videoError: false
+            videoError: false,
+            // v2.8.6：小眼睛长按预览计时器（移动端）
+            eyePressTimer: null,
+            eyePreviewing: false
         }
     },
     computed: {
@@ -236,11 +253,9 @@ export default {
             if (keepStart <= 3) return `${full.slice(0, max - 1)}…`;
             return `${full.slice(0, keepStart)}…${full.slice(-keepEnd)}`;
         },
-        /** v2.7.0：文件名中间省略（与历史记录同规则：≤24 全显，否则保留头部与尾部/扩展名） */
+        /** v2.8.6：文件名中间省略（统一走 splitFileName：任何宽度都是「开头…结尾」） */
         nameParts() {
-            const name = this.fullName || '';
-            if (name.length <= 24) return { start: name, end: '' };
-            return { start: name.slice(0, -12), end: name.slice(-12) };
+            return splitFileName(this.fullName || '');
         },
         /** 上传日期（与历史记录一致：年-月-日） */
         uploadDate() {
@@ -278,7 +293,58 @@ export default {
             this.videoError = false;
         }
     },
+    beforeUnmount() {
+        this.clearEyePressTimer();
+    },
     methods: {
+        /* v2.8.6b：PC 悬停小眼睛 → 预览锚定在眼睛矩形上（不再跟随鼠标移动） */
+        handleEyeEnter(e) {
+            this.$emit('preview', e, { rect: e.currentTarget.getBoundingClientRect() });
+        },
+        /* v2.8.6：移动端长按小眼睛预览 —— 触屏没有 hover，按住 350ms 后弹预览，
+           松手/明显滑动即收起；.stop 阻止冒泡到卡片，避免同时触发「长按打开操作面板」。
+           v2.8.6b 修复：真机上手指按下时的微小抖动也会触发 touchmove，
+           之前只要一动就取消计时 → 长按永远弹不出来；现在 10px 内的移动不算滑动 */
+        handleEyeTouchStart(e) {
+            this.clearEyePressTimer();
+            const point = e.touches && e.touches[0] ? e.touches[0] : e;
+            this._eyeStartX = point.clientX || 0;
+            this._eyeStartY = point.clientY || 0;
+            // currentTarget 在事件派发结束后会被置空，必须在定时器外先取好
+            const btnRect = e.currentTarget ? e.currentTarget.getBoundingClientRect() : null;
+            this.eyePressTimer = setTimeout(() => {
+                this.eyePressTimer = null;
+                this.eyePreviewing = true;
+                // 锚点用眼睛按钮自身的矩形（而非触点），保证浮层贴着眼睛弹出
+                const rect = btnRect || { left: this._eyeStartX, top: this._eyeStartY, right: this._eyeStartX, bottom: this._eyeStartY };
+                this.$emit('preview', { clientX: this._eyeStartX, clientY: this._eyeStartY }, { touch: true, rect });
+            }, 350);
+        },
+        handleEyeTouchMove(e) {
+            // 手指明显滑动（>10px）才视为滚动页面，取消长按；微抖不取消
+            const point = e.touches && e.touches[0];
+            if (point && typeof this._eyeStartX === 'number') {
+                const dx = point.clientX - this._eyeStartX;
+                const dy = point.clientY - this._eyeStartY;
+                if (dx * dx + dy * dy > 100) {
+                    this.clearEyePressTimer();
+                    if (this.eyePreviewing) this.handleEyeTouchEnd();
+                }
+            }
+        },
+        handleEyeTouchEnd() {
+            this.clearEyePressTimer();
+            if (this.eyePreviewing) {
+                this.eyePreviewing = false;
+                this.$emit('previewEnd');
+            }
+        },
+        clearEyePressTimer() {
+            if (this.eyePressTimer) {
+                clearTimeout(this.eyePressTimer);
+                this.eyePressTimer = null;
+            }
+        },
         handleVideoError() {
             this.videoLoading = false;
             this.videoError = true;
@@ -573,15 +639,61 @@ export default {
     opacity: 0.65;
     color: var(--upload-text-color);
 }
+/* v2.8.6：第三行 —— 左：预览小眼睛（与上传用户同色），右：上传用户 */
+.card-footer {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 18px;
+    margin-top: 4px;
+}
+.card-eye-btn {
+    flex: 0 0 auto;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    border: none;
+    background: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    line-height: 1;
+    /* 与上传用户文本同色同透明度，视觉上属于同一行信息 */
+    color: var(--upload-text-color);
+    opacity: 0.7;
+    cursor: pointer;
+    transition: opacity 0.2s ease, transform 0.2s ease;
+    /* 触屏长按预览：禁止系统「长按选中/弹出菜单」 */
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
+}
+.card-eye-btn:hover {
+    opacity: 1;
+    transform: scale(1.08);
+}
+.card-eye-btn:active {
+    transform: scale(0.95);
+}
+.card-eye-btn:focus-visible {
+    outline: none;
+    opacity: 1;
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary-color, #2563EB) 28%, transparent);
+    border-radius: 5px;
+}
 .upload-user {
     display: inline-flex;
     align-items: center;
     gap: 4px;
+    margin-left: auto;
     font-size: 12px;
     opacity: 0.7;
-    margin-top: 4px;
     max-width: 100%;
+    min-width: 0;
     overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
     color: var(--upload-text-color);
 }
 

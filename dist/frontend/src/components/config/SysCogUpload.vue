@@ -299,14 +299,15 @@
                         </div>
                     </div>
                     <div class="card-actions">
-                        <el-button text type="primary" size="small" @click="testChannel(channel)">
-                            <font-awesome-icon icon="plug" style="margin-right: 4px;"/>测试
-                        </el-button>
+                        <!--
+                            v2.8.6：卡片上的「测试」按钮已移除（连接测试统一收在「详情 / 编辑」弹窗里），
+                            释放出来的宽度让「详情 / 编辑 / 授权 / 更多」四个按钮稳定排在同一行。
+                        -->
                         <el-button text type="primary" size="small" @click="openDetailDialog(channelType.value, channel)">
-                            <font-awesome-icon icon="eye" style="margin-right: 4px;"/>详情
+                            <font-awesome-icon icon="eye" style="margin-right: 3px;"/>详情
                         </el-button>
                         <el-button text type="primary" size="small" @click="openEditDialog(channelType.value, channel)">
-                            <font-awesome-icon icon="edit" style="margin-right: 4px;"/>编辑
+                            <font-awesome-icon icon="edit" style="margin-right: 3px;"/>编辑
                         </el-button>
                         <!-- v2.6.0：本地存储渠道也开放「授权」设置（名单为空 = 全员可用兜底，非空 = 仅勾选账户） -->
                         <el-button
@@ -315,11 +316,11 @@
                             size="small"
                             @click="openAuthDialog(channel)"
                         >
-                            <font-awesome-icon icon="user-cog" style="margin-right: 4px;"/>授权
+                            <font-awesome-icon icon="user-cog" style="margin-right: 3px;"/>授权
                         </el-button>
                         <el-dropdown trigger="click" @command="(cmd) => handleCardCommand(cmd, channel)">
                             <el-button text type="primary" size="small">
-                                <font-awesome-icon icon="ellipsis-h" style="margin-right: 4px;"/>更多
+                                <font-awesome-icon icon="ellipsis-h" style="margin-right: 3px;"/>更多
                             </el-button>
                             <template #dropdown>
                                 <el-dropdown-menu>
@@ -557,6 +558,7 @@ import ChannelFields from './ChannelFields.vue';
 import CustomSelect from './CustomSelect.vue';
 import { CHANNEL_TYPES, ADDABLE_CHANNEL_TYPES, SUMMARY_KEYS, TYPE_TIPS, fieldsOf, buildDefaults, visibleFields } from './channel-schema';
 import { copyText } from '@/utils/clipboard';
+import { invalidateStorageChannels } from '@/utils/storageChannels';
 
 export default {
     name: 'SysCogUpload',
@@ -709,6 +711,11 @@ export default {
         /* ------------ 数据加载 ------------ */
         async loadChannels() {
             this.loading = true;
+            /*
+             * v2.8.6：渠道列表有增删改时同步清掉「上传页渠道下拉」的模块级缓存，
+             * 让停用的渠道立刻从前台上传设置的「存储渠道选择」里消失（无需刷新页面）。
+             */
+            invalidateStorageChannels();
             try {
                 const resp = await fetchWithAuth('/api/manage/channels');
                 if (resp.ok) {
@@ -1423,12 +1430,27 @@ export default {
     display: flex;
     justify-content: flex-end;
     align-items: center;
-    gap: 4px;
+    gap: 2px;
     padding: 10px 16px;
     border-top: 1px solid var(--glass-header-border);
     background: var(--glass-header-bg);
     margin-top: auto;
-    flex-wrap: wrap;
+    /* v2.8.6：详情/编辑/授权/更多 固定一行 —— 不换行，按钮按需压缩内边距 */
+    flex-wrap: nowrap;
+    min-width: 0;
+}
+
+/* 按钮文字不折行；宽度不够时只压缩内边距，四个按钮始终同一行 */
+.card-actions :deep(.el-button) {
+    padding-left: 8px;
+    padding-right: 8px;
+    flex: 0 1 auto;
+    min-width: 0;
+    white-space: nowrap;
+}
+
+.card-actions :deep(.el-dropdown) {
+    flex: 0 0 auto;
 }
 
 .empty-tip {

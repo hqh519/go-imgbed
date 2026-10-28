@@ -299,8 +299,9 @@
                         <font-awesome-icon icon="plus" class="new-folder-icon"/>
                         <span class="new-folder-text">{{ $t('dashboard.newFolder') }}</span>
                     </el-button>
-                    <!-- 历史记录：位于数量统计徽章左侧 -->
-                    <el-button class="history-btn" size="small" type="primary" plain :title="$t('dashboard.history')" @click="goHistoryPage">
+                    <!-- 历史记录：位于数量统计徽章左侧
+                         v2.8.6b：去掉 primary plain 配色 —— 文本/边框颜色与「新建目录」一致 -->
+                    <el-button class="history-btn" size="small" :title="$t('dashboard.history')" @click="goHistoryPage">
                         <font-awesome-icon icon="history" class="history-btn-icon"/>
                         <span class="history-btn-text">{{ $t('dashboard.history') }}</span>
                     </el-button>
@@ -364,7 +365,7 @@
                         @touchstart="handleTouchStart(item, index)"
                         @touchend="handleTouchEnd"
                         @touchmove="handleTouchEnd"
-                        @preview="openHoverPreview(item, $event)"
+                        @preview="(evt, opts) => openHoverPreview(item, evt, opts)"
                         @previewMove="moveHoverPreview($event)"
                         @previewEnd="closeHoverPreview"
                     />
@@ -411,7 +412,7 @@
                         @touchstart="isFolder(item) ? handleFolderTouchStart(item, index) : handleTouchStart(item, index)"
                         @touchend="handleTouchEnd"
                         @touchmove="handleTouchEnd"
-                        @preview="openHoverPreview(item, $event)"
+                        @preview="(evt, opts) => openHoverPreview(item, evt, opts)"
                         @previewMove="moveHoverPreview($event)"
                         @previewEnd="closeHoverPreview"
                     />
@@ -479,13 +480,16 @@
             @action="handleBatchAction"
             @clear="clearSelection"
         />
-        <!-- v2.8.5：悬停预览大图浮层（PC：卡片小眼睛 / 列表缩略图悬停） -->
+        <!-- v2.8.5：悬停预览大图浮层（PC：卡片小眼睛 / 列表缩略图悬停）
+             v2.8.6：移动端长按小眼睛 / 缩略图同样弹出（浮层居中显示） -->
         <HoverPreview
             :visible="hoverPreview.visible"
             :x="hoverPreview.x"
             :y="hoverPreview.y"
             :src="hoverPreview.src"
             :type="hoverPreview.type"
+            :touch="hoverPreview.touch"
+            :anchor="hoverPreview.anchor"
         />
         <!-- 文件详情弹窗 -->
         <FileDetailDialog
@@ -738,7 +742,7 @@ data() {
         currentTagFile: '', // 当前标签管理的文件
         viewMode: 'card', // 视图模式：card 或 list
         // v2.8.5：悬停预览大图（PC 卡片小眼睛 / 列表缩略图）
-        hoverPreview: { visible: false, x: 0, y: 0, src: '', type: 'image' },
+        hoverPreview: { visible: false, x: 0, y: 0, src: '', type: 'image', touch: false, anchor: null },
         showMobileActionModal: false, // 移动端操作模态框
         mobileActionFile: null, // 当前移动端操作的文件
         mobileActionIndex: -1, // 当前移动端操作的文件索引
@@ -2375,16 +2379,23 @@ methods: {
             ? window.matchMedia('(hover: hover) and (pointer: fine)').matches
             : true;
     },
-    openHoverPreview(item, evt) {
+    openHoverPreview(item, evt, opts) {
         if (!item || item.isFolder) return;
-        if (!this.canHoverPreview()) return;
+        // v2.8.6：触屏长按调用时显式传 { touch: true }，跳过「只允许 PC 悬停」的判断
+        const touch = !!(opts && opts.touch);
+        if (!touch && !this.canHoverPreview()) return;
         if (!this.isImage(item) && !this.isVideo(item)) return;
+        // 触摸事件坐标在 touches[0] 上（长按回调里已归一为 clientX/clientY）
+        const point = (evt && evt.touches && evt.touches[0]) || evt || {};
         this.hoverPreview = {
             visible: true,
-            x: evt?.clientX || 0,
-            y: evt?.clientY || 0,
+            x: point.clientX || 0,
+            y: point.clientY || 0,
             src: this.getFileLink(item.name),
             type: this.isVideo(item) ? 'video' : 'image',
+            touch,
+            // v2.8.6b：眼睛按钮矩形 —— 浮层贴眼四向择大弹出（不覆盖眼睛）
+            anchor: (opts && opts.rect) || null,
         };
     },
     moveHoverPreview(evt) {
@@ -2992,7 +3003,7 @@ beforeUnmount() {
     margin-left: 4px;
     padding: 6px 10px;
 }
-/* 回收站模式提示条 */
+/* 回收站模式提示条（v2.8.6：底色加深，暗色/亮色下都足够醒目） */
 .trash-banner {
     display: flex;
     align-items: center;
@@ -3001,9 +3012,10 @@ beforeUnmount() {
     padding: 8px 14px;
     border-radius: 10px;
     font-size: 13px;
+    font-weight: 500;
     color: var(--el-color-danger);
-    background: color-mix(in srgb, var(--el-color-danger) 10%, transparent);
-    border: 1px solid color-mix(in srgb, var(--el-color-danger) 30%, transparent);
+    background: color-mix(in srgb, var(--el-color-danger) 18%, var(--toolbar-button-bg-color, #fff));
+    border: 1px solid color-mix(in srgb, var(--el-color-danger) 45%, transparent);
 }
 .trash-banner-icon {
     font-size: 13px;

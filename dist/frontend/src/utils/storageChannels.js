@@ -20,7 +20,18 @@ import fetchWithAuth from '@/utils/fetchWithAuth';
 
 /** 渠道列表缓存（同一会话内只拉一次；force=true 强制刷新） */
 let channelCache = null;
+let channelCacheAt = 0;
 let inflight = null;
+/**
+ * 缓存有效期（v2.8.6）。
+ *
+ * 之前的实现是「整个会话只拉一次」，于是在后台把某个渠道的启用开关关掉、
+ * 再回到上传页打开「上传设置」时，下拉里仍然保留着那个已停用的渠道
+ * （SPA 内跳转不会重新挂载模块，缓存一直活着）。
+ * 现在改为短 TTL：超过 TTL 自动重拉；后台增删改渠道时还会主动
+ * `invalidateStorageChannels()`，两条路一起保证「下拉里永远没有停用渠道」。
+ */
+const CHANNEL_CACHE_TTL = 15 * 1000;
 
 /**
  * 渠道类型编号 —— 与后端 `CHANNEL_TYPE_CODE` 完全一致（排序用，与渠道 code 无关）：
@@ -57,7 +68,8 @@ export function channelTypeCode(type) {
  * 拉取失败时返回空数组（不抛错，避免阻塞设置页渲染）。
  */
 export async function fetchStorageChannels(force = false) {
-    if (channelCache && !force) return channelCache;
+    const fresh = channelCache && Date.now() - channelCacheAt < CHANNEL_CACHE_TTL;
+    if (fresh && !force) return channelCache;
     if (inflight && !force) return inflight;
     inflight = fetchWithAuth('/api/channels')
         .then((resp) => (resp && resp.ok ? resp.json() : null))
@@ -68,6 +80,13 @@ export async function fetchStorageChannels(force = false) {
                     // 值统一用 code（渠道 ID）；个别历史数据没有 code 时回退主键
                     const value = c.code || c.id || '';
                     if (!value) continue;
+                    /*
+                     * v2.8.6：停用渠道一律不出现在下拉里。
+                     * 后端 /api/channels 已经按 enabled=true 过滤，这里再兜一层 ——
+                     * 任何来源（旧缓存 / 反向代理缓存 / 未来新增的接口）带来的停用渠道
+                     * 都不会被渲染成可选项。
+                     */
+                    if (c.enabled === false) continue;
                     list.push({
                         id: value,
                         code: c.code || value,
@@ -79,6 +98,7 @@ export async function fetchStorageChannels(force = false) {
                 }
             }
             channelCache = list;
+            channelCacheAt = Date.now();
             return list;
         })
         .catch(() => [])
@@ -88,9 +108,10 @@ export async function fetchStorageChannels(force = false) {
     return inflight;
 }
 
-/** 清空渠道缓存（渠道列表发生增删改后调用） */
+/** 清空渠道缓存（渠道列表发生增删改后调用 —— 后台改完立即生效，不用刷新页面） */
 export function invalidateStorageChannels() {
     channelCache = null;
+    channelCacheAt = 0;
 }
 
 /** 渠道展示名：`渠道ID · 渠道名（类型）` */

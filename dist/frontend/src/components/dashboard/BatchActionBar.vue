@@ -95,7 +95,11 @@ export default {
 .batch-floating-bar {
   position: fixed;
   left: 50%;
-  bottom: max(84px, calc(72px + env(safe-area-inset-bottom)));
+  /*
+   * v2.8.6：批量操作栏整体往下移，距页面底部的距离减半（原 84 / 72+safe → 42 / 36+safe）。
+   * 栏体尺寸不变（移动端仍保留 36px 触控按钮），只是位置上移量变小。
+   */
+  bottom: max(42px, calc(36px + env(safe-area-inset-bottom)));
   transform: translateX(-50%);
   z-index: 1200;
   display: flex;
@@ -220,7 +224,8 @@ export default {
   .batch-floating-bar {
     left: 50%;
     right: auto;
-    bottom: max(76px, calc(64px + env(safe-area-inset-bottom)));
+    /* v2.8.6：移动端同步下移，距底部距离减半（原 76 / 64+safe → 38 / 32+safe） */
+    bottom: max(38px, calc(32px + env(safe-area-inset-bottom)));
     transform: translateX(-50%);
     width: max-content;
     max-width: calc(100vw - 24px);

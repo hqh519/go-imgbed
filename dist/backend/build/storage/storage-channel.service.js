@@ -35,6 +35,17 @@ let StorageChannelService = class StorageChannelService {
             return '';
         }
     }
+    async findRawById(key) {
+        const k = String(key || '').trim();
+        if (!k)
+            return null;
+        const c = (await prisma_1.prisma.channel.findUnique({ where: { code: k } })) ||
+            (await prisma_1.prisma.channel.findUnique({ where: { id: k } })) ||
+            null;
+        if (!c)
+            return null;
+        return { id: c.id, code: c.code, name: c.name, type: c.type, enabled: c.enabled };
+    }
     async findById(key) {
         const k = String(key || '').trim();
         if (!k)

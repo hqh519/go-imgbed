@@ -1577,8 +1577,9 @@ html.dark .upload-folder:hover :deep(.el-input__wrapper) {
         top: -3.8vh;
     }
     .upload-method-tabs {
-        /* v2.7.0：切换模块与下方操作区的间距调小一点（原 10px） */
-        margin-bottom: 4px;
+        /* v2.7.0：切换模块与下方操作区的间距调小一点（原 10px）
+           v2.8.6：再减半 4px → 2px（手机上一屏更紧凑，切换按钮更贴近虚线框） */
+        margin-bottom: 2px;
     }
     .upload-method-tab {
         padding: 6px 14px;

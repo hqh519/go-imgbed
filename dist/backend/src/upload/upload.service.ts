@@ -659,6 +659,18 @@ export class UploadService {
     tokenId?: string;
     preferredId?: string;
   } = {}): Promise<StorageChannelInfo | null> {
+    /*
+     * v2.8.6：显式指定的渠道被停用 → 直接报错，绝不静默改投别的渠道。
+     * 历史上 findById 会把停用渠道过滤掉，调用方于是一路回退到全局主渠道，
+     * 用户完全无感（以为传到了自己选的渠道）。任何来源（网页 / WebDAV / API）都走这里。
+     */
+    if (q.channelId) {
+      const raw = await this.storageChannel.findRawById(q.channelId);
+      if (raw && !raw.enabled) {
+        appLog.warn('upload', `拒绝上传：渠道「${raw.name}」已停用`, `渠道 ID=${raw.code}`);
+        throw new Error(`渠道「${raw.name}」已停用，请先在后台「上传设置 → 存储渠道管理」启用后再上传`);
+      }
+    }
     const list = await this.storageChannel.getStorageChannelCandidates('main', {
       explicitId: q.channelId,
       channelType: q.channelType,

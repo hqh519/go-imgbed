@@ -301,6 +301,7 @@
 </template>
 
 <script>
+import { splitFileName } from '../utils/fileName';
 import axios from 'axios';
 import { mapGetters } from 'vuex';
 import TransformMedia from '@/components/browse/TransformMedia.vue';
@@ -781,9 +782,7 @@ export default {
      * start 可收缩出省略号，end（含扩展名）固定可见
      */
     nameParts(file) {
-      const full = this.displayName(file);
-      if (full.length <= 24) return { start: full, end: '' };
-      return { start: full.slice(0, -12), end: full.slice(-12) };
+      return splitFileName(this.displayName(file));
     },
 
     /** 上传时间（时分秒） */

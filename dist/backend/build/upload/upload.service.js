@@ -445,6 +445,13 @@ let UploadService = class UploadService {
         return this.storageChannel.findById(key);
     }
     async resolveMainChannel(q = {}) {
+        if (q.channelId) {
+            const raw = await this.storageChannel.findRawById(q.channelId);
+            if (raw && !raw.enabled) {
+                app_log_1.appLog.warn('upload', `拒绝上传：渠道「${raw.name}」已停用`, `渠道 ID=${raw.code}`);
+                throw new Error(`渠道「${raw.name}」已停用，请先在后台「上传设置 → 存储渠道管理」启用后再上传`);
+            }
+        }
         const list = await this.storageChannel.getStorageChannelCandidates('main', {
             explicitId: q.channelId,
             channelType: q.channelType,

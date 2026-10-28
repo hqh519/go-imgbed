@@ -112,6 +112,7 @@ const ZH = {
         },
         { t: '自定义 Web 通道', d: '只需「上传接口地址 + 文件表单字段名 + 响应 URL 路径」三件套；需要鉴权或附加参数时，用「自定义请求头 (JSON)」与「附加表单字段 (JSON)」。请求方法可选 POST/PUT/PATCH，请求体可选 multipart 或 JSON+Base64。' },
         { t: '主渠道与备份渠道', d: '主渠道同步上传（决定上传耗时），备份渠道异步双写（不阻塞响应）。每个渠道可单独启用/禁用。' },
+        { t: '停用渠道（v2.8.6）', d: '关掉某个渠道右上角的启用开关后：它不会出现在任何渠道下拉 / 渠道选择里（上传设置、Token、用户管理、系统状态一致），也不再接受任何来源的上传 —— 网页、WebDAV、API 显式指定该渠道时会直接报「渠道已停用」，不会静默改投别的渠道。' },
         { t: '容量限制', d: '勾选「启用容量限制」后才会出现「容量上限」「告警阈值」；超出阈值的渠道不再参与上传分流，避免写满。' },
         { t: '测试连接', d: '新增或编辑渠道时可点「测试连接」验证配置，成功会返回一条可点击查看的直链。' },
         {
@@ -174,6 +175,9 @@ const ZH = {
         { t: '筛选', d: '支持访问状态、黑白名单、审查结果、文件类型、存储渠道类型、渠道名称，以及「已备份 / 未备份」。' },
         { t: '排序', d: '按上传时间、文件大小、原始文件名、显示文件名，以及按访问次数。' },
         { t: '访问次数', d: '外链每次被真实访问（下发文件）都会累计一次；管理后台预览不计入，避免刷新后台刷爆计数。卡片视图悬浮可见，列表视图有独立列。' },
+        { t: '预览小眼睛（v2.8.6）', d: '图片 / 视频卡片第三行左侧的小眼睛：PC 鼠标悬停即弹出大图预览，移动端长按小眼睛弹出（居中显示，松手收起）；列表视图在移动端长按缩略图同样弹出预览。' },
+        { t: '回收站（v2.8.6）', d: '回收站顶部提示条明确「这里的文件可进一步恢复或彻底删除(不可逆)」，并以醒目底色标出。' },
+        { t: '文件名显示（v2.8.6）', d: '卡片 / 列表 / 历史记录 / 公开浏览统一「开头…结尾」中间省略：任何宽度下都保留头部与尾部（含扩展名）。' },
         { t: '视图与批量操作', d: '卡片 / 列表两种视图；批量复制链接、下载（打包 zip）、移动、打标签、加黑/白名单、删除，以及一键备份所选。' }
       ]
     },
@@ -182,8 +186,10 @@ const ZH = {
       title: '八、历史记录与系统状态',
       items: [
         { t: '历史记录', d: '上传页右上角「更多」→ 历史记录；文件管理右上角也有「历史记录」入口。记录保存在本机浏览器（localStorage），可切换网格/列表视图、复制链接、删除单条或清空全部。' },
-        { t: '系统状态', d: '展示文件总数、上传渠道分布、上传接口分布、上传用户分布、上传类型分布与文件状态分布；上传趋势可按「渠道类型 / 渠道名称 / 用户 / 上传接口 / 类型」五个维度切换，并支持自选日期区间。「最近上传」列出最近 20 条记录，上方是今日 / 昨日 / 本周 / 本月 / 本年上传数量、累计占用空间与文件夹数量统计（点击上传数量可跳到历史记录）。' },
-        { t: '系统日志', d: '记录写操作（上传 / 保存 / 删除）与 4xx、5xx、慢请求；支持按级别、作用域、关键词过滤与导出。' }
+        { t: '系统状态', d: '展示文件总数、上传渠道分布、上传方式分布、上传用户分布、上传类型分布与文件状态分布；上传趋势可按「渠道类型 / 渠道名称 / 用户 / 上传方式 / 类型」五个维度切换，并支持自选日期区间。「最近上传」列出最近 20 条记录，上方是今日 / 昨日 / 本周 / 本月 / 本年上传数量、累计占用空间与文件夹数量统计（点击上传数量可跳到历史记录）。' },
+        { t: '上传方式（v2.8.6）', d: '每个文件都会记录是从哪个入口传上来的：Default = v2.8.6 之前的历史网页上传；Upload = 上传页「文件」模式；Fetch = 上传页「链接」模式转存；WebDAV / API-Web / API-S3 = 对外通道。文件详情页的「上传方式」字段、文件管理的筛选与系统状态的上传方式分布用的都是这份取值。' },
+        { t: '系统日志', d: '记录写操作（上传 / 保存 / 删除）与 4xx、5xx、慢请求；支持按级别、作用域、关键词过滤与导出。' },
+        { t: '移动端（v2.8.6）', d: '上传趋势的分组标签一屏放不下时改为左右滑动；历史记录 / 访问记录顶部的搜索与筛选栏随页面滚动，不再常驻占半屏。' }
       ]
     },
     {
@@ -339,6 +345,7 @@ const EN = {
         },
         { t: 'Custom Web channel', d: 'Only three things are required: upload endpoint, file form field name and response URL path. Use the custom headers / extra form fields JSON for auth or extra params. Legacy token/headers/extraFields fields are still accepted.' },
         { t: 'Main & backup channel', d: 'The main channel uploads synchronously (drives latency); the backup channel is written asynchronously and never blocks the response. Each channel can be enabled independently.' },
+        { t: 'Disabled channels (v2.8.6)', d: 'Turning a channel off removes it from every channel dropdown / picker (upload settings, tokens, user management, status page) and it no longer accepts uploads from any source: web, WebDAV or API requests that name it explicitly get a clear "channel disabled" error instead of silently landing on another channel.' },
         { t: 'Quota', d: 'Enable the quota switch to reveal the limit and alert threshold. Channels above the threshold stop receiving new uploads.' },
         { t: 'Test connection', d: 'Use "Test connection" when adding or editing a channel; a successful test returns a clickable direct link.' },
         {
@@ -401,6 +408,9 @@ const EN = {
         { t: 'Filters', d: 'Access status, black/white list, review result, file type, storage channel type, channel name, and backed up / not backed up.' },
         { t: 'Sorting', d: 'By upload time, file size, raw name, display name, and by view count.' },
         { t: 'View count', d: 'Incremented on every real external access; admin previews are excluded so refreshing the console does not inflate it. Hover a card to see it, or check the list column.' },
+        { t: 'Preview eye (v2.8.6)', d: 'The eye icon on the left of a card\'s third row: hover on PC to preview the full image/video; long-press on mobile to preview (centered, release to close). In list view, long-press the thumbnail on mobile for the same preview.' },
+        { t: 'Trash (v2.8.6)', d: 'The trash banner clearly states files can be restored or permanently deleted (irreversible), highlighted with a stronger background.' },
+        { t: 'File names (v2.8.6)', d: 'Cards / list / history / public pages all use the same middle-ellipsis: head and tail (with extension) are always kept.' },
         { t: 'Views & batch actions', d: 'Card / list views; batch copy links, download as zip, move, tag, block/whitelist, delete, and backup selected.' }
       ]
     },
@@ -409,8 +419,10 @@ const EN = {
       title: '8. History & Status',
       items: [
         { t: 'History', d: 'Top-right "More" → History on the upload page; File Management also has a History button. Records live in the local browser (localStorage) and can be viewed as grid/list, copied, deleted individually or cleared.' },
-        { t: 'System status', d: 'File totals plus channel, upload API, user, file type and status distributions. The upload trend can be grouped by channel type, channel name, user, upload API and file type, with a selectable date range. "Recent uploads" lists the latest 20 records, followed by today / yesterday / week / month / year counts, total space used and folder count (click a count to open History).' },
-        { t: 'Logs', d: 'Records writes (upload / save / delete) plus 4xx, 5xx and slow requests, with level/scope/keyword filters and export.' }
+        { t: 'System status', d: 'File totals plus channel, upload method, user, file type and status distributions. The upload trend can be grouped by channel type, channel name, user, upload method and file type, with a selectable date range. "Recent uploads" lists the latest 20 records, followed by today / yesterday / week / month / year counts, total space used and folder count (click a count to open History).' },
+        { t: 'Upload method (v2.8.6)', d: 'Every file records the entry it came from: Default = legacy web uploads before v2.8.6; Upload = the upload page in "file" mode; Fetch = the upload page in "link" mode (saved from URL); WebDAV / API-Web / API-S3 = external channels. The file detail "upload method" field, the file manager filter and the status page distribution all use these values.' },
+        { t: 'Logs', d: 'Records writes (upload / save / delete) plus 4xx, 5xx and slow requests, with level/scope/keyword filters and export.' },
+        { t: 'Mobile (v2.8.6)', d: 'Upload trend tabs scroll horizontally when they overflow; History / Access log top bars scroll away with the page instead of staying pinned.' }
       ]
     },
     {

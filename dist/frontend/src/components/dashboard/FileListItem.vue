@@ -21,13 +21,10 @@
                 @change="handleSelectChange"
             />
         </div>
-        <!-- 2. 缩略图（v2.8.5：PC 悬停弹出大图预览，父组件判定触屏/类型后跳过） -->
+        <!-- 2. 缩略图（v2.8.6b：点击打开文件详情页；预览改由渠道行小眼睛触发） -->
         <div
             class="list-col list-col-preview"
             @click="handlePreviewClick"
-            @mouseenter="$emit('preview', $event)"
-            @mousemove="$emit('previewMove', $event)"
-            @mouseleave="$emit('previewEnd')"
         >
             <template v-if="isFolder">
                 <font-awesome-icon icon="folder-open" class="list-folder-icon"/>
@@ -53,6 +50,27 @@
                 <span class="folder-stat-line">{{ folderStatsText || '\u00A0' }}</span>
             </div>
             <div v-if="!isFolder" class="channel-line">
+                <!--
+                    v2.8.6b：预览小眼睛回到渠道行起始位置（存储渠道简称图标前面）——
+                    PC 悬停即预览、移动端长按 350ms 预览；锚定眼睛矩形弹出（不覆盖眼睛）。
+                    缩略图恢复「点击打开详情页」。
+                -->
+                <button
+                    v-if="isImage || isVideo"
+                    type="button"
+                    class="list-eye-btn"
+                    data-role="preview-eye"
+                    :aria-label="$t('dashboard.hoverPreview')"
+                    @click.stop
+                    @mouseenter="handleEyeEnter"
+                    @mouseleave="$emit('previewEnd')"
+                    @touchstart.stop.prevent="handleEyeTouchStart"
+                    @touchmove.stop="handleEyeTouchMove"
+                    @touchend.stop="handleEyeTouchEnd"
+                    @touchcancel.stop="handleEyeTouchEnd"
+                >
+                    <font-awesome-icon icon="eye"/>
+                </button>
                 <span class="channel-short" :title="storageChannelText">{{ storageChannelShort || '-' }}</span>
                 <template v-if="backupTags.length">
                     <span
@@ -121,6 +139,7 @@
 </template>
 
 <script>
+import { splitFileName } from '../../utils/fileName';
 export default {
     name: 'FileListItem',
     props: {
@@ -131,7 +150,10 @@ export default {
     emits: ['update:selected', 'enter', 'detail', 'copy', 'folderCopy', 'move', 'delete', 'download', 'openLink', 'touchstart', 'touchend', 'touchmove', 'preview', 'previewMove', 'previewEnd'],
     data() {
         return {
-            localSelected: this.selected
+            localSelected: this.selected,
+            // v2.8.6b：渠道行小眼睛长按预览（移动端）
+            eyePressTimer: null,
+            eyePreviewing: false
         }
     },
     computed: {
@@ -201,15 +223,12 @@ export default {
          * 文件名中间省略：CSS 双 span（start 可收缩省略，end 固定），
          * 保证「头部 + 尾部(含扩展名)」始终可见，中间段按宽度自动省略。
          */
+        /* v2.8.6：文件名中间省略统一口径（start 可收缩 + end 固定） */
         fileNameStart() {
-            const name = this.displayName;
-            if (name.length <= 20) return name;
-            return name.slice(0, -8);
+            return splitFileName(this.displayName).start;
         },
         fileNameEnd() {
-            const name = this.displayName;
-            if (name.length <= 20) return '';
-            return name.slice(-8);
+            return splitFileName(this.displayName).end;
         },
         /** 上传日期（年-月-日，与历史记录一致） */
         uploadDate() {
@@ -277,7 +296,57 @@ export default {
             this.localSelected = val;
         }
     },
+    beforeUnmount() {
+        this.clearEyePressTimer();
+    },
     methods: {
+        /* v2.8.6b：PC 悬停小眼睛 → 预览锚定在眼睛矩形上 */
+        handleEyeEnter(e) {
+            this.$emit('preview', e, { rect: e.currentTarget.getBoundingClientRect() });
+        },
+        /* v2.8.6b：移动端长按小眼睛预览（触屏无 hover）——
+           按住 350ms 弹出预览，松手/明显滑动（>10px）收起；
+           微抖不取消（真机手指按下必然有 touchmove，此前一刀切导致长按弹不出来）。
+           锚点用眼睛矩形，浮层贴着眼睛弹出且不覆盖眼睛。 */
+        handleEyeTouchStart(e) {
+            if (this.isFolder || (!this.isImage && !this.isVideo)) return;
+            this.clearEyePressTimer();
+            const point = e.touches && e.touches[0] ? e.touches[0] : e;
+            this._eyeStartX = point.clientX || 0;
+            this._eyeStartY = point.clientY || 0;
+            // currentTarget 在事件派发结束后会被置空，必须在定时器外先取好
+            const btnRect = e.currentTarget ? e.currentTarget.getBoundingClientRect() : null;
+            this.eyePressTimer = setTimeout(() => {
+                this.eyePressTimer = null;
+                this.eyePreviewing = true;
+                const rect = btnRect || { left: this._eyeStartX, top: this._eyeStartY, right: this._eyeStartX, bottom: this._eyeStartY };
+                this.$emit('preview', { clientX: this._eyeStartX, clientY: this._eyeStartY }, { touch: true, rect });
+            }, 350);
+        },
+        handleEyeTouchMove(e) {
+            const point = e.touches && e.touches[0];
+            if (point && typeof this._eyeStartX === 'number') {
+                const dx = point.clientX - this._eyeStartX;
+                const dy = point.clientY - this._eyeStartY;
+                if (dx * dx + dy * dy > 100) {
+                    this.clearEyePressTimer();
+                    if (this.eyePreviewing) this.handleEyeTouchEnd();
+                }
+            }
+        },
+        handleEyeTouchEnd() {
+            this.clearEyePressTimer();
+            if (this.eyePreviewing) {
+                this.eyePreviewing = false;
+                this.$emit('previewEnd');
+            }
+        },
+        clearEyePressTimer() {
+            if (this.eyePressTimer) {
+                clearTimeout(this.eyePressTimer);
+                this.eyePressTimer = null;
+            }
+        },
         handleSelectChange(value) {
             this.localSelected = value;
             this.$emit('update:selected', value);
@@ -387,6 +456,33 @@ export default {
     align-items: center;
     gap: 6px;
     min-width: 0;
+}
+/* v2.8.6b：预览小眼睛（渠道行起始位置）—— 颜色与文件名文本一致，悬停轻微提亮 */
+.list-eye-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    border: none;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--upload-text-color);
+    opacity: 0.7;
+    font-size: 12px;
+    line-height: 1;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: opacity 0.2s ease, color 0.2s ease, background-color 0.2s ease;
+}
+.list-eye-btn:hover {
+    opacity: 1;
+    color: var(--primary-color-accent);
+    background: color-mix(in srgb, var(--primary-color) 12%, transparent);
+}
+.list-eye-btn svg {
+    display: block;
 }
 /* 渠道简称徽标（沿用列表视图原来的品牌配色语义：备份渠道橙色调） */
 .channel-short {

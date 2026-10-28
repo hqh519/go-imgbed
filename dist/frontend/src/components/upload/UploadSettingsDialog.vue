@@ -25,6 +25,7 @@
                         >{{ $t('uploadSettings.currentDefaultChannel') }}：{{ defaultChannelLabel }}</span>
                     </span>
                     <ChannelSelect
+                        :key="'main-' + channelRefreshKey"
                         :model-value="channelName"
                         @update:model-value="$emit('update:channelName', $event)"
                         kind="main"
@@ -43,6 +44,7 @@
                     <!-- 备份渠道：默认为空 = 跟随全局；none = 明确不备份。
                          不再用「是否备份」开关控制 —— 由这个下拉本身表达。 -->
                     <ChannelSelect
+                        :key="'backup-' + channelRefreshKey"
                         :model-value="backupChannel"
                         @update:model-value="$emit('update:backupChannel', $event)"
                         kind="backup"
@@ -221,7 +223,7 @@
 
 <script>
 import ChannelSelect from '@/components/config/ChannelSelect.vue';
-import { resolveChannelLabel } from '@/utils/storageChannels';
+import { resolveChannelLabel, invalidateStorageChannels } from '@/utils/storageChannels';
 import { COMPRESSIBLE_EXTENSIONS } from '@/utils/upload/compressExtensions';
 
 export default {
@@ -272,7 +274,27 @@ export default {
         'update:limitCompressExts',
         'update:limitMaxSizeMB'
     ],
+    data() {
+        return {
+            /*
+             * 渠道下拉刷新令牌（v2.8.6）：
+             * 每次打开弹窗 +1，配合 ChannelSelect 的 :key 让下拉重新挂载、
+             * 重新拉一次 /api/channels —— 后台刚停用的渠道不会残留在这个下拉里。
+             */
+            channelRefreshKey: 0
+        };
+    },
     watch: {
+        /*
+         * v2.8.6：弹窗打开时强制刷新渠道列表。
+         * 场景：管理员在后台关掉某个渠道的启用开关，然后回到上传页打开「上传设置」，
+         * 之前这里会继续显示那个已停用的渠道（模块级缓存没失效）。
+         */
+        visible(val) {
+            if (!val) return;
+            invalidateStorageChannels();
+            this.channelRefreshKey += 1;
+        },
         /*
          * v2.4.0：任何设置项发生变化 → 自动保存（父组件的 store 持久化）+ 弹「保存成功」提示。
          * 滑杆拖动会连续触发，这里 600ms 防抖合并成一条提示。
