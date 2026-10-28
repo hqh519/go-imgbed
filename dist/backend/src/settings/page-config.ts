@@ -307,10 +307,10 @@ export const PAGE_CONFIG_DEFAULTS: any = {
       "id": "maxUploadSizeMB",
       "label": "单文件大小上限",
       "label_en": "Max Upload Size",
-      "placeholder": "150",
-      "default": 150,
-      "tooltip": "单位 MB，默认 150。超过该大小的文件请改用腾讯云 COS / MinIO / S3 / R2 等对象存储渠道",
-      "tooltip_en": "Unit: MB, default 150. Larger files should use object-storage channels (COS / MinIO / S3 / R2)",
+      "placeholder": "200",
+      "default": 200,
+      "tooltip": "单位 MB，留空默认 200。分片/暂存上传已落盘，可放心调大（如 1024）以上传大视频；超过上限仍会被拒绝",
+      "tooltip_en": "Unit: MB. Defaults to 200 when empty. Chunked/staged uploads are written to disk, so a larger value (e.g. 1024) is safe for big videos",
       "category": "客户端设置",
       "category_en": "Client Settings"
     }

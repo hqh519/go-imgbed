@@ -232,3 +232,192 @@ export async function readDimensions(
   }
   return {};
 }
+
+/* ---------------- v2.8.3：磁盘 → 磁盘（大文件不读内存） ---------------- */
+
+export interface FileCompressResult {
+  /** 压缩产物的绝对路径；未压缩时等于入参 srcPath */
+  path: string;
+  size: number;
+  mime: string;
+  /** 产物扩展名（含点，如 .webp），未压缩为空 */
+  ext: string;
+  compressed: boolean;
+  reason?: string;
+}
+
+/**
+ * 大文件压缩：输入/输出都是磁盘路径。
+ * · 图片：sharp 直接读文件写文件（png 保透明；jpg/webp/avif 转 webp 并尝试逼近目标体积）
+ * · 视频/音频：ffmpeg -i 文件 → 输出文件，避免整份 Buffer
+ * 永远不抛异常：失败返回原路径 + reason，调用方照常上传原文件。
+ */
+export async function compressFile(
+  srcPath: string,
+  mime: string,
+  ext: string,
+  percent: number,
+): Promise<FileCompressResult> {
+  const e = String(ext || '').toLowerCase().replace(/^\./, '');
+  let original = 0;
+  try {
+    original = (await fsp.stat(srcPath)).size;
+  } catch {
+    original = 0;
+  }
+  const keep = (reason: string): FileCompressResult => ({
+    path: srcPath,
+    size: original,
+    mime: '',
+    ext: '',
+    compressed: false,
+    reason,
+  });
+  if (!original) return keep('无法读取文件大小');
+  if (SKIP.has(e)) return keep(`${e} 格式按规则不压缩`);
+  try {
+    if ((mime || '').startsWith('image/')) return await compressImageFile(srcPath, e, percent, original);
+    if ((mime || '').startsWith('video/')) return await compressVideoFile(srcPath, e, percent, original);
+    if ((mime || '').startsWith('audio/')) return await compressAudioFile(srcPath, e, percent, original);
+    return keep(`${mime || e} 不支持压缩`);
+  } catch (err) {
+    return keep(`压缩异常：${(err as Error).message}`);
+  }
+}
+
+async function compressImageFile(srcPath: string, e: string, percent: number, original: number): Promise<FileCompressResult> {
+  const keep = (reason: string): FileCompressResult => ({
+    path: srcPath,
+    size: original,
+    mime: '',
+    ext: '',
+    compressed: false,
+    reason,
+  });
+  if (!IMAGE_OK.has(e)) return keep(`${e} 不是可压缩的图片格式`);
+  const sharp = (await import('sharp')).default;
+  sharp.cache({ memory: 32 });
+  sharp.concurrency(2);
+  const quality = clampQuality(percent);
+  const target = Math.max(1024, Math.round(original * Math.max(0.1, quality / 100)));
+
+  // PNG：保透明重编码，压不下去就放弃
+  if (e === 'png') {
+    const out = `${srcPath}.cmp.png`;
+    await sharp(srcPath, { limitInputPixels: 40_000_000 })
+      .rotate()
+      .png({ compressionLevel: 9, adaptiveFiltering: true, palette: false })
+      .toFile(out);
+    const st = await fsp.stat(out);
+    if (st.size < original * 0.98) {
+      return { path: out, size: st.size, mime: 'image/png', ext: '.png', compressed: true };
+    }
+    await fsp.rm(out, { force: true }).catch(() => undefined);
+    return keep('png 重编码后没有变小（保持透明优先）');
+  }
+
+  const out = `${srcPath}.cmp.webp`;
+  let q = quality;
+  let lastSize = 0;
+  for (let i = 0; i < 4; i++) {
+    await sharp(srcPath, { limitInputPixels: 40_000_000 }).rotate().webp({ quality: q }).toFile(out);
+    lastSize = (await fsp.stat(out)).size;
+    if (lastSize <= target || q <= 20) break;
+    q = Math.max(20, Math.round(q * Math.sqrt(target / Math.max(1, lastSize))));
+  }
+  if (lastSize && lastSize < original * 0.98) {
+    return { path: out, size: lastSize, mime: 'image/webp', ext: '.webp', compressed: true };
+  }
+  await fsp.rm(out, { force: true }).catch(() => undefined);
+  return keep('压缩后体积未减小');
+}
+
+async function compressVideoFile(srcPath: string, e: string, percent: number, original: number): Promise<FileCompressResult> {
+  const keep = (reason: string): FileCompressResult => ({
+    path: srcPath,
+    size: original,
+    mime: '',
+    ext: '',
+    compressed: false,
+    reason,
+  });
+  if (!ffmpegAvailable()) return keep('未安装 ffmpeg，视频跳过压缩');
+  if (!VIDEO_OK.has(e)) return keep(`${e} 不是可压缩的视频格式`);
+  const p = clampQuality(percent);
+  const crf = Math.min(40, Math.max(20, Math.round(38 - p * 0.14)));
+  const outExt = e === 'webm' ? '.webm' : '.mp4';
+  const out = `${srcPath}.cmp${outExt}`;
+  const args = outExt === '.webm'
+    ? ['-y', '-i', srcPath, '-c:v', 'libvpx-vp9', '-crf', String(Math.min(50, crf + 8)), '-b:v', '0', '-c:a', 'libopus', out]
+    : [
+        '-y', '-i', srcPath,
+        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', String(crf),
+        '-pix_fmt', 'yuv420p', '-movflags', '+faststart',
+        '-c:a', 'aac', '-b:a', '96k',
+        out,
+      ];
+  await run(ffmpegPath, args, { timeout: 30 * 60 * 1000, maxBuffer: 16 * 1024 * 1024 });
+  const st = await fsp.stat(out);
+  if (st.size >= original * 0.95) {
+    await fsp.rm(out, { force: true }).catch(() => undefined);
+    return keep('转码后体积未明显减小');
+  }
+  return {
+    path: out,
+    size: st.size,
+    mime: outExt === '.webm' ? 'video/webm' : 'video/mp4',
+    ext: outExt,
+    compressed: true,
+  };
+}
+
+async function compressAudioFile(srcPath: string, e: string, percent: number, original: number): Promise<FileCompressResult> {
+  const keep = (reason: string): FileCompressResult => ({
+    path: srcPath,
+    size: original,
+    mime: '',
+    ext: '',
+    compressed: false,
+    reason,
+  });
+  if (!ffmpegAvailable()) return keep('未安装 ffmpeg，音频跳过压缩');
+  if (!AUDIO_OK.has(e)) return keep(`${e} 不是可压缩的音频格式`);
+  const p = clampQuality(percent);
+  const bitrate = Math.round(Math.min(320, Math.max(48, p * 2)));
+  const outExt = e === 'mp3' ? '.mp3' : '.m4a';
+  const out = `${srcPath}.cmp${outExt}`;
+  const args = outExt === '.mp3'
+    ? ['-y', '-i', srcPath, '-vn', '-c:a', 'libmp3lame', '-b:a', `${bitrate}k`, out]
+    : ['-y', '-i', srcPath, '-vn', '-c:a', 'aac', '-b:a', `${bitrate}k`, '-movflags', '+faststart', out];
+  await run(ffmpegPath, args, { timeout: 30 * 60 * 1000, maxBuffer: 16 * 1024 * 1024 });
+  const st = await fsp.stat(out);
+  if (st.size >= original * 0.95) {
+    await fsp.rm(out, { force: true }).catch(() => undefined);
+    return keep('转码后体积未明显减小');
+  }
+  return {
+    path: out,
+    size: st.size,
+    mime: outExt === '.mp3' ? 'audio/mpeg' : 'audio/mp4',
+    ext: outExt,
+    compressed: true,
+  };
+}
+
+/** 从磁盘路径读取图片尺寸（大图不整份读内存） */
+export async function readDimensionsFile(
+  path: string,
+  mime: string,
+  ext: string,
+): Promise<{ width?: number; height?: number; duration?: number }> {
+  try {
+    if ((mime || '').startsWith('image/') && !SKIP.has(ext)) {
+      const sharp = (await import('sharp')).default;
+      const meta = await sharp(path, { limitInputPixels: 100_000_000 }).metadata();
+      if (meta.width && meta.height) return { width: meta.width, height: meta.height };
+    }
+  } catch {
+    /* 尺寸读不到不影响上传 */
+  }
+  return {};
+}

@@ -33,7 +33,9 @@ export default {
     emits: ['link-format'],
     data() {
         return {
-            isMobile: window.innerWidth <= 768,
+            // v20261027：移动端判定阈值 768 → 1024 —— 平板（含竖屏）同样使用
+            // 「第一行右侧按钮组 + 更多菜单 / 第二行搜索框 + 筛选」的紧凑顶栏
+            isMobile: window.innerWidth <= 1024,
             reservedSpace: null,
             headerScrollProgress: 0,
             // 滚动方向：向下滚 → 顶栏上滑隐藏；向上滚 → 立刻显示（与移动端侧边菜单一致）
@@ -79,7 +81,8 @@ export default {
             });
         },
         updateViewport() {
-            this.isMobile = window.innerWidth <= 768;
+            // v20261027：与 isMobile 初始值同步，阈值 768 → 1024（平板也走紧凑顶栏）
+            this.isMobile = window.innerWidth <= 1024;
             this.updateHeaderScrollProgress();
             this.measureReservedSpace();
         },
@@ -158,7 +161,12 @@ export default {
     align-items: center;
 }
 
-@media (max-width: 768px) {
+/*
+ * v20261027：两行布局断点 768 → 1024 —— 平板（含竖屏）同样使用：
+ *   第一行右侧：标签筛选 / 刷新 / 回收站 / 更多菜单（靠右对齐）
+ *   第二行：搜索框（宽度 90%）+ 筛选按钮（跟在搜索框后面）
+ */
+@media (max-width: 1024px) {
     .admin-header-spacer {
         height: var(--admin-header-reserved-space, 76px);
     }
@@ -192,13 +200,16 @@ export default {
         order: 1;
     }
 
-    /* 第二行：搜索框加长占满 + 筛选按钮靠右。
-       v2.8.0 #C18：flex-basis 0 + min-width 0 —— 搜索框允许收缩，
-       筛选按钮不再被挤到第三行（始终跟随搜索框保持一行）。 */
+    /* 第二行：搜索框 + 筛选按钮（跟在「更多菜单」下一行）。
+       v20261027：flex-basis 用 calc(90% - 46px) —— 46px = 筛选按钮 32px + 间距 14px。
+       平板宽度下一行能装下所有元素，basis:auto 不会换行，用大基数强制搜索框
+       独占第二行；手机窄屏下搜索框自动收缩，保证筛选按钮始终与搜索框同行
+       （第二行整体 ≈ 90% 宽度：搜索框占满 90%，剩余位置给筛选按钮）。 */
     .admin-header-content :deep(.search-card) {
         order: 3;
-        flex: 1 1 0;
+        flex: 1 1 calc(90% - 46px);
         min-width: 0;
+        max-width: 90%;
     }
 
     .admin-header-content :deep(.search-card :deep(.el-input)) {
@@ -208,7 +219,8 @@ export default {
     .admin-header-content :deep(.search-area > .filter-trigger),
     .admin-header-content :deep(.search-area > *:not(.search-card):not(.tag-filter-badge):not(.refresh-files-btn)) {
         order: 4;
-        margin-left: auto;
+        flex: 0 0 auto;
+        margin-left: 8px;
     }
 
     .admin-header-tools {
@@ -279,7 +291,8 @@ export default {
     transition: opacity 0.15s ease;
 }
 
-@media (max-width: 768px) {
+/* v20261027：紧凑顶栏的尺寸/换行参数扩展到平板（≤1024） */
+@media (max-width: 1024px) {
     .admin-header-content {
         --admin-header-gutter: calc(4px + 8px * var(--admin-header-scroll-progress, 0));
         --admin-header-action-size: 32px;
@@ -291,7 +304,9 @@ export default {
         gap: 4px 6px;
         border-radius: 14px;
     }
+}
 
+@media (max-width: 768px) {
     /* v2.4.0：移动端顶部栏取消粘滞 —— fixed 改 absolute 随页面滚动，
        且不再「下滑隐藏 / 上滑出现」，上下滚动都跟随内容一起走 */
     .admin-header-content {

@@ -2352,10 +2352,12 @@ methods: {
         }
     },
     isMobileViewport() {
-        return window.innerWidth < 768;
+        // v20261027：阈值 768 → 1024 —— 平板也按触屏处理（悬浮提示改点击、启用触屏手势）
+        return window.innerWidth <= 1024;
     },
     updateResponsivePageSize() {
-        const nextPageSize = this.isMobileViewport() ? 16 : 18;
+        // v2.8.2：全终端统一每页 24（含文件夹一起计数），不再按视口降为 18/16
+        const nextPageSize = 24;
         if (this.pageSize === nextPageSize) return;
         const firstVisibleIndex = (this.currentPage - 1) * this.pageSize;
         this.pageSize = nextPageSize;
@@ -3373,7 +3375,7 @@ beforeUnmount() {
     /* 工具栏按钮间距：原 8px + 各按钮 margin-left 会叠成 16px，收紧到 6px */
     gap: 6px;
 }
-@media (max-width: 768px) {
+@media (max-width: 1024px) {
     .search-area {
         width: 100%;
         gap: 6px;
@@ -3771,16 +3773,10 @@ beforeUnmount() {
     }
 }
 
-/* v2.8.0 #C14：平板竖屏每行 3 个（横向保持现有列数不变） */
-@media (min-width: 769px) and (max-width: 1023px) and (orientation: portrait) {
+/* v2.8.2 #A1：平板竖屏每行 3 个 —— 与历史记录页对齐；下限放宽到 600px
+   （部分安卓平板竖屏 CSS 视口宽 640~700，原 700/769 下限盖不住仍显示 2 列） */
+@media (min-width: 600px) and (max-width: 1023px) and (orientation: portrait) {
     .content {
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-    }
-}
-
-@media (min-width: 700px) and (max-width: 768px) and (orientation: portrait) {
-    .content {
-        /* iPad 竖屏（768px 落在移动断点内）也按 3 列 */
         grid-template-columns: repeat(3, minmax(0, 1fr));
     }
 }

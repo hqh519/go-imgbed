@@ -72,23 +72,13 @@ function hostOf(urlOrHost) {
     const slash = s.indexOf('/');
     return slash === -1 ? s : s.slice(0, slash);
 }
-function isBareOrigin(s) {
-    const stripped = stripAnchor(s).replace(/^[a-zA-Z][a-zA-Z0-9+.\-]*:\/\//, '');
-    if (!stripped.includes('/'))
-        return false;
-    return stripped.slice(stripped.indexOf('/') + 1) === '';
-}
 function sourceAllowed(entry, sources) {
-    const e = stripAnchor(entry);
+    const e = hostOf(entry);
     if (!e)
         return false;
     return sources.some((s) => {
-        const src = stripAnchor(s);
-        if (src === e || src.includes(e))
-            return true;
-        if (isBareOrigin(src) && hostOf(src) && hostOf(src) === hostOf(e))
-            return true;
-        return false;
+        const h = hostOf(s);
+        return !!h && h === e;
     });
 }
 function sourceAddressesOf(req) {
@@ -185,8 +175,19 @@ async function bootstrap() {
             .catch(() => next());
     });
     const frontendDir = (0, project_paths_1.frontendAppDir)();
-    if (frontendDir)
-        server.use(express_1.default.static(frontendDir));
+    if (frontendDir) {
+        server.use(express_1.default.static(frontendDir, {
+            index: false,
+            setHeaders(res, filePath) {
+                if (/[/\\]assets[/\\]/.test(filePath)) {
+                    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+                }
+                else {
+                    res.setHeader('Cache-Control', 'no-cache');
+                }
+            },
+        }));
+    }
     const SPA_SKIP = /^\/(api|upload|file|random|dav|dev|s3)(\/|$)/;
     if (frontendDir) {
         server.use((req, res, next) => {
@@ -199,6 +200,7 @@ async function bootstrap() {
             const accept = req.headers.accept || '';
             if (accept && !accept.includes('*/*') && !accept.includes('text/html'))
                 return next();
+            res.setHeader('Cache-Control', 'no-cache');
             return res.sendFile((0, path_1.join)(frontendDir, 'index.html'));
         });
     }
@@ -296,6 +298,11 @@ async function bootstrap() {
     }
     const port = Number(process.env.PORT || 3618);
     await app.listen(port, '0.0.0.0');
+    const httpServer = app.getHttpServer();
+    const uploadTimeout = Number(process.env.UPLOAD_REQUEST_TIMEOUT_MS || 0);
+    httpServer.requestTimeout = Number.isFinite(uploadTimeout) && uploadTimeout >= 0 ? uploadTimeout : 0;
+    httpServer.headersTimeout = 120_000;
+    httpServer.keepAliveTimeout = 65_000;
     console.log(`go-imgbed 已启动: http://localhost:${port}`);
 }
 bootstrap();

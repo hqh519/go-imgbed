@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.S3Adapter = exports.looksInternalHost = void 0;
 const client_s3_1 = require("@aws-sdk/client-s3");
+const fs_1 = require("fs");
 const adapter_interface_1 = require("./adapter.interface");
 const endpoint_1 = require("../common/endpoint");
 var endpoint_2 = require("../common/endpoint");
@@ -74,6 +75,62 @@ class S3Adapter {
         }
         catch (err) {
             throw new adapter_interface_1.AdapterError(`上传失败: ${err.message}`, channel.type);
+        }
+    }
+    async uploadFile(path, size, file, key, channel) {
+        const fullKey = key;
+        const PART_SIZE = 16 * 1024 * 1024;
+        if (size <= PART_SIZE) {
+            const buffer = await fs_1.promises.readFile(path);
+            return this.upload({ buffer, mime: file.mime, originalName: file.originalName }, key, channel);
+        }
+        let uploadId;
+        try {
+            const created = await this.client.send(new client_s3_1.CreateMultipartUploadCommand({
+                Bucket: this.bucket,
+                Key: fullKey,
+                ContentType: file.mime,
+            }));
+            uploadId = created.UploadId;
+            if (!uploadId)
+                throw new Error('未返回 UploadId');
+            const parts = [];
+            const fh = await fs_1.promises.open(path, 'r');
+            try {
+                for (let offset = 0, partNumber = 1; offset < size; offset += PART_SIZE, partNumber++) {
+                    const len = Math.min(PART_SIZE, size - offset);
+                    const buf = Buffer.allocUnsafe(len);
+                    const { bytesRead } = await fh.read(buf, 0, len, offset);
+                    if (bytesRead !== len)
+                        throw new Error(`读取第 ${partNumber} 片失败：期望 ${len}B，实际 ${bytesRead}B`);
+                    const part = await this.client.send(new client_s3_1.UploadPartCommand({
+                        Bucket: this.bucket,
+                        Key: fullKey,
+                        UploadId: uploadId,
+                        PartNumber: partNumber,
+                        Body: buf,
+                    }));
+                    parts.push({ ETag: part.ETag, PartNumber: partNumber });
+                }
+            }
+            finally {
+                await fh.close().catch(() => undefined);
+            }
+            await this.client.send(new client_s3_1.CompleteMultipartUploadCommand({
+                Bucket: this.bucket,
+                Key: fullKey,
+                UploadId: uploadId,
+                MultipartUpload: { Parts: parts },
+            }));
+            return { remoteKey: fullKey };
+        }
+        catch (err) {
+            if (uploadId) {
+                await this.client
+                    .send(new client_s3_1.AbortMultipartUploadCommand({ Bucket: this.bucket, Key: fullKey, UploadId: uploadId }))
+                    .catch(() => undefined);
+            }
+            throw new adapter_interface_1.AdapterError(`分片上传失败: ${err.message}`, channel.type);
         }
     }
     async delete(copy, channel) {

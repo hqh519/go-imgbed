@@ -1006,6 +1006,15 @@ body,
     /* IE/Edge */
 }
 
+/*
+ * v20261027：撤销 v2.8.2 的 html.os-body-managed { overflow: hidden } ——
+ * OS 接管后滚动视口就是 html 自身（data-overlayscrollbars-viewport），
+ * 用 !important 强锁 hidden 会把「滚轮/触摸滚动」也一并杀掉，
+ * 表现为后台所有页面滚不动（程序化 scrollTo 仍可用，所以当时没测出来）。
+ * 原生滚动条的隐藏由上面的 scrollbar-width:none + ::-webkit-scrollbar 规则负责，
+ * 移动端双滚动条改为在 App.vue 里「触屏设备不启用 OS」从根源解决。
+ */
+
 *::-webkit-scrollbar,
 html::-webkit-scrollbar,
 body::-webkit-scrollbar {

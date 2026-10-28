@@ -67,6 +67,23 @@ class LocalAdapter {
         }
         return { remoteKey: relKey, metas: { local: true, owner: LocalAdapter.ownerSegment(ctx?.owner) } };
     }
+    async uploadFile(path, _size, _file, key, _channel, ctx) {
+        const relKey = LocalAdapter.toRelativePathFor(key, ctx?.owner);
+        const abs = LocalAdapter.absolutePath(relKey);
+        try {
+            await fs_1.promises.mkdir((0, path_1.dirname)(abs), { recursive: true });
+            try {
+                await fs_1.promises.link(path, abs);
+            }
+            catch {
+                await fs_1.promises.copyFile(path, abs);
+            }
+        }
+        catch (err) {
+            throw new adapter_interface_1.AdapterError(`写入本地文件失败：${err.message}`, 'local');
+        }
+        return { remoteKey: relKey, metas: { local: true, owner: LocalAdapter.ownerSegment(ctx?.owner) } };
+    }
     async delete(copy, _channel) {
         const rel = String(copy.remoteKey || '');
         if (!rel)

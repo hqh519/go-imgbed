@@ -117,45 +117,43 @@
                     :rows="fileList.length ? 4 : 14"
                 />
                 <div class="paste-card-actions">
-                    <!-- v2.8.0：左侧「上传」按钮 —— 仅转存模式显示（外链模式不需要上传动作）；
-                         执行等待中链接条目的上传（同文件模式上传按钮） -->
+                    <!-- v2.8.2：上传按钮常驻渲染，外链模式用 visibility 隐藏但保留占位，
+                         避免右侧转存/外链模块整体左移；功能与文件模式的「上传」一致 ——
+                         只负责把已拉取就绪的待上传条目提交上传 -->
                     <el-button
-                        v-if="pasteUploadMethod === 'save'"
                         class="paste-card-upload-button paste-card-start-button"
+                        :class="{ 'is-hidden': pasteUploadMethod === 'external' }"
                         type="primary"
                         :size="pasteCardMethodButtonSize"
-                        :disabled="!fileList.some(item => item.status === 'waiting' && (item.uploadChannel === 'external' || item.isRemoteUrl))"
-                        @click="startPasteUpload()"
+                        :disabled="!fileList.some(item => item.status === 'waiting' && (item.rawFile || item.stagedId))"
+                        @click="startManualUpload"
                     >
                         {{ $t('uploadForm.uploadNow') }}
                     </el-button>
-                    <!-- v2.8.0：「提取」按钮移除；「转存/外链」改为单击即执行：
-                         转存 = 解析输入框有效链接进列表（待上传，可改名/裁剪），确认后点左侧「上传」；
-                         外链 = 解析有效链接并立即生成外链格式（上传按钮隐藏） -->
-                    <div
-                        class="paste-card-method-group"
-                        :class="{ 'is-external': pasteUploadMethod === 'external' }"
-                        role="group"
-                        :aria-label="$t('upload.switchUploadMethod')"
-                    >
-                        <button
-                            class="paste-card-method-button"
+                    <!-- v2.8.2：转存 / 外链去掉分段模块，改为两个独立按钮，单击即一键完成：
+                         转存 = 检测输入框 → 提取有效链接 → 拉取文件 → 加载到列表待编辑/裁剪；
+                         外链 = 检测输入框 → 提取有效链接 → 生成外链格式加载到列表 -->
+                    <div class="paste-card-method-btns">
+                        <el-button
+                            class="paste-card-upload-button paste-card-method-btn"
                             :class="{ 'is-active': pasteUploadMethod === 'save' }"
-                            type="button"
-                            :aria-pressed="pasteUploadMethod === 'save'"
-                            @click="onPasteMethodClick('save')"
+                            type="primary"
+                            plain
+                            :size="pasteCardMethodButtonSize"
+                            @click="handlePasteSave"
                         >
                             {{ $t('upload.pasteSave') }}
-                        </button>
-                        <button
-                            class="paste-card-method-button"
+                        </el-button>
+                        <el-button
+                            class="paste-card-upload-button paste-card-method-btn"
                             :class="{ 'is-active': pasteUploadMethod === 'external' }"
-                            type="button"
-                            :aria-pressed="pasteUploadMethod === 'external'"
-                            @click="onPasteMethodClick('external')"
+                            type="primary"
+                            plain
+                            :size="pasteCardMethodButtonSize"
+                            @click="handlePasteExternal"
                         >
                             {{ $t('upload.pasteExternal') }}
-                        </button>
+                        </el-button>
                     </div>
                 </div>
             </el-card>
@@ -274,7 +272,7 @@
                         v-for="file in fileList.slice().reverse()"
                         :key="file.uid"
                         :file="file"
-                        :manualMode="!autoUpload"
+                        :manualMode="!autoUpload || uploadMethod !== 'default'"
                         @copy="handleCopy"
                         @remove="handleRemove"
                         @detail="handleDetail"
@@ -573,12 +571,12 @@ computed: {
             ? v
             : ['jpg', 'png', 'gif', 'jpeg', 'webp', 'bmp', 'mp4', 'webm', 'mov', 'm4v', 'mp3', 'm4a', 'aac', 'ogg']
     },
-    /** 单文件大小上限（MB）：上传设置覆盖优先，其次系统设置，默认 150 */
+    /** 单文件大小上限（MB）：上传设置覆盖优先，其次系统设置，默认 200 */
     maxUploadSizeMB() {
         const local = Number(this.limitMaxSizeMB)
         if (Number.isFinite(local) && local > 0) return local
         const v = Number(this.userConfig?.maxUploadSizeMB)
-        return Number.isFinite(v) && v > 0 ? v : 150
+        return Number.isFinite(v) && v > 0 ? v : 200
     },
     /** 文件选择器 accept 属性（与服务端白名单保持一致） */
     acceptAttr() {
@@ -793,18 +791,29 @@ methods: {
         this.$emit('update:autoUpload', !this.autoUpload)
     },
     /** 手动上传：把列表里所有等待中的文件一次性发出（可先改过文件名） */
+    /**
+     * 手动上传：把列表里所有等待中的文件发出。
+     * v2.8.3：
+     *   · 文件模式：此时才做压缩（用户已改好名 / 裁好图）；
+     *   · 链接模式：转存条目直接提交（可能是 rawFile，也可能是服务端暂存 stagingId）。
+     */
     startManualUpload() {
-        const pending = this.fileList.filter(item => item.status === 'waiting')
+        const pending = this.fileList.filter(item => item.status === 'waiting' && (item.rawFile || item.stagedId))
         if (!pending.length) {
             this.$message({ type: 'info', message: this.$t('uploadForm.noPendingFiles') })
             return
         }
         pending.forEach(item => {
             item.editableName = false
+            // 链接转存的大文件：文件已在服务端磁盘，只提交 stagingId，浏览器不再传一遍
+            if (item.stagedId) {
+                this.uploadStagedItem(item)
+                return
+            }
             item.status = 'uploading'
             const raw = item.rawFile
             if (!raw) return
-            // 用户可能改过文件名：按新名字重新构造 File，实现「按新名上传」
+            // 用户可能改过文件名：按新名字重新构造 File（仍在浏览器内存）
             let fileToUpload = raw
             const desiredName = item.name
             if (desiredName && desiredName !== raw.name) {
@@ -827,6 +836,50 @@ methods: {
             this.forcedUpload = false
         })
     },
+
+    /**
+     * v2.8.3：提交「链接转存暂存文件」。
+     * 后端已经把远端文件流式下载到临时目录，这里只发一个很小的请求
+     * （stagingId + 新文件名 + 压缩开关），由服务端压缩后直接写存储渠道。
+     */
+    uploadStagedItem(item) {
+        item.editableName = false
+        item.status = 'uploading'
+        item.progreess = 10
+        item.compressing = !!item.serverCompress
+        const uploadChannel = item.uploadChannel || this.effParams.uploadChannel
+        const autoRetry = this.effParams.autoRetry && uploadChannel !== 'external'
+        const uploadNameType = this.effParams.uploadNameType
+        const targetUploadFolder = item.uploadFolder ?? this.uploadFolder
+        const formData = new FormData()
+        formData.append('stagingId', item.stagedId)
+        formData.append('originalFileName', item.name)
+        axios({
+            url: '/upload' +
+                '?serverCompress=' + (item.serverCompress ? 'true' : 'false') +
+                '&uploadChannel=' + uploadChannel +
+                (this.channelName ? '&channelName=' + encodeURIComponent(this.channelName) : '') +
+                '&uploadNameType=' + uploadNameType +
+                '&autoRetry=' + autoRetry +
+                '&uploadFolder=' + encodeURIComponent(targetUploadFolder) +
+                this.extraUploadParams({ uid: item.uid }),
+            method: 'post',
+            data: formData,
+            withAuthCode: true,
+            onUploadProgress: (evt) => {
+                // 请求体很小，进度只用于让 UI 有反馈；真正耗时在服务端压缩/写渠道
+                const pct = Math.min(90, Math.round((evt.loaded / Math.max(1, evt.total)) * 90))
+                item.progreess = Math.max(10, pct)
+            }
+        }).then(res => {
+            item.compressing = false
+            this.handleSuccess(res, { uid: item.uid, name: item.name })
+        }).catch(err => {
+            item.compressing = false
+            this.handleError(err, { uid: item.uid, name: item.name })
+        })
+    },
+
     createLocalUid() {
         this.localUidCounter += 1
         return `local-${Date.now()}-${this.localUidCounter}`
@@ -912,7 +965,7 @@ methods: {
         }
         return name.substring(0, keepStart) + '...' + name.slice(-4) + ext
     },
-    uploadFile(file) {
+    async uploadFile(file) {
         // 如果fileList中不存在该文件，说明已被删除，直接返回
         if (!this.fileList.find(item => item.uid === file.file.uid)) {
             return
@@ -935,27 +988,54 @@ methods: {
             if (waitingItem) waitingItem.status = 'waiting'
             return
         }
-        
+
+        const fileItem = this.fileList.find(item => item.uid === file.file.uid)
+
+        /*
+         * v2.8.3：压缩后置到「真正要发出去」的这一刻 ——
+         * 手动模式此时用户已经改好名、裁好图；自动模式则选完立即走到这里。
+         * 处理结果只替换本次上传用的 File，列表条目仍指向原始 rawFile（可重试）。
+         */
+        let actualFile = file.file
+        if (fileItem && fileItem.uploadChannel !== 'external') {
+            fileItem.compressing = true
+            try {
+                const prepared = await this.prepareUploadFile(file.file)
+                actualFile = prepared.file
+                fileItem.serverCompress = prepared.serverCompress
+                if (actualFile.name && actualFile.name !== fileItem.name) {
+                    fileItem.name = actualFile.name
+                }
+            } catch (err) {
+                fileItem.compressing = false
+                fileItem.status = 'exception'
+                this.$message.error(this.$t('uploadForm.uploadFailed', { name: this.truncateFilename(file.file.name) }))
+                console.error('[upload] 上传前预处理失败:', err)
+                return
+            }
+            fileItem.compressing = false
+        }
+
         // 开始上传，增加计数
         this.activeUploads++
         const uploadingItem = this.fileList.find(item => item.uid === file.file.uid)
         if (uploadingItem) uploadingItem.status = 'uploading'
 
-        const fileItem = this.fileList.find(item => item.uid === file.file.uid)
         const uploadChannel = fileItem?.uploadChannel || this.effParams.uploadChannel
+        const next = { ...file, file: actualFile }
 
         // 如果上传渠道为外链，走服务端拉取
         if (uploadChannel === 'external') {
-            this.uploadSingleFile(file)
+            this.uploadSingleFile(next)
             return
         }
 
         // 所有存储渠道统一走 /upload：小文件单次上传，大文件自动分块
         const CHUNK_THRESHOLD = 20 * 1024 * 1024 // 20MB
-        if (file.file.size > CHUNK_THRESHOLD) {
-            this.uploadFileInChunks(file)
+        if (actualFile.size > CHUNK_THRESHOLD) {
+            this.uploadFileInChunks(next)
         } else {
-            this.uploadSingleFile(file)
+            this.uploadSingleFile(next)
         }
     },
     // 处理上传队列中的下一个文件
@@ -1195,6 +1275,9 @@ methods: {
         const fileSize = file.file.size
         const fileType = file.file.type || 'application/octet-stream'
         const totalChunks = Math.ceil(fileSize / CHUNK_SIZE)
+        // v2.8.3：稳定指纹 —— 刷新页面/失败重试时命中同一会话，已传分片不再重传
+        const uploadKey = fileItem.uploadKey || `${file.file.name}|${fileSize}|${file.file.lastModified || 0}|${fileType}`
+        fileItem.uploadKey = uploadKey
         
         const needServerCompress = fileItem.serverCompress
         const autoRetry = this.effParams.autoRetry && uploadChannel !== 'external'
@@ -1207,6 +1290,8 @@ methods: {
             initFormData.append('originalFileName', file.file.name)
             initFormData.append('originalFileType', fileType)
             initFormData.append('totalChunks', totalChunks.toString())
+            initFormData.append('fileSize', String(fileSize))
+            initFormData.append('uploadKey', uploadKey)
 
             const initResponse = await axios({
                 url: '/upload' + 
@@ -1227,20 +1312,30 @@ methods: {
             }
 
             const uploadId = initResponse.data.uploadId
-            console.log('分块上传初始化成功，uploadId:', uploadId)
+            // 断点续传：后端返回已完整收到的分片下标
+            const alreadyReceived = new Set((initResponse.data.received || []).map(x => x.index))
+            console.log('分块上传初始化成功，uploadId:', uploadId, '已收分片:', alreadyReceived.size)
 
             // 记录 totalChunks 和 uploadId 到文件项，用于后续清理
-            const fileItem = this.fileList.find(item => item.uid === file.file.uid)
-            if (fileItem) {
-                fileItem.totalChunks = totalChunks
-                fileItem.uploadId = uploadId
+            const itemRef = this.fileList.find(item => item.uid === file.file.uid)
+            if (itemRef) {
+                itemRef.totalChunks = totalChunks
+                itemRef.uploadId = uploadId
                 // 分块上传：100% 之后是「合并」而不是压缩，进度条不要误报「压缩中」
-                fileItem.chunkedUpload = true
+                itemRef.chunkedUpload = true
             }
 
-            // 第二步：并发上传所有分块
-            const maxConcurrency = 3 // 最大并发数
+            // 第二步：并发上传所有分块（大文件 4 并发，小文件 3；16MB/片）
+            const maxConcurrency = fileSize > 100 * 1024 * 1024 ? 4 : 3
             const chunkProgress = new Array(totalChunks).fill(0)
+            for (const idx of alreadyReceived) {
+                if (idx >= 0 && idx < totalChunks) chunkProgress[idx] = 100
+            }
+            const reportResumeProgress = () => {
+                const pct = Math.round(chunkProgress.reduce((a, b) => a + b, 0) / totalChunks)
+                file.onProgress({ percent: pct, file: file.file })
+            }
+            if (alreadyReceived.size) reportResumeProgress()
             let nextChunkIndex = 0
             let hasError = false
             let errorMsg = ''
@@ -1315,6 +1410,8 @@ methods: {
                 pool.push((async () => {
                     while (nextChunkIndex < totalChunks && !hasError && !isCancelled) {
                         const currentIndex = nextChunkIndex++
+                        // 已收到的分片直接跳过（续传）
+                        if (alreadyReceived.has(currentIndex)) continue
                         try {
                             await uploadChunk(currentIndex)
                         } catch (e) {
@@ -1356,7 +1453,7 @@ methods: {
             mergeFormData.append('originalFileName', file.file.name)
             mergeFormData.append('originalFileType', fileType)
 
-            const response = await axios({
+            const mergeRequest = () => axios({
                 url: '/upload' + 
                     '?serverCompress=' + needServerCompress + 
                     '&uploadChannel=' + uploadChannel + 
@@ -1369,6 +1466,23 @@ methods: {
                 data: mergeFormData,
                 withAuthCode: true
             })
+            /*
+             * v2.8.3：合并 = 服务端拼接 + 压缩 + 写渠道，耗时最长也最容易碰到网络抖动。
+             * 失败自动重试 1 次（分片在服务端保留 24h，重试不会重传文件）。
+             */
+            let response
+            let mergeError
+            for (let attempt = 0; attempt < 2; attempt++) {
+                try {
+                    response = await mergeRequest()
+                    mergeError = null
+                    break
+                } catch (e) {
+                    mergeError = e
+                    if (attempt === 0) await new Promise(r => setTimeout(r, 3000))
+                }
+            }
+            if (mergeError) throw mergeError
             
             // 关闭提示
             this.$message.closeAll()
@@ -1384,17 +1498,10 @@ methods: {
             
             console.error('分块上传失败:', err)
             
-            // 如果有uploadId，清理相关资源
-            const fileItem = this.fileList.find(item => item.uid === file.file.uid)
-            if (fileItem && fileItem.uploadId) {
-                this.cleanupUploadResources(fileItem.uploadId, fileItem.totalChunks)
-                    .then(() => {
-                        console.log(`已清理分块上传失败的资源: ${fileItem.uploadId}`)
-                    })
-                    .catch(cleanupError => {
-                        console.warn('清理分块上传失败资源时出错:', cleanupError)
-                    })
-            }
+            // v2.8.3：失败不删服务端分片 —— 保留 24h，用户重试时可直接续传/重合并；
+            // 只有用户主动移除条目或清空列表才删（见 releaseItem / clearFileList）。
+            const failedItem = this.fileList.find(item => item.uid === file.file.uid)
+            if (failedItem) failedItem.keepSessionOnError = true
             
             if (err.response && err.response.status !== 401) {
                 this.exceptionList.push(file)
@@ -1507,6 +1614,30 @@ methods: {
         this.$message({ type: 'success', message: this.$t('uploadCrop.done') })
     },
 
+    /**
+     * v2.8.3：释放单个条目占用的资源。
+     *   · 预览用的 blob: URL 必须 revoke，否则整个页面生命周期内都占着内存
+     *   · 未完成的分片会话 → 让后端删掉（避免磁盘留 24h）
+     *   · 未上传的链接暂存 → 让后端删掉
+     *   · rawFile 置空，让浏览器 GC 回收文件字节
+     */
+    releaseItem(file) {
+        if (!file) return
+        try {
+            if (file.url && String(file.url).startsWith('blob:')) URL.revokeObjectURL(file.url)
+        } catch (e) { /* 忽略 */ }
+        if (file.uploadId && file.chunkedUpload) {
+            this.cleanupUploadResources(file.uploadId, file.totalChunks)
+                .catch(() => undefined)
+        }
+        if (file.stagedId) {
+            const stagingId = file.stagedId
+            axios.post('/api/staging/delete', { stagingId }, { withAuthCode: true }).catch(() => undefined)
+            file.stagedId = null
+        }
+        file.rawFile = null
+    },
+
     handleRemove(file) {
         // 如果文件正在上传，取消上传
         if (this.abortControllers.has(file.uid)) {
@@ -1515,6 +1646,8 @@ methods: {
         }
         // 从上传队列中移除（如果在等待中）
         this.uploadQueue = this.uploadQueue.filter(item => item.file.uid !== file.uid)
+        // 释放 blob / 分片会话 / 暂存文件后再移除
+        this.releaseItem(file)
         // 从文件列表中移除
         this.fileList = this.fileList.filter(item => item.uid !== file.uid)
         this.$message({
@@ -1540,11 +1673,19 @@ methods: {
     handleSuccess(response, file) {
         const fileItem = this.fileList.find(item => item.uid === file.uid)
         if (!fileItem) return // 文件已被删除
+        const oldPreviewUrl = fileItem.url
         
         try {     
             // 对上传渠道为外链的，不修改链接
             const uploadChannel = fileItem.uploadChannel || this.effParams.uploadChannel
             if (uploadChannel !== 'external') {
+                // 防御：响应缺失（例如 el-upload 在未真正发请求时回调 onSuccess）时不要打失败标记
+                if (!response || !response.data || !response.data[0]) {
+                    console.warn('[upload] handleSuccess 收到空响应，已忽略')
+                    fileItem.status = 'waiting'
+                    fileItem.editableName = true
+                    return
+                }
                 // 从response.data[0].src中去除/file/前缀
                 // 后端 src 现在是「全站统一出口」的完整外链（可能带自定义域名），
                 // 这里统一取出 File_ID；同时兼容旧的相对形态 /file/xxx
@@ -1568,6 +1709,13 @@ methods: {
                 type: 'success',
                 message: this.$t('uploadForm.uploadSuccess', { name: this.truncateFilename(file.name) })
             })
+            // v2.8.3：上传成功后释放浏览器内存 —— 预览 blob 已无用，原始 File 也不再需要；
+            // 暂存文件清掉引用但不发删除请求（异步备份可能还在读，交给 2h TTL）
+            try {
+                if (oldPreviewUrl && String(oldPreviewUrl).startsWith('blob:')) URL.revokeObjectURL(oldPreviewUrl)
+            } catch (e) { /* 忽略 */ }
+            fileItem.rawFile = null
+            fileItem.stagedId = null
             setTimeout(() => {
                 const item = this.fileList.find(item => item.uid === file.uid)
                 if (item) item.status = 'done'
@@ -1636,9 +1784,38 @@ methods: {
         }
         const expected = await this.signatureMatches(file, ext)
         if (expected === false) {
+            /*
+             * v2.8.2：图片格式互串放行 —— 网页保存的图片常被按 URL 命名成 .jpg 实际是 PNG。
+             * 声明扩展名与真实内容同为图片格式时不拦截（后端同规则放行并记日志）；
+             * 跨大类（如 exe 改名 .jpg）仍然拒绝。
+             */
+            const realExt = await this.detectImageSignature(file)
+            if (realExt && ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'].includes(ext) && ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'].includes(realExt)) {
+                console.warn(`[upload] 图片格式互串放行：${name} 声明 .${ext}，实际内容为 .${realExt}`)
+                return { ok: true, message: '' }
+            }
             return { ok: false, message: `文件内容与扩展名不符（.${ext}），已拒绝上传：${name}` }
         }
         return { ok: true, message: '' }
+    },
+
+    /** v2.8.2：按文件头魔数识别真实图片格式，非已知图片签名返回 null */
+    async detectImageSignature(file) {
+        let head
+        try {
+            head = new Uint8Array(await file.slice(0, 16).arrayBuffer())
+        } catch {
+            return null
+        }
+        if (head.length < 12) return null
+        const hex = Array.from(head).map((b) => b.toString(16).padStart(2, '0')).join('')
+        const ascii = (s, e) => String.fromCharCode(...head.slice(s, e))
+        if (hex.startsWith('ffd8ff')) return 'jpg'
+        if (hex.startsWith('89504e47')) return 'png'
+        if (ascii(0, 4) === 'GIF8') return 'gif'
+        if (ascii(0, 4) === 'RIFF' && ascii(8, 12) === 'WEBP') return 'webp'
+        if (hex.startsWith('424d')) return 'bmp'
+        return null
     },
 
     /** 读取文件头并比对已知魔数；返回 true=匹配 / false=不匹配 / null=未知格式不判定 */
@@ -1686,66 +1863,34 @@ methods: {
         }
     },
 
+    /**
+     * v2.8.3：选择文件时只做「校验 + 入列」，不再压缩。
+     * 手动模式：先让用户改名/裁剪，点「上传」时才在 prepareUploadFile 里压缩；
+     * 自动模式：uploadFile 里压缩后立刻上传（不需要改名/裁剪步骤）。
+     */
     beforeUpload(file) {
         return new Promise(async (resolve, reject) => {
-            let processedFile = file
-            // 真正的「初始大小」：用户选中的原始文件字节数。
-            // WebP 转换与本地压缩都会把体积改小，必须在最开始就记下来，
-            // 否则文件详情里的「初始大小 / 当前大小」会显示成同一个值。
-            const trueOriginalSize = file.size
-            
-            // WebP 转换：在压缩之前进行
-            // 条件：1.开启WebP转换 2.文件类型为图片 3.不是WebP/GIF/SVG格式
-            const canConvertToWebp = this.convertToWebp && 
-                file.type.includes('image') && 
-                !file.type.includes('webp') && 
-                !file.type.includes('gif') && 
-                !file.type.includes('svg')
-            
-            if (canConvertToWebp) {
-                try {
-                    const convertedFile = await this.convertImageToWebp(file)
-                    if (convertedFile) {
-                        processedFile = convertedFile
-                        console.log(`WebP转换成功: ${file.name} -> ${convertedFile.name}, 大小: ${(file.size/1024).toFixed(1)}KB -> ${(convertedFile.size/1024).toFixed(1)}KB`)
-                    }
-                } catch (err) {
-                    console.warn('WebP转换失败，使用原文件:', err)
-                    // 转换失败，继续使用原文件
+            try {
+                // 扩展名白名单 + magic bytes 双重校验（先按原始文件校验）
+                const extCheck = await this.checkFileAcceptable(file)
+                if (!extCheck.ok) {
+                    this.$message.error(extCheck.message)
+                    return reject(extCheck.message)
                 }
-            }
-            
-            // 客户端压缩条件：1.文件类型为图片 2.开启客户端压缩，且文件大小大于压缩阈值
-            // 注意：GIF 动图不压缩（压缩会丢失动画）
-            const isGif = processedFile.type === 'image/gif'
-            const needCustomCompress = processedFile.type.includes('image') && !isGif && this.customerCompress && processedFile.size / 1024 / 1024 > this.compressBar
-            // v2.4.0：服务端压缩旗标 —— 「文件压缩」开关开启时才压缩。
-            // 图片走客户端压缩（或原图直传），不再二次压缩；
-            // 视频 / 音频客户端压不了，开关开启时交给后端（合并阶段）处理。
-            const serverCompressFlag = this.customerCompress && !processedFile.type.includes('image')
-
-            // 扩展名白名单 + magic bytes 双重校验（先按最终文件校验）
-            const extCheck = await this.checkFileAcceptable(processedFile)
-            if (!extCheck.ok) {
-                this.$message.error(extCheck.message)
-                return reject(extCheck.message)
-            }
-
-            // 单文件上限（可在「系统设置 → 页面设置」调整）
-            const MAX_UPLOAD_MB = this.maxUploadSizeMB
-            const isLtLim = processedFile.size / 1024 / 1024 <= MAX_UPLOAD_MB
-
-            const pushFileToQueue = (file, serverCompress, overrideOriginalSize) => {
-                const fileUrl = URL.createObjectURL(file)
-                const manual = !this.autoUpload
+                // 单文件上限（上传设置里的临时值优先，其次后台全局设置，默认 200MB）
+                const MAX_UPLOAD_MB = this.maxUploadSizeMB
+                if (file.size / 1024 / 1024 > MAX_UPLOAD_MB) {
+                    this.$message.error(`${file.name} 超过 ${MAX_UPLOAD_MB}MB 上限，请到上传设置或后台调大限制`)
+                    return reject(this.$t('uploadForm.fileSizeTooLarge'))
+                }
+                const manual = !this.autoUpload || this.uploadMethod !== 'default'
                 this.fileList.push({
                     uid: file.uid,
                     name: file.uploadRelativePath || file.name,
-                    // 保留原始 File 引用：手动上传模式改名/重传时需要
+                    // 保留原始 File 引用：手动模式改名/裁剪后仍以它为源
                     rawFile: file,
-                    // 初始（压缩/转码前）字节数，供文件详情展示「初始大小 / 当前大小」
-                    originalSize: overrideOriginalSize || trueOriginalSize || file.size,
-                    url: fileUrl,
+                    originalSize: file.size,
+                    url: URL.createObjectURL(file),
                     finalURL: '',
                     mdURL: '',
                     htmlURL: '',
@@ -1754,78 +1899,101 @@ methods: {
                     status: manual ? 'waiting' : 'uploading',
                     editableName: manual,
                     progreess: 0,
-                    serverCompress: serverCompress,
+                    serverCompress: false,
                     uploadFolder: file.uploadFolder ?? this.uploadFolder,
                     retryCount: 0,
+                    compressing: false,
                 })
-                resolve(file)
-            }
-
-            if (needCustomCompress) {
-                // 压缩期望值 = 原体积 × 压缩百分比（例如原图 1MB、80% → 目标 800KB）
-                const pct = Math.min(100, Math.max(10, Number(this.compressPercent) || 80))
-                const targetKB = Math.max(1, Math.round((processedFile.size / 1024) * (pct / 100)))
-                // 尝试压缩图片
-                imageConversion.compressAccurately(processedFile, targetKB).then((res) => {
-                    if (res.size / 1024 / 1024 > MAX_UPLOAD_MB) {
-                        this.$message.error(this.$t('uploadForm.compressedFileTooLarge', { name: processedFile.name }))
-                        reject(this.$t('uploadForm.fileSizeTooLarge'))
-                        return
-                    }
-                    this.uploading = true
-                    // 压缩后仍比原图大时保留原图（避免「压不动」反而变大）
-                    const compressed = res.size < processedFile.size
-                    const source = compressed ? res : processedFile
-
-                    /* ── 「开启图片压缩后上传失败」的根因就在这里 ─────────────────────
-                     * image-conversion 的 compressAccurately() 内部固定用
-                     * canvas.toDataURL('image/jpeg') 输出，**产出的字节永远是 JPEG**；
-                     * 但它返回的 Blob 的 type 却仍标成原图 MIME，文件名也还是原名
-                     * （如 photo.png）。
-                     * 结果：上传时 multipart 文件名=photo.png、内容却是 ffd8ff...，
-                     * 后端魔数校验 signatureOk() 判定「内容与扩展名不符」直接拒收 →
-                     * 表现为「开了压缩就传不上去，关了压缩就正常」。
-                     * 修复：按产物的真实内容把扩展名改成 .jpg（type 同步纠正）。
-                     * ──────────────────────────────────────────────────────────── */
-                    let finalFile = processedFile
-                    if (compressed) {
-                        const base = String(processedFile.name).replace(/\.[^.]+$/, '') || 'image'
-                        const jpegName = `${base}.jpg`
-                        const asJpeg = new File([source], jpegName, { type: 'image/jpeg' })
-                        // .jpg 不在允许列表时（极少见）放弃压缩，直接传原图，避免被拒
-                        if (this.allowedExtensions.includes('jpg')) {
-                            finalFile = asJpeg
-                        }
-                    }
-                    finalFile.uid = file.uid
-                    this.copyUploadPath(processedFile, finalFile)
-                    // 扩展名可能被改成 .jpg，同步修正相对路径，保证落库文件名与内容一致
-                    if (finalFile !== processedFile) {
-                        finalFile.uploadRelativePath = String(finalFile.name).replace(/\\/g, '/').replace(/^\/+/, '')
-                        finalFile.uploadFolder = joinUploadFolder(
-                            this.uploadFolder,
-                            getRelativeDirectory(finalFile.uploadRelativePath)
-                        )
-                    }
-
-                    // 服务端压缩已按方案裁剪，统一不做服务端转码
-                    pushFileToQueue(finalFile, false, trueOriginalSize)
-                }).catch((err) => {
-                    // 压缩失败不应阻断上传：直接上传原图（修复「图片压缩导致上传失败」）
-                    console.warn('本地压缩失败，改为上传原图:', err)
-                    this.uploading = true
-                    pushFileToQueue(processedFile, serverCompressFlag, trueOriginalSize)
-                })
-            } else if (isLtLim) {
-                this.uploading = true
-                pushFileToQueue(processedFile, serverCompressFlag, trueOriginalSize)
-            } else {
-                // 超出上限：引导使用对象存储渠道
-                this.$message.error(`${processedFile.name} 超过 ${MAX_UPLOAD_MB}MB 上限，请改用「腾讯云 COS / MinIO / S3 兼容存储 / R2」等对象存储渠道上传`)
-                reject(this.$t('uploadForm.fileSizeTooLarge'))
+                /*
+                 * v2.8.3 修复：手动模式必须让 el-upload 直接「取消本次上传」——
+                 * 条目已经由上面 push 进 fileList，若这里 resolve(file) 放行，
+                 * el-upload 会照常调用 http-request → uploadFile 里的手动门控直接 return
+                 * （不发请求）→ el-upload 拿到 resolved 的 Promise 后回调 onSuccess(undefined)
+                 * → handleSuccess 读 response.data 抛错 → 条目被打成「上传失败」。
+                 * 返回 false 后 el-upload 只把内部临时条目丢掉（show-file-list=false，看不到）。
+                 */
+                resolve(manual ? false : file)
+            } catch (err) {
+                reject(err)
             }
         })
     },
+
+    /**
+     * v2.8.3：上传前预处理（在「点上传」或「自动上传」时执行）——
+     * 先把用户改好的名字/裁剪结果作为输入，再做 WebP 转换与压缩：
+     *   · gif：一律跳过（动图压缩会丢帧）
+     *   · png：交给服务端 sharp 重编码（保透明），客户端 canvas 转 JPEG 会丢透明
+     *   · jpg/jpeg：客户端压缩（省带宽），压不动保留原图
+     *   · 视频/音频：标记 serverCompress，由后端 ffmpeg 处理（大文件走磁盘路径）
+     * 返回 { file, serverCompress }，失败一律降级为原文件，绝不阻断上传。
+     */
+    async prepareUploadFile(file) {
+        let processed = file
+        let convertedToWebp = false
+        const canConvertToWebp = this.convertToWebp &&
+            file.type.includes('image') &&
+            !file.type.includes('webp') &&
+            !file.type.includes('gif') &&
+            !file.type.includes('svg')
+        if (canConvertToWebp) {
+            try {
+                const convertedFile = await this.convertImageToWebp(file)
+                if (convertedFile) {
+                    processed = convertedFile
+                    convertedToWebp = true
+                }
+            } catch (err) {
+                console.warn('WebP转换失败，使用原文件:', err)
+            }
+        }
+
+        const ext = (processed.name.split('.').pop() || '').toLowerCase()
+        const isImage = String(processed.type || '').startsWith('image/')
+        const isGif = processed.type === 'image/gif' || ext === 'gif'
+        let serverCompress = false
+
+        if (this.customerCompress && !isGif) {
+            if (isImage) {
+                // 已转 WebP：本身已是压缩产物，不再二次压缩
+                if (!convertedToWebp && processed.size / 1024 / 1024 > this.compressBar) {
+                    if (['png', 'webp', 'avif'].includes(ext)) {
+                        // 保透明 / 避免 canvas 丢 alpha → 交给后端 sharp
+                        serverCompress = true
+                    } else {
+                        try {
+                            const pct = Math.min(100, Math.max(10, Number(this.compressPercent) || 80))
+                            const targetKB = Math.max(1, Math.round((processed.size / 1024) * (pct / 100)))
+                            const res = await imageConversion.compressAccurately(processed, targetKB)
+                            if (res && res.size < processed.size && this.allowedExtensions.includes('jpg')) {
+                                // image-conversion 固定输出 JPEG：扩展名必须同步成 .jpg，
+                                // 否则后端魔数校验会判「内容与扩展名不符」
+                                const base = String(processed.name).replace(/\.[^.]+$/, '') || 'image'
+                                const jpegName = `${base}.jpg`
+                                const asJpeg = new File([res], jpegName, { type: 'image/jpeg' })
+                                asJpeg.uid = file.uid
+                                this.copyUploadPath(processed, asJpeg)
+                                asJpeg.uploadRelativePath = jpegName
+                                asJpeg.uploadFolder = joinUploadFolder(
+                                    this.uploadFolder,
+                                    getRelativeDirectory(jpegName)
+                                )
+                                processed = asJpeg
+                            }
+                        } catch (err) {
+                            console.warn('本地压缩失败，改为服务端压缩:', err)
+                            serverCompress = true
+                        }
+                    }
+                }
+            } else {
+                // 视频 / 音频：客户端压不了，交给后端（大文件按磁盘路径处理）
+                serverCompress = true
+            }
+        }
+        return { file: processed, serverCompress }
+    },
+
     handleProgress(event) {
         const fileItem = this.fileList.find(item => item.uid === event.file.uid)
         if (fileItem) {
@@ -1860,6 +2028,8 @@ methods: {
             this.exceptionList = []
             // 清空上传队列
             this.uploadQueue = []
+            // 释放所有条目的 blob / 分片会话 / 暂存文件
+            this.fileList.forEach(item => this.releaseItem(item))
             // 清空文件列表
             this.fileList = []
             this.$message({
@@ -1875,6 +2045,9 @@ methods: {
     },
     clearSuccessList() {
         if (this.uploadSuccessCount > 0) {
+            this.fileList
+                .filter(item => item.status === 'done' || item.status === 'success')
+                .forEach(item => this.releaseItem(item))
             this.fileList = this.fileList.filter(item => item.status !== 'done' && item.status !== 'success')
             this.$message({
                 type: 'success',
@@ -2052,16 +2225,114 @@ methods: {
         }
     },
     /**
-     * v2.8.0：「转存 / 外链」改为单击即执行（不再两步：先切模式再点提取）。
-     * 转存 = 解析输入框有效链接进列表（待上传，可改名 / 裁剪），确认后点左侧「上传」；
-     * 外链 = 解析有效链接并立即生成外链格式（md/html/ubb），左侧「上传」按钮随之隐藏。
+     * v20261027：「转存」一步到位 —— 点击后直接把远端文件拉取到本地，
+     * 列表里只出现「已带真实文件（rawFile）」的条目，不再有先入列的占位条目；
+     * 之后点「上传」就是纯本地提交，不会二次拉取。
+     * （旧实现先入列占位再调 beforeUpload 回填，而 beforeUpload 内部自己会
+     *   pushFileToQueue 入列一条真实条目 —— 占位 + 真实两条共存且 uid 相同，
+     *   这就是「转存出双份加载项、点上传还重新拉一遍」的根因。）
+     * 校验不通过（类型不允许/拉取失败）的条目不会留在列表里。
      */
-    onPasteMethodClick(mode) {
-        this.pasteUploadMethod = mode;
+    async handlePasteSave() {
+        this.pasteUploadMethod = 'save';
+        const validUrls = extractUrlsFromText(this.pastedUrls);
+        if (!validUrls.length) {
+            this.$message({ type: 'warning', message: this.$t('upload.noValidUrlFound') });
+            return;
+        }
+        // 去重：列表里已有同链接（srcID）的条目不再重复拉取
+        const existing = new Set(this.fileList.map(item => item.srcID || item.url).filter(Boolean));
+        const newUrls = validUrls.filter(url => !existing.has(url));
+        if (!newUrls.length) {
+            this.$message({ type: 'info', message: this.$t('upload.extractNoNew') });
+            return;
+        }
+        // 拉取期间给出可感知的加载提示（拉取完成后关闭）
+        const loadingMsg = this.$message({
+            type: 'info',
+            message: this.$t('upload.pasteFetching', { count: newUrls.length }),
+            duration: 0
+        });
+        let okCount = 0;
+        try {
+            // 并行拉取；每个链接独立处理，单个失败不影响其它链接
+            const results = await Promise.allSettled(newUrls.map((url, i) =>
+                this.fetchRemoteFile(url, this.createLocalUid() + '-' + i)
+            ));
+            for (let i = 0; i < results.length; i++) {
+                const r = results[i];
+                if (r.status === 'rejected') {
+                    this.warnUrlRequestFailed(r.reason);
+                    continue;
+                }
+                const payload = r.value;
+                try {
+                    if (payload.kind === 'staged') {
+                        /*
+                         * 大文件 / 音视频：文件已在服务端磁盘，浏览器只拿到 stagingId。
+                         * 仍然以 waiting 条目出现在列表里（可改名；非图片无裁剪），
+                         * 点「上传」时由后端直接压缩 + 写渠道，不再经过浏览器。
+                         */
+                        this.fileList.push({
+                            uid: this.createLocalUid(),
+                            name: payload.name,
+                            rawFile: null,
+                            stagedId: payload.stagingId,
+                            originalSize: payload.size,
+                            size: payload.size,
+                            // 预览仍用远端地址（不占本地内存）；非图片不会渲染缩略图
+                            url: payload.sourceUrl || '',
+                            finalURL: '', mdURL: '', htmlURL: '', ubbURL: '',
+                            srcID: newUrls[i],
+                            status: 'waiting',
+                            progreess: 0,
+                            editableName: true,
+                            serverCompress: this.customerCompress && !String(payload.mime || '').startsWith('image/'),
+                            uploadFolder: this.uploadFolder,
+                            retryCount: 0,
+                            compressing: false,
+                            isStaged: true,
+                        });
+                        okCount += 1;
+                        continue;
+                    }
+                    const file = payload.file;
+                    // beforeUpload 只做校验 + 入列（压缩延后到点「上传」时）
+                    const processed = await this.beforeUpload(file);
+                    if (processed instanceof File) {
+                        const item = this.fileList.find(f => f.uid === file.uid);
+                        if (item) {
+                            // 链接模式固定「手动上传」语义：等待用户点「上传」。
+                            // 注意：不要设置 uploadChannel —— 上传时会把它作为渠道名
+                            // 发给后端，必须沿用全局所选渠道（与文件模式条目一致）；
+                            // 这里只记录 srcID 供再次转存同链接时去重。
+                            item.status = 'waiting';
+                            item.editableName = true;
+                            item.srcID = newUrls[i];
+                            okCount += 1;
+                        }
+                    }
+                } catch (e) {
+                    // beforeUpload 内部已弹过具体错误提示，这里只记录便于排查
+                    console.error('[转存] 文件校验未通过:', e);
+                }
+            }
+        } finally {
+            loadingMsg.close();
+        }
+        if (okCount > 0) {
+            this.$message({ type: 'success', message: this.$t('upload.extractedCount', { count: okCount }) });
+        }
+    },
+    /**
+     * v2.8.2：「外链」独立按钮 —— 一键完成输入框检测 → 有效链接提取 →
+     * 逐条生成外链格式（md/html/ubb）加载到列表并立即完成。
+     */
+    handlePasteExternal() {
+        this.pasteUploadMethod = 'external';
         this.handleExtractPasteUrls();
-        // 外链模式：提取出的外链条目立即按外链通道完成（无需再点上传）；
-        // 只处理外链条目，不误传之前转存进来的待上传条目。
-        if (mode === 'external') this.startPasteUpload(true);
+        // 提取出的外链条目立即按外链通道完成（无需再点上传）
+        this.startPasteUpload(true);
     },
     /**
      * v2.7.0：链接模式的「上传」按钮 —— 把等待中的链接条目按当前方式处理
@@ -2110,104 +2381,162 @@ methods: {
                      * 复制到的内容带有文案/表情/HTML 时也能挑出链接；若文本是
                      * 视频播放页（B 站 / 知乎 / og:video 页面等），后端 fetchRes
                      * 会自动解析出真实视频地址再回传字节流。
+                     * v2.8.2：拉取逻辑抽到 fetchRemoteFile（转存按钮共用）。
                      */
                     const extractedUrls = extractUrlsFromText(text);
-                    let fileName = '';
                     for (let ui = 0; ui < extractedUrls.length; ui++) {
                         const pastedUrl = extractedUrls[ui];
-                        axios.post('/api/fetchRes', { url: pastedUrl }, {
-                            responseType: 'blob',
-                            withAuthCode: true
-                        }).then(response => {
-                            const contentType = response.headers['content-type'];
-                            // 兼容 200/201：NestJS 的 POST 默认返回 201，判定过窄会误报「URL地址请求失败」
-                            if (response.status === 200 || response.status === 201) {
-                                // 提取文件名
-                                const disposition = response.headers['content-disposition'];
-                                if (disposition) {
-                                    const filenameRegex = /filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/;
-                                    const filenameStarRegex = /filename\*\s*=\s*UTF-8''([^;\n]*)/; // 处理 filename*
-
-                                    let matches = filenameRegex.exec(disposition);
-                                    if (matches != null && matches[1]) {
-                                        fileName = matches[1].replace(/['"]/g, '');
-                                        // 尝试解码
-                                        try {
-                                            fileName = decodeURIComponent(fileName);
-                                        } catch (e) {
-                                            fileName = '';
-                                        }
-                                    } 
-                                    if (fileName === '') {
-                                        matches = filenameStarRegex.exec(disposition); // 尝试匹配 filename*
-                                        if (matches != null && matches[1]) {
-                                            fileName = decodeURIComponent(matches[1]);
-                                        }
-                                    }
+                        this.fetchRemoteFile(pastedUrl, Date.now() + i * 10000 + ui)
+                            .then((payload) => {
+                                if (payload.kind === 'staged') {
+                                    // 大文件已暂存服务端：入列等待用户点「上传」
+                                    this.fileList.push({
+                                        uid: this.createLocalUid(),
+                                        name: payload.name,
+                                        rawFile: null,
+                                        stagedId: payload.stagingId,
+                                        originalSize: payload.size,
+                                        size: payload.size,
+                                        url: payload.sourceUrl || '',
+                                        finalURL: '', mdURL: '', htmlURL: '', ubbURL: '',
+                                        srcID: pastedUrl,
+                                        status: 'waiting',
+                                        progreess: 0,
+                                        editableName: true,
+                                        serverCompress: this.customerCompress && !String(payload.mime || '').startsWith('image/'),
+                                        uploadFolder: this.uploadFolder,
+                                        retryCount: 0,
+                                        compressing: false,
+                                        isStaged: true,
+                                    });
+                                    this.$message({ type: 'info', message: this.$t('upload.pasteStagedHint') });
+                                    return;
                                 }
-                                // 尝试从URL中提取文件名
-                                if (fileName === '') {
-                                    const url = new URL(pastedUrl);
-                                    fileName = url.pathname.split('/').pop();
-                                }
-                                // 未提取到文件名，使用默认文件名
-                                if (fileName === '') {
-                                    // 获取文件后缀
-                                    const url = new URL(pastedUrl);
-                                    let extension = url.pathname.split('.').pop();
-                                    // 未能从URL提取有效后缀，使用bin作为默认后缀
-                                    if (!extension || extension === '' || extension.length > 10) {
-                                        extension = 'bin';
-                                    }
-                                    fileName = 'PastedFile' + Date.now() + i + '.' + extension;
-                                }
-                                
-                                // 读取文件内容
-                                const blob = response.data;
-                                const file = new File([blob], fileName, { type: blob.type });
-                                // uid 唯一性：一次粘贴提取出多条链接时叠加 ui 偏移，避免同毫秒撞 key
-                                file.uid = Date.now() + i * 10000 + ui;
+                                const file = payload.file;
                                 // 接收beforeUpload的Promise对象
                                 const checkResult = this.beforeUpload(file);
                                 if (checkResult instanceof Promise) {
                                     checkResult.then((newFile) => {
                                         if (newFile instanceof File) {
-                                            this.uploadFile({ file: newFile, 
-                                                onProgress: (evt) => this.handleProgress(evt), 
-                                                onSuccess: (response, file) => this.handleSuccess(response, file), 
+                                            this.uploadFile({ file: newFile,
+                                                onProgress: (evt) => this.handleProgress(evt),
+                                                onSuccess: (response, file) => this.handleSuccess(response, file),
                                                 onError: (error, file) => this.handleError(error, file) });
                                         }
                                     }).catch((err) => {
                                         console.log(err);
                                     });
                                 }
-                            } else {
-                                throw new Error(`HTTP ${response.status}`);
-                            }
-                        })
-                        .catch(async (error) => {
-                            // 失败时后端返回的是 JSON 错误体；响应类型为 blob，需先解出文本再提示
-                            let detail = error?.response?.status ? `HTTP ${error.response.status}` : (error?.message || '');
-                            const data = error?.response?.data;
-                            if (data instanceof Blob) {
-                                try {
-                                    const j = JSON.parse(await data.text());
-                                    if (j && j.message) detail = j.message;
-                                } catch (e) {
-                                    /* 非 JSON 响应体，保持原提示 */
-                                }
-                            }
-                            this.$message({
-                                type: 'warning',
-                                message: detail
-                                    ? `${this.$t('uploadForm.urlRequestFailed')}：${detail}`
-                                    : this.$t('uploadForm.urlRequestFailed')
-                            });
-                        });
+                            })
+                            .catch(async (error) => this.warnUrlRequestFailed(error));
                     }
                 });
             }
         }
+    },
+    /**
+     * v2.8.2：远端链接拉取为 File（转存按钮与剪贴板流程共用）。
+     * 成功 resolve(File)；失败 reject(Error(detail))，detail 已解出后端 JSON 错误信息。
+     */
+    fetchRemoteFile(pastedUrl, uidSeed) {
+        return axios.post('/api/fetchRes', { url: pastedUrl }, {
+            responseType: 'blob',
+            withAuthCode: true
+        }).then(async response => {
+            // 兼容 200/201：NestJS 的 POST 默认返回 201，判定过窄会误报「URL地址请求失败」
+            if (response.status !== 200 && response.status !== 201) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+            // v2.8.3：大文件/音视频由后端直接暂存到磁盘，这里收到的是 JSON（stagingId）
+            const contentType = String(response.headers['content-type'] || '');
+            if (contentType.includes('application/json')) {
+                let payload = null;
+                try {
+                    payload = JSON.parse(await response.data.text());
+                } catch (e) {
+                    throw new Error('转存返回了无法解析的响应');
+                }
+                if (!payload || !payload.success) {
+                    throw new Error((payload && payload.message) || '拉取失败');
+                }
+                if (!payload.staged) throw new Error((payload && payload.message) || '拉取失败');
+                return {
+                    kind: 'staged',
+                    stagingId: payload.stagingId,
+                    name: payload.name,
+                    size: payload.size,
+                    mime: payload.mime,
+                    sourceUrl: pastedUrl
+                };
+            }
+            let fileName = '';
+            // 提取文件名
+            const disposition = response.headers['content-disposition'];
+            if (disposition) {
+                const filenameRegex = /filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/;
+                const filenameStarRegex = /filename\*\s*=\s*UTF-8''([^;\n]*)/; // 处理 filename*
+
+                let matches = filenameRegex.exec(disposition);
+                if (matches != null && matches[1]) {
+                    fileName = matches[1].replace(/['"]/g, '');
+                    // 尝试解码
+                    try {
+                        fileName = decodeURIComponent(fileName);
+                    } catch (e) {
+                        fileName = '';
+                    }
+                }
+                if (fileName === '') {
+                    matches = filenameStarRegex.exec(disposition); // 匹配 filename*
+                    if (matches != null && matches[1]) {
+                        fileName = decodeURIComponent(matches[1]);
+                    }
+                }
+            }
+            // 尝试从URL中提取文件名
+            if (fileName === '') {
+                const url = new URL(pastedUrl);
+                fileName = url.pathname.split('/').pop();
+            }
+            // 未提取到文件名，使用默认文件名
+            if (fileName === '') {
+                const url = new URL(pastedUrl);
+                let extension = url.pathname.split('.').pop();
+                // 未能从URL提取有效后缀，使用bin作为默认后缀
+                if (!extension || extension === '' || extension.length > 10) {
+                    extension = 'bin';
+                }
+                fileName = 'PastedFile' + Date.now() + '.' + extension;
+            }
+            const blob = response.data;
+            const file = new File([blob], fileName, { type: blob.type });
+            // uid 唯一性：一次粘贴提取出多条链接时由调用方传入偏移种子
+            file.uid = uidSeed;
+            return { kind: 'file', file };
+        }).catch(async (error) => {
+            if (error instanceof Error && /^HTTP /.test(error.message)) throw error;
+            // 失败时后端返回的是 JSON 错误体；响应类型为 blob，需先解出文本再抛出
+            let detail = error?.response?.status ? `HTTP ${error.response.status}` : (error?.message || '');
+            const data = error?.response?.data;
+            if (data instanceof Blob) {
+                try {
+                    const j = JSON.parse(await data.text());
+                    if (j && j.message) detail = j.message;
+                } catch (e) {
+                    /* 非 JSON 响应体，保持原提示 */
+                }
+            }
+            throw new Error(detail);
+        });
+    },
+    warnUrlRequestFailed(error) {
+        const detail = error instanceof Error ? error.message : String(error || '');
+        this.$message({
+            type: 'warning',
+            message: detail
+                ? `${this.$t('uploadForm.urlRequestFailed')}：${detail}`
+                : this.$t('uploadForm.urlRequestFailed')
+        });
     },
     handleScroll(event) {
         this.listScrolled = event.scrollTop > 0 && this.fileList.length > 0
@@ -3019,11 +3348,45 @@ html.dark .el-upload__text :deep(em) {
     letter-spacing: 0.02em;
 }
 
+/* v2.8.2：外链模式下「上传」按钮隐藏但保留占位 —— 转存/外链模块不因上传按钮消失而左移 */
+.paste-card-start-button.is-hidden {
+    visibility: hidden;
+    pointer-events: none;
+}
+
+/* v2.8.2：转存 / 外链两个独立按钮（去掉分段模块外壳，与上传按钮同款风格） */
+.paste-card-method-btns {
+    display: inline-flex;
+    align-items: center;
+    flex: 0 0 auto;
+    gap: 8px;
+}
+
+.paste-card-method-btn {
+    /* 未激活：与上传按钮同底色；激活：填充主题色以示当前通道 */
+    background: color-mix(in srgb, var(--primary-color, #2563EB) 10%, transparent) !important;
+}
+
+.paste-card-method-btn.is-active {
+    color: #fff !important;
+    background: var(--primary-color, #2563EB) !important;
+    border-color: var(--primary-color, #2563EB) !important;
+}
+
+.paste-card-method-btn.is-active:hover {
+    color: #fff !important;
+    background: color-mix(in srgb, var(--primary-color, #2563EB) 88%, #000) !important;
+}
+
+.upload-card-busy .paste-card-method-btns {
+    gap: 6px;
+}
+
 .upload-card-busy .paste-card-actions {
     margin-top: 10px;
 }
 
-/* 转存 / 外链分段选择 */
+/* 转存 / 外链分段选择（v2.8.2 起弃用，保留样式避免历史回退误伤；新布局见下方 method-btns） */
 .paste-card-method-group {
     position: relative;
     display: inline-flex;
@@ -3148,7 +3511,8 @@ html.dark .el-upload__text :deep(em) {
 
     .upload-card-busy.paste-card {
         height: var(--upload-card-busy-height);
-        min-height: 0;
+        /* v2.8.2：收缩下限与「文件」模式外层区域一致（原 min-height:0 会被软键盘压没） */
+        min-height: 150px;
         max-height: var(--upload-card-busy-height);
         padding: 5px;
     }
@@ -3158,6 +3522,13 @@ html.dark .el-upload__text :deep(em) {
         width: calc(100% - 4px) !important;
         min-height: 0;
         flex-shrink: 1;
+        /* v2.8.2：内层输入框跟随外层比例收缩，自身不产生滚动条 */
+        overflow: hidden;
+    }
+
+    .upload-card-busy .upload-card-textarea {
+        /* busy 收缩态：允许压到 0 由 flex 分配，按钮行 flex:0 0 auto 保住可见 */
+        min-height: 0 !important;
     }
 
     /* v2.4.0：移动端链接模式按钮行（上传/转存/外链）居中——
@@ -3242,8 +3613,13 @@ html.dark .el-upload__text :deep(em) {
     justify-content: space-between;
     align-items: center;
     height: var(--upload-list-inner-height);
-    /* v2.8.0：顶部功能栏（统计+操作按钮行）不允许被压到失真 */
-    min-height: 44px;
+    /*
+     * v20261027：顶栏高度下限 = 默认（无文件）状态整卡的高度（--upload-list-height），
+     * 且不允许 flex 收缩 —— 无论列表内条目多少/多挤，顶栏都不会被压到比
+     * 「没有文件时」更矮（max() 兼顾极矮视口下的 44px 绝对下限）。
+     */
+    min-height: max(var(--upload-list-height), 44px);
+    flex-shrink: 0;
     padding: 0 15px;
     box-sizing: border-box;
     width: 100%;

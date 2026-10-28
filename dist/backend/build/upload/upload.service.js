@@ -22,11 +22,13 @@ const channels_controller_1 = require("../channels/channels.controller");
 const storage_channel_service_1 = require("../storage/storage-channel.service");
 const adapter_factory_1 = require("../adapters/adapter.factory");
 const local_adapter_1 = require("../adapters/local.adapter");
+const adapter_interface_1 = require("../adapters/adapter.interface");
 const file_view_1 = require("../common/file-view");
 const app_log_1 = require("../common/app-log");
 const path_template_1 = require("../common/path-template");
 const compress_1 = require("../common/compress");
-const COMPRESS_MAX_BYTES = 512 * 1024 * 1024;
+const COMPRESS_MAX_BYTES = Math.max(512, Number(process.env.COMPRESS_MAX_MB || 4096)) * 1024 * 1024;
+const STREAM_REQUIRED_BYTES = 256 * 1024 * 1024;
 let UploadService = class UploadService {
     static { UploadService_1 = this; }
     settings;
@@ -150,8 +152,25 @@ let UploadService = class UploadService {
                 return null;
         }
     }
-    static EXT_MIME = {
-        jpg: 'image/jpeg',
+    static IMG_EXTS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp']);
+    static detectImageExt(buf) {
+        if (buf.length < 12)
+            return null;
+        const hex = buf.subarray(0, 16).toString('hex');
+        const a4 = buf.subarray(0, 4).toString('latin1');
+        if (hex.startsWith('ffd8ff'))
+            return 'jpg';
+        if (hex.startsWith('89504e47'))
+            return 'png';
+        if (a4 === 'GIF8')
+            return 'gif';
+        if (a4 === 'RIFF' && buf.subarray(8, 12).toString('latin1') === 'WEBP')
+            return 'webp';
+        if (hex.startsWith('424d'))
+            return 'bmp';
+        return null;
+    }
+    static EXT_MIME = { jpg: 'image/jpeg',
         jpeg: 'image/jpeg',
         png: 'image/png',
         gif: 'image/gif',
@@ -187,13 +206,34 @@ let UploadService = class UploadService {
         if (!exts.includes(ext)) {
             return `不支持的格式 .${ext}，允许：${exts.join('/')}`;
         }
-        if (input.buffer.length > maxMB * 1024 * 1024) {
-            return `文件超过 ${maxMB}MB 上限，请改用腾讯云 COS / MinIO / S3 / R2 / Immich 等大容量存储渠道上传`;
+        const size = Number(input.size || 0) || (input.path ? (await fs_1.promises.stat(input.path)).size : input.buffer.length);
+        if (size > maxMB * 1024 * 1024) {
+            return `文件超过 ${maxMB}MB 上限（当前 ${(size / 1024 / 1024).toFixed(1)}MB），请到「其他设置 → 上传相关配置」调大单文件大小上限`;
         }
-        if (this.signatureOk(input.buffer, ext) === false) {
+        const head = input.buffer.length ? input.buffer.subarray(0, 64) : await this.readHead(input.path || '', 64);
+        if (this.signatureOk(head, ext) === false) {
+            const realExt = UploadService_1.detectImageExt(head);
+            if (realExt && UploadService_1.IMG_EXTS.has(ext) && UploadService_1.IMG_EXTS.has(realExt)) {
+                app_log_1.appLog.warn('upload', `图片格式互串放行：声明 .${ext}，实际内容为 .${realExt}`, input.originalName);
+                return null;
+            }
+            app_log_1.appLog.warn('upload', `魔数校验拒绝：声明 .${ext} 与内容不符`, input.originalName);
             return `文件内容与扩展名不符（.${ext}），已拒绝上传`;
         }
         return null;
+    }
+    async readHead(path, n) {
+        if (!path)
+            return Buffer.alloc(0);
+        const fh = await fs_1.promises.open(path, 'r');
+        try {
+            const buf = Buffer.alloc(n);
+            const { bytesRead } = await fh.read(buf, 0, n, 0);
+            return buf.subarray(0, bytesRead);
+        }
+        finally {
+            await fh.close().catch(() => undefined);
+        }
     }
     async moderate(buffer, mime) {
         if (!mime.startsWith('image/'))
@@ -566,6 +606,29 @@ let UploadService = class UploadService {
             return 'all';
         }
     }
+    hashFile(path) {
+        return new Promise((resolve, reject) => {
+            const hash = (0, crypto_1.createHash)('md5');
+            const stream = (0, fs_1.createReadStream)(path);
+            stream.on('data', (chunk) => hash.update(chunk));
+            stream.on('end', () => resolve(hash.digest('hex')));
+            stream.on('error', reject);
+        });
+    }
+    async uploadToAdapter(adapter, file, key, info, owner) {
+        if (file.path && typeof adapter.uploadFile === 'function') {
+            return adapter.uploadFile(file.path, file.size || 0, { mime: file.mime, originalName: file.originalName }, key, info, { owner });
+        }
+        if (file.path) {
+            const size = file.size || 0;
+            if (size > STREAM_REQUIRED_BYTES) {
+                throw new adapter_interface_1.AdapterError(`渠道「${info.name || info.type}」不支持大文件流式写入，${Math.round(size / 1024 / 1024)}MB 超过直传安全阈值；请改用 S3 / 本地存储 / WebDAV 渠道`, info.type);
+            }
+            const buffer = await fs_1.promises.readFile(file.path);
+            return adapter.upload({ buffer, mime: file.mime, originalName: file.originalName }, key, info, { owner });
+        }
+        return adapter.upload({ buffer: file.buffer, mime: file.mime, originalName: file.originalName }, key, info, { owner });
+    }
     async compress(buffer, mime, percent) {
         const ext = mime.split('/')[1] || '';
         const r = await (0, compress_1.compressMedia)(buffer, mime, ext, percent);
@@ -594,30 +657,53 @@ let UploadService = class UploadService {
     }
     async uploadInner(input, opts) {
         let { buffer, mime, originalName } = input;
+        let srcPath = input.path || '';
+        let size = Number(input.size || 0);
+        if (!size) {
+            size = srcPath ? (await fs_1.promises.stat(srcPath)).size : buffer.length;
+        }
         if (!opts.skipFileLimits) {
             const invalid = await this.validate(input, opts.limitsOverride);
             if (invalid)
                 return { id: '', error: invalid };
         }
-        const originalSize = opts.originalSize && opts.originalSize > 0 ? opts.originalSize : buffer.length;
+        const originalSize = opts.originalSize && opts.originalSize > 0 ? opts.originalSize : size;
         mime = this.normalizeMime(originalName, mime);
-        const rejected = await this.moderate(buffer, mime);
-        if (rejected)
-            return { id: '', error: rejected };
+        if (mime.startsWith('image/') && size <= 64 * 1024 * 1024) {
+            const reviewBuffer = buffer.length ? buffer : await fs_1.promises.readFile(srcPath);
+            const rejected = await this.moderate(reviewBuffer, mime);
+            if (rejected)
+                return { id: '', error: rejected };
+        }
         const uploadIp = opts.ip || '';
         const uploadAddress = await this.cachedAddress(uploadIp);
         const wantCompress = opts.serverCompress ?? (await this.defaultServerCompress());
         if (wantCompress) {
             const srcExt = originalName.includes('.') ? String(originalName.split('.').pop() || '') : '';
             const pct = opts.compressPercent && opts.compressPercent > 0 ? opts.compressPercent : await this.defaultCompressPercent();
-            if (buffer.length > COMPRESS_MAX_BYTES) {
-                console.log(`[upload] 跳过压缩：文件 ${(buffer.length / 1024 / 1024).toFixed(1)}MB 超过压缩上限`);
+            if (size > COMPRESS_MAX_BYTES) {
+                console.log(`[upload] 跳过压缩：文件 ${(size / 1024 / 1024).toFixed(1)}MB 超过压缩上限`);
+            }
+            else if (srcPath) {
+                const r = await (0, compress_1.compressFile)(srcPath, mime, srcExt, pct);
+                if (r.compressed) {
+                    srcPath = r.path;
+                    size = r.size;
+                    mime = r.mime || mime;
+                    if (r.ext)
+                        originalName = originalName.replace(/\.[^.]+$/, '') + r.ext;
+                    app_log_1.appLog.info('upload', `已压缩（流式）：${originalSize}B → ${size}B（${Math.round((1 - size / Math.max(1, originalSize)) * 100)}%）`, `${originalName} ｜ 期望 ${pct}%`, uploadIp);
+                }
+                else if (r.reason) {
+                    app_log_1.appLog.info('upload', `跳过压缩：${r.reason}`, originalName, uploadIp);
+                }
             }
             else {
                 const r = await (0, compress_1.compressMedia)(buffer, mime, srcExt, pct);
                 if (r.compressed) {
                     const before = buffer.length;
                     buffer = r.buffer;
+                    size = buffer.length;
                     mime = r.mime || mime;
                     if (r.ext)
                         originalName = originalName.replace(/\.[^.]+$/, '') + r.ext;
@@ -628,7 +714,9 @@ let UploadService = class UploadService {
                 }
             }
         }
-        const dims = await (0, compress_1.readDimensions)(buffer, mime, mime.split('/')[1] || '');
+        const dims = srcPath
+            ? await (0, compress_1.readDimensionsFile)(srcPath, mime, mime.split('/')[1] || '')
+            : await (0, compress_1.readDimensions)(buffer, mime, mime.split('/')[1] || '');
         let main = null;
         try {
             main = await this.resolveMainChannel({
@@ -649,11 +737,11 @@ let UploadService = class UploadService {
                     : '未指定渠道，且「用户管理」「上传设置」里都没有可用的主渠道';
             return { id: '', error: `未配置可用的主渠道（${hint}），请先在后台「存储渠道」检查` };
         }
-        const md5 = (0, crypto_1.createHash)('md5').update(buffer).digest('hex');
+        const md5 = srcPath ? await this.hashFile(srcPath) : (0, crypto_1.createHash)('md5').update(buffer).digest('hex');
         if (await this.dedupEnabled()) {
             const scope = await this.dedupScope();
             const dup = await prisma_1.prisma.fileRecord.findFirst({
-                where: { status: 'active', size: buffer.length, md5 },
+                where: { status: 'active', size, md5 },
                 select: {
                     name: true,
                     originalName: true,
@@ -667,8 +755,8 @@ let UploadService = class UploadService {
                     hit = null;
             }
             if (hit) {
-                app_log_1.appLog.info('upload', `命中去重：${originalName} 与已有文件 ${hit.originalName}（${hit.name}）内容相同，复用已有外链`, `md5=${md5} ｜ 大小=${buffer.length}B ｜ 范围=${scope === 'channel' ? `同渠道（${main.name}）` : '全部渠道'}`, uploadIp);
-                return { id: hit.name, dedup: true };
+                app_log_1.appLog.info('upload', `命中去重：${originalName} 与已有文件 ${hit.originalName}（${hit.name}）内容相同，复用已有外链`, `md5=${md5} ｜ 大小=${size}B ｜ 范围=${scope === 'channel' ? `同渠道（${main.name}）` : '全部渠道'}`, uploadIp);
+                return { id: hit.name, dedup: true, finalName: originalName };
             }
         }
         const folder = await this.resolveFolder(opts.uploadFolder);
@@ -703,13 +791,19 @@ let UploadService = class UploadService {
                 continue;
             try {
                 const info = this.toChannelInfo(ch);
-                result = await (0, adapter_factory_1.createAdapter)(info).upload({ buffer, mime, originalName }, key, info, { owner: opts.uploader });
+                result = await this.uploadToAdapter((0, adapter_factory_1.createAdapter)(info), {
+                    buffer,
+                    path: srcPath,
+                    size,
+                    mime,
+                    originalName,
+                }, key, info, opts.uploader);
                 usedChannel = ch;
                 break;
             }
             catch (err) {
                 lastErr = err.message || String(err);
-                app_log_1.appLog.warn('upload', `渠道上传失败：${ch.name}（${ch.type}）${opts.autoRetry ? '，尝试自动切换下一个渠道' : ''}`, `${lastErr} ｜ key=${key} ｜ 大小=${buffer.length}B ｜ 文件=${originalName}`, uploadIp);
+                app_log_1.appLog.warn('upload', `渠道上传失败：${ch.name}（${ch.type}）${opts.autoRetry ? '，尝试自动切换下一个渠道' : ''}`, `${lastErr} ｜ key=${key} ｜ 大小=${size}B ｜ 文件=${originalName}`, uploadIp);
             }
         }
         if (!result) {
@@ -723,7 +817,7 @@ let UploadService = class UploadService {
         if (usedChannel.id !== main.id) {
             app_log_1.appLog.info('upload', `自动切换成功：${main.name} → ${usedChannel.name}（${usedChannel.type}）`, `key=${key}`, uploadIp);
         }
-        app_log_1.appLog.info('upload', `上传成功：${usedChannel.name}（${usedChannel.type}）`, `${key} ｜ ${buffer.length}B ｜ 耗时 ${Date.now() - startedAt}ms ｜ 文件=${originalName}`, uploadIp);
+        app_log_1.appLog.info('upload', `上传成功：${usedChannel.name}（${usedChannel.type}）`, `${key} ｜ ${size}B ｜ 耗时 ${Date.now() - startedAt}ms ｜ 文件=${originalName}`, uploadIp);
         const fileId = opts.presetFileId
             ? await this.uniqueFileId(this.sanitizeFileId(opts.presetFileId))
             : this.makeFileId();
@@ -733,7 +827,7 @@ let UploadService = class UploadService {
                 firstName: fileId,
                 prevName: '',
                 originalName,
-                size: buffer.length,
+                size,
                 originalSize,
                 mime,
                 md5,
@@ -788,7 +882,7 @@ let UploadService = class UploadService {
             uploadSource: opts.uploadSource,
         }));
         if (opts.backup !== false) {
-            const payload = { buffer, mime, originalName };
+            const payload = { buffer, path: srcPath, size, mime, originalName };
             this.enqueueBackground(async () => {
                 if (!(await this.backupEnabled()))
                     return;
@@ -804,7 +898,7 @@ let UploadService = class UploadService {
                 });
             });
         }
-        return { id: fileId };
+        return { id: fileId, finalName: originalName };
     }
     async backupUpload(fileId, file, key, backup, owner) {
         await prisma_1.prisma.fileCopy.upsert({
@@ -816,12 +910,12 @@ let UploadService = class UploadService {
             const info = this.toChannelInfo(backup);
             const adapter = (0, adapter_factory_1.createAdapter)(info);
             const t0 = Date.now();
-            const result = await adapter.upload(file, key, info, { owner });
+            const result = await this.uploadToAdapter(adapter, file, key, info, owner);
             await prisma_1.prisma.fileCopy.update({
                 where: { fileId_channelId: { fileId, channelId: backup.id } },
                 data: { remoteKey: result.remoteKey, remoteUrl: result.remoteUrl || '', status: 'active' },
             });
-            app_log_1.appLog.info('backup', `备份完成：${backup.name}（${backup.type}）`, `${key} ｜ ${file.buffer.length}B ｜ 耗时 ${Date.now() - t0}ms（低优先级，主渠道上传期间自动让路）`);
+            app_log_1.appLog.info('backup', `备份完成：${backup.name}（${backup.type}）`, `${key} ｜ ${file.size || file.buffer.length}B ｜ 耗时 ${Date.now() - t0}ms（低优先级，主渠道上传期间自动让路）`);
         }
         catch (err) {
             app_log_1.appLog.error('backup', `备份渠道写入失败：${backup.name}（${backup.type}）`, `${err.message} ｜ key=${key}`);

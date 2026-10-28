@@ -2,22 +2,44 @@ import { Body, Controller, Get, HttpCode, Post, Query, UseGuards, UseInterceptor
 import { FileInterceptor } from '@nestjs/platform-express';
 import { UploadedFile, Req, Res } from '@nestjs/common';
 import { Request, Response } from 'express';
+import { createWriteStream, promises as fsp } from 'fs';
+import { Readable } from 'stream';
+import { pipeline } from 'stream/promises';
 import { OptionalAuthGuard, currentSession } from '../auth/auth.guard';
 import { UploadService } from './upload.service';
 import { SettingsService } from '../settings/settings.service';
 import { NO_BACKUP_VALUES } from '../storage/storage-channel.service';
 import { resolveVideoFromHtml } from './video-resolve';
 import { appLog } from '../common/app-log';
+import {
+  createSession,
+  createStaging,
+  findSessionByKey,
+  getSession,
+  getStaging,
+  markSessionCompleted,
+  mergeSession,
+  receivedChunks,
+  removeSession,
+  removeStaging,
+  stagingFilePath,
+  startUploadSweeper,
+  touchSession,
+  updateStaging,
+  writeChunk,
+} from './upload-session';
 
 /**
- * 分块上传的内存暂存（单实例 SQLite 部署形态下够用；大并发场景可换落盘）。
- * startedAt = 第一片 init 到达的时刻，合并后作为「上传开始时间」写库，
- * 这样详情页的「上传时长」覆盖整个分块传输过程，而不是只剩合并那一下。
+ * 链接转存时「多大的文件交给服务端暂存」。
+ * 小于该值仍按老方式把字节回传给浏览器（图片需要前端裁剪，必须拿到 File）；
+ * 超过该值的图片/视频/音频留在服务端磁盘，浏览器只拿 stagingId，
+ * 上传时由服务端直接写渠道 —— 避免「服务器→浏览器→服务器」的三倍流量。
  */
-const chunkStore = new Map<
-  string,
-  { chunks: Map<number, Buffer>; totalChunks: number; originalName: string; mime: string; startedAt: number }
->();
+const STAGE_DIRECT_BYTES = 32 * 1024 * 1024;
+/** 单次请求体硬上限（分片上传每片 16MB，这里只保护「非分片直传 / API 客户端」） */
+const MAX_SINGLE_BYTES = Math.max(512, Number(process.env.UPLOAD_MAX_SINGLE_MB || 4096)) * 1024 * 1024;
+/** 链接转存（暂存/回传）体积上限 */
+const MAX_FETCH_BYTES = Math.max(512, Number(process.env.UPLOAD_FETCH_MAX_MB || 4096)) * 1024 * 1024;
 
 /**
  * 链接转存（/api/fetchRes）的目标地址安全策略。
@@ -83,7 +105,10 @@ export class UploadController {
   constructor(
     private svc: UploadService,
     private settings: SettingsService,
-  ) {}
+  ) {
+    // 分片会话 / 链接暂存的 24h TTL 清理（启动即跑一次，之后每 30 分钟）
+    startUploadSweeper();
+  }
 
   /**
    * 上传成功后对外返回的文件链接 —— 走全站统一出口
@@ -102,9 +127,26 @@ export class UploadController {
     return (fwd || req.socket?.remoteAddress || '').replace(/^::ffff:/, '');
   }
 
+  /**
+   * 分片会话清理：GET /upload?cleanup=true&uploadId=xxx
+   *
+   * 前端 releaseItem()（移除条目 / 清空列表 / 清空已上传）用 GET 调用，
+   * 而清理分支原本只写在 @Post('upload') 里 —— GET 请求落到 404，
+   * 会话目录就一直留在磁盘上等 24h TTL（v2.8.2 是内存泄漏，这里是磁盘泄漏）。
+   * 这里补一个只认 cleanup 的 GET 入口，其他 GET 一律 400。
+   */
+  @Get('upload')
+  async cleanupChunked(@Query() q: { cleanup?: string; uploadId?: string }, @Res() res: Response) {
+    if (q.cleanup === 'true' && q.uploadId) {
+      await removeSession(q.uploadId);
+      return res.json({ success: true });
+    }
+    return res.status(400).json({ success: false, message: '无效的清理请求' });
+  }
+
   /** 核心上传：POST /upload —— 兼容前端契约（query 参数 + multipart） */
   @Post('upload')
-  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 512 * 1024 * 1024 } }))
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_SINGLE_BYTES } }))
   async upload(
     @UploadedFile() file: Express.Multer.File | undefined,
     @Query()
@@ -135,6 +177,12 @@ export class UploadController {
       originalFileName?: string;
       originalFileType?: string;
       cleanup?: string;
+      /** 前端声明的文件总字节数（分块合并后校验完整性） */
+      fileSize?: string;
+      /** 前端稳定指纹（名称+大小+修改时间）—— 用于断点续传 */
+      uploadKey?: string;
+      /** 链接转存暂存 ID（大文件不经过浏览器，上传时按暂存文件直接写渠道） */
+      stagingId?: string;
       /** 前端上传设置临时指定的允许格式（逗号分隔）—— 传了覆盖后台全局配置 */
       allowedExtensions?: string;
       /** 前端上传设置临时指定的单文件大小上限（MB）—— 传了覆盖后台全局配置 */
@@ -144,9 +192,9 @@ export class UploadController {
     @Req() req: Request & { session?: { user: string } },
     @Res() res: Response,
   ) {
-    // 分块清理
+    // 分块清理：删除整个会话目录（分片 + manifest）
     if (q.cleanup === 'true' && q.uploadId) {
-      chunkStore.delete(q.uploadId);
+      await removeSession(q.uploadId);
       return res.json({ success: true });
     }
 
@@ -228,18 +276,26 @@ export class UploadController {
       },
     };
 
-    // 分块初始化
+    // 分块初始化（v2.8.3：会话落盘 + 断点续传）
     if (q.initChunked === 'true') {
-      const uploadId = Math.random().toString(36).slice(2) + Date.now().toString(36);
-      chunkStore.set(uploadId, {
-        chunks: new Map(),
-        totalChunks: Number(body.totalChunks || q.totalChunks || 0),
-        originalName: fixFilename(body.originalFileName || 'chunked.bin'),
-        mime: body.originalFileType || 'application/octet-stream',
-        // 第一片 init 的时刻 = 这次分块上传的开始时间
-        startedAt: arrivedAt,
-      });
-      return res.json({ success: true, uploadId });
+      const totalChunks = Math.max(1, Number(body.totalChunks || q.totalChunks || 0));
+      const originalName = fixFilename(body.originalFileName || q.originalFileName || 'chunked.bin');
+      const mime = body.originalFileType || q.originalFileType || 'application/octet-stream';
+      const size = Number(body.fileSize || q.fileSize || 0) || 0;
+      // 指纹只用于命中同一个文件的旧会话，做长度/字符收敛，避免写进 manifest 的垃圾数据
+      const uploadKey = String(body.uploadKey || q.uploadKey || '').slice(0, 200);
+
+      if (uploadKey) {
+        const exist = await findSessionByKey(uploadKey);
+        if (exist && exist.totalChunks === totalChunks) {
+          const received = await receivedChunks(exist.uploadId);
+          console.log(`[upload] 续传命中：${originalName}（已收 ${received.length}/${totalChunks} 片）`);
+          return res.json({ success: true, uploadId: exist.uploadId, received, resumed: true });
+        }
+      }
+
+      const session = await createSession({ totalChunks, originalName, mime, size, uploadKey });
+      return res.json({ success: true, uploadId: session.uploadId, received: [], resumed: false });
     }
 
     // 分块接收 / 合并
@@ -247,32 +303,93 @@ export class UploadController {
     // 契约（与前端 UploadForm.vue 严格对齐）：
     //   ?chunked=true            → 收单个分片，体含 chunkIndex/uploadId，响应内容前端不读
     //   ?chunked=true&merge=true → 全部分片到齐后的合并请求，**响应体必须是裸数组** `[{src,name}]`
-    // 注意：绝不能在「最后一片到达时自动合并上传」——前端随后还会发 merge 请求，
-    //       那样 merge 会找不到 uploadId（历史 bug：这里会 400，分块上传必失败）。
+    // v2.8.3：分片直接写磁盘（<tmp>/sessions/<uploadId>/000001.part），不再堆内存；
+    //         缺片/大小不符一律报错，绝不补零；只有真正落库成功后才标记完成。
     if (q.chunked === 'true') {
       const uploadId = body.uploadId || q.uploadId || '';
-      const store = chunkStore.get(uploadId);
-      if (!store) return res.status(400).json({ success: false, message: 'uploadId 无效或已过期' });
-
-      if (q.merge === 'true') {
-        const total = Number(store.totalChunks || body.totalChunks || q.totalChunks || 0);
-        const merged = Buffer.concat(
-          Array.from({ length: total }, (_, i) => store.chunks.get(i) || Buffer.alloc(0)),
-        );
-        chunkStore.delete(uploadId);
-        const originalName = fixFilename(body.originalFileName || store.originalName);
-        const r = await this.svc.upload(
-          { buffer: merged, mime: store.mime, originalName },
-          // 合并请求的时刻不是上传起点：用第一片 init 的时刻算时长
-          { ...opts, uploadStartedAt: new Date(store.startedAt || arrivedAt) },
-        );
-        if (r.error) return res.status(500).json({ success: false, message: r.error });
-        return res.json([{ src: await this.signedSrc(r.id, req), name: originalName }]);
+      const session = await getSession(uploadId);
+      if (!session) {
+        return res.status(400).json({ success: false, message: '上传会话不存在或已过期，请重新上传' });
       }
 
-      const idx = Number(body.chunkIndex ?? q.chunkIndex ?? 0);
-      store.chunks.set(idx, file?.buffer || Buffer.alloc(0));
-      return res.json({ success: true });
+      if (q.merge === 'true') {
+        let merged: { path: string; size: number };
+        try {
+          merged = await mergeSession(session);
+        } catch (err) {
+          const msg = (err as Error).message || '分片合并失败';
+          appLog.warn('upload', `分片合并失败：${session.originalName}`, msg);
+          // 会话与分片全部保留，前端可直接重试合并（不必重传）
+          return res.status(400).json({ success: false, message: msg });
+        }
+        const originalName = fixFilename(body.originalFileName || session.originalName);
+        try {
+          const r = await this.svc.upload(
+            {
+              buffer: Buffer.alloc(0),
+              path: merged.path,
+              size: merged.size,
+              mime: session.mime,
+              originalName,
+            },
+            // 合并请求的时刻不是上传起点：用第一片 init 的时刻算时长
+            { ...opts, uploadStartedAt: new Date(session.startedAt || arrivedAt) },
+          );
+          if (r.error) {
+            // 写渠道失败：分片保留 24h，前端重试合并即可，不需要重传 500MB
+            return res.status(500).json({ success: false, message: r.error });
+          }
+          await markSessionCompleted(session);
+          return res.json([{ src: await this.signedSrc(r.id, req), name: r.finalName || originalName }]);
+        } catch (err) {
+          appLog.error('upload', `分片合并后上传异常：${originalName}`, (err as Error).message);
+          return res.status(500).json({ success: false, message: (err as Error).message });
+        }
+      }
+
+      const idx = Number(body.chunkIndex ?? q.chunkIndex ?? -1);
+      if (!Number.isInteger(idx) || idx < 0 || idx >= session.totalChunks) {
+        return res.status(400).json({ success: false, message: `分片序号无效（${idx}）` });
+      }
+      if (!file?.buffer?.length) {
+        return res.status(400).json({ success: false, message: '分片内容为空' });
+      }
+      await writeChunk(uploadId, idx, file.buffer);
+      await touchSession(session);
+      return res.json({ success: true, chunkIndex: idx });
+    }
+
+    // 链接转存暂存提交：文件早已在服务端磁盘上，这里只做压缩 + 写渠道，浏览器不再传一遍
+    const stagingId = String(body.stagingId || q.stagingId || '');
+    if (stagingId) {
+      const meta = await getStaging(stagingId);
+      if (!meta) return res.status(400).json({ success: false, message: '暂存文件不存在或已过期，请重新转存' });
+      let st: { size: number } | null = null;
+      try {
+        st = await fsp.stat(stagingFilePath(stagingId));
+      } catch {
+        st = null;
+      }
+      if (!st) return res.status(400).json({ success: false, message: '暂存文件已丢失，请重新转存' });
+      const originalName = fixFilename(body.originalFileName || q.originalFileName || meta.name);
+      const r = await this.svc.upload(
+        {
+          buffer: Buffer.alloc(0),
+          path: stagingFilePath(stagingId),
+          size: st.size,
+          mime: meta.mime,
+          originalName,
+        },
+        {
+          ...opts,
+          originalSize: Number(q.originalSize || 0) || st.size,
+          uploadStartedAt: new Date(meta.createdAt || arrivedAt),
+        },
+      );
+      if (r.error) return res.status(500).json({ success: false, message: r.error });
+      // 标记已提交：再保留 2h 供异步备份读取，之后由 TTL 清理
+      await updateStaging(meta, { committedAt: Date.now() });
+      return res.json([{ src: await this.signedSrc(r.id, req), name: r.finalName || originalName }]);
     }
 
     // 常规上传
@@ -285,7 +402,7 @@ export class UploadController {
     if (r.error) return res.status(500).json({ success: false, message: r.error });
     // ⚠️ 前端读取 response.data[0].src —— 响应体必须是【裸数组】，不能包 {success,data}
     // src 是「全站统一出口」的完整外链（自定义访问域名优先）
-    return res.json([{ src: await this.signedSrc(r.id, req), name: originalName }]);
+    return res.json([{ src: await this.signedSrc(r.id, req), name: r.finalName || originalName }]);
   }
 
   /**
@@ -302,18 +419,21 @@ export class UploadController {
    */
   @Post('api/fetchRes')
   @HttpCode(200)
-  async fetchRes(@Body() body: { url?: string }, @Res() res: Response) {
+  async fetchRes(@Body() body: { url?: string; stage?: boolean | string }, @Res() res: Response) {
     const url = body.url || '';
     let parsed: URL;
     try {
       parsed = new URL(url);
     } catch {
+      appLog.warn('fetch', `链接转存失败：URL 无效`, url.slice(0, 200));
       return res.status(400).json({ success: false, message: 'URL 无效' });
     }
     if (!['http:', 'https:'].includes(parsed.protocol)) {
+      appLog.warn('fetch', `链接转存失败：仅支持 http/https`, url.slice(0, 200));
       return res.status(400).json({ success: false, message: '仅支持 http/https' });
     }
     if (isBlockedFetchHost(parsed.hostname)) {
+      appLog.warn('fetch', `链接转存失败：目标为云元数据/组播地址，已拦截`, url.slice(0, 200));
       return res.status(400).json({ success: false, message: '禁止访问该地址（云元数据/组播地址）' });
     }
 
@@ -328,7 +448,10 @@ export class UploadController {
         redirect: 'follow',
         headers: { 'user-agent': UA },
       });
-      if (!resp.ok) return res.status(400).json({ success: false, message: `拉取失败 HTTP ${resp.status}` });
+      if (!resp.ok) {
+        appLog.warn('fetch', `链接转存失败：HTTP ${resp.status}`, url.slice(0, 200));
+        return res.status(400).json({ success: false, message: `拉取失败 HTTP ${resp.status}` });
+      }
       const firstMime = resp.headers.get('content-type')?.split(';')[0]?.trim() || '';
 
       /*
@@ -365,15 +488,12 @@ export class UploadController {
         } finally {
           clearTimeout(secondTimer);
         }
-        if (!resp.ok) return res.status(400).json({ success: false, message: `视频拉取失败 HTTP ${resp.status}` });
+        if (!resp.ok) {
+          appLog.warn('fetch', `视频转存失败：HTTP ${resp.status}`, url.slice(0, 200));
+          return res.status(400).json({ success: false, message: `视频拉取失败 HTTP ${resp.status}` });
+        }
       }
 
-      const buf = Buffer.from(await resp.arrayBuffer());
-      // 兜底上限放宽到 512MB：真正的「单文件大小上限」由后台设置（默认 150MB）决定，
-      // 这里只防极端大文件把内存撑爆。
-      if (buf.length > 512 * 1024 * 1024) {
-        return res.status(400).json({ success: false, message: '文件超过 512MB 上限' });
-      }
       // 文件名：优先 URL 末段（解码），其次按 MIME 猜扩展名
       let name = decodeURIComponent(safeTargetUrl(resp.url || url).pathname.split('/').pop() || '');
       const mime = resp.headers.get('content-type')?.split(';')[0]?.trim() || 'application/octet-stream';
@@ -383,6 +503,55 @@ export class UploadController {
       }
       // 视频解析场景：页面标题给出的文件名优先（比 CDN 随机串可读）
       if (suggestedName) name = suggestedName;
+
+      /*
+       * v2.8.3：大文件 / 音视频不再回传浏览器 —— 直接流式落到服务端暂存目录。
+       * 原因：老流程是「源站→服务器内存→浏览器→服务器→渠道」，
+       * 200MB 文件要跑 3 遍流量、浏览器还要占 200MB 内存。
+       * 图片仍然回传字节（前端需要 File 才能裁剪），只有超大图片才走暂存。
+       */
+      const declaredLen = Number(resp.headers.get('content-length') || 0) || 0;
+      const isImage = /^image\//i.test(mime);
+      const wantStage = !isImage || declaredLen > 256 * 1024 * 1024;
+
+      if (wantStage) {
+        if (!resp.body) {
+          return res.status(400).json({ success: false, message: '目标地址没有返回可读取的内容' });
+        }
+        const staged = await createStaging({ name, mime, size: declaredLen, sourceUrl: url });
+        try {
+          await pipeline(
+            Readable.fromWeb(resp.body as any),
+            createWriteStream(stagingFilePath(staged.stagingId)),
+          );
+        } catch (err) {
+          await removeStaging(staged.stagingId);
+          throw err;
+        }
+        const st = await fsp.stat(stagingFilePath(staged.stagingId));
+        if (st.size > MAX_FETCH_BYTES) {
+          await removeStaging(staged.stagingId);
+          appLog.warn('fetch', `链接转存失败：文件超过 ${Math.round(MAX_FETCH_BYTES / 1024 / 1024)}MB 上限`, url.slice(0, 200));
+          return res.status(400).json({ success: false, message: `文件超过 ${Math.round(MAX_FETCH_BYTES / 1024 / 1024)}MB 上限` });
+        }
+        const updated = await updateStaging(staged, { size: st.size });
+        appLog.info('fetch', `链接已暂存到服务端：${name}`, `${st.size}B ｜ ${url.slice(0, 180)}`);
+        return res.json({
+          success: true,
+          staged: true,
+          stagingId: updated.stagingId,
+          name,
+          size: st.size,
+          mime,
+        });
+      }
+
+      const buf = Buffer.from(await resp.arrayBuffer());
+      // 兜底上限：真正的「单文件大小上限」由后台设置决定，这里只防极端大文件把内存撑爆。
+      if (buf.length > MAX_FETCH_BYTES) {
+        appLog.warn('fetch', `链接转存失败：文件超过 ${Math.round(MAX_FETCH_BYTES / 1024 / 1024)}MB 上限`, url.slice(0, 200));
+        return res.status(400).json({ success: false, message: `文件超过 ${Math.round(MAX_FETCH_BYTES / 1024 / 1024)}MB 上限` });
+      }
       res.setHeader('Content-Type', mime);
       res.setHeader('Content-Length', String(buf.length));
       // 同时给出 filename 与 RFC5987 的 filename*，前端两种正则都能解析
@@ -392,10 +561,28 @@ export class UploadController {
       );
       return res.send(buf);
     } catch (err) {
+      appLog.error('fetch', `链接转存异常：${(err as Error).message}`, url.slice(0, 200));
       return res.status(400).json({ success: false, message: `拉取失败: ${(err as Error).message}` });
     } finally {
       clearTimeout(firstTimer);
     }
+  }
+
+  /**
+   * 删除链接暂存（前端移除列表项 / 清空列表时调用）。
+   * 失败一律返回 success，避免清理动作影响用户操作。
+   */
+  @Post('api/staging/delete')
+  @HttpCode(200)
+  async deleteStaging(@Body() body: { stagingId?: string }) {
+    const id = String(body?.stagingId || '');
+    if (!id) return { success: true };
+    try {
+      await removeStaging(id);
+    } catch {
+      /* 已过期/已删除都视为成功 */
+    }
+    return { success: true };
   }
 }
 

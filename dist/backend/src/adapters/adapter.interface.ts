@@ -40,6 +40,18 @@ export interface StorageAdapter {
     channel: ChannelInfo,
     ctx?: { owner?: string },
   ): Promise<UploadResult>;
+  /**
+   * v2.8.3：从磁盘路径流式写入（大文件专用，避免整份读进内存）。
+   * 未实现该方法的渠道会回退到 upload(buffer)；超过安全阈值时由 UploadService 拒绝。
+   */
+  uploadFile?(
+    path: string,
+    size: number,
+    file: { mime: string; originalName: string },
+    key: string,
+    channel: ChannelInfo,
+    ctx?: { owner?: string },
+  ): Promise<UploadResult>;
   /** 删除渠道内资源 */
   delete(copy: CopyInfo, channel: ChannelInfo): Promise<void>;
   /** 按渠道当前配置构造直链（返回 null 表示无法构造） */

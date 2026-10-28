@@ -17,13 +17,19 @@ exports.UploadController = void 0;
 const common_1 = require("@nestjs/common");
 const platform_express_1 = require("@nestjs/platform-express");
 const common_2 = require("@nestjs/common");
+const fs_1 = require("fs");
+const stream_1 = require("stream");
+const promises_1 = require("stream/promises");
 const auth_guard_1 = require("../auth/auth.guard");
 const upload_service_1 = require("./upload.service");
 const settings_service_1 = require("../settings/settings.service");
 const storage_channel_service_1 = require("../storage/storage-channel.service");
 const video_resolve_1 = require("./video-resolve");
 const app_log_1 = require("../common/app-log");
-const chunkStore = new Map();
+const upload_session_1 = require("./upload-session");
+const STAGE_DIRECT_BYTES = 32 * 1024 * 1024;
+const MAX_SINGLE_BYTES = Math.max(512, Number(process.env.UPLOAD_MAX_SINGLE_MB || 4096)) * 1024 * 1024;
+const MAX_FETCH_BYTES = Math.max(512, Number(process.env.UPLOAD_FETCH_MAX_MB || 4096)) * 1024 * 1024;
 function isBlockedFetchHost(hostname) {
     const h = hostname.toLowerCase();
     if (h === '0.0.0.0')
@@ -73,6 +79,7 @@ let UploadController = class UploadController {
     constructor(svc, settings) {
         this.svc = svc;
         this.settings = settings;
+        (0, upload_session_1.startUploadSweeper)();
     }
     async signedSrc(id, req) {
         const origin = `${req.protocol}://${req.get('host')}`;
@@ -83,9 +90,16 @@ let UploadController = class UploadController {
         const fwd = req.headers['x-forwarded-for']?.split(',')[0]?.trim();
         return (fwd || req.socket?.remoteAddress || '').replace(/^::ffff:/, '');
     }
+    async cleanupChunked(q, res) {
+        if (q.cleanup === 'true' && q.uploadId) {
+            await (0, upload_session_1.removeSession)(q.uploadId);
+            return res.json({ success: true });
+        }
+        return res.status(400).json({ success: false, message: '无效的清理请求' });
+    }
     async upload(file, q, body, req, res) {
         if (q.cleanup === 'true' && q.uploadId) {
-            chunkStore.delete(q.uploadId);
+            await (0, upload_session_1.removeSession)(q.uploadId);
             return res.json({ success: true });
         }
         const backupRaw = String(q.backupChannelId ?? q.backupChannel ?? '').trim();
@@ -121,34 +135,99 @@ let UploadController = class UploadController {
             },
         };
         if (q.initChunked === 'true') {
-            const uploadId = Math.random().toString(36).slice(2) + Date.now().toString(36);
-            chunkStore.set(uploadId, {
-                chunks: new Map(),
-                totalChunks: Number(body.totalChunks || q.totalChunks || 0),
-                originalName: fixFilename(body.originalFileName || 'chunked.bin'),
-                mime: body.originalFileType || 'application/octet-stream',
-                startedAt: arrivedAt,
-            });
-            return res.json({ success: true, uploadId });
+            const totalChunks = Math.max(1, Number(body.totalChunks || q.totalChunks || 0));
+            const originalName = fixFilename(body.originalFileName || q.originalFileName || 'chunked.bin');
+            const mime = body.originalFileType || q.originalFileType || 'application/octet-stream';
+            const size = Number(body.fileSize || q.fileSize || 0) || 0;
+            const uploadKey = String(body.uploadKey || q.uploadKey || '').slice(0, 200);
+            if (uploadKey) {
+                const exist = await (0, upload_session_1.findSessionByKey)(uploadKey);
+                if (exist && exist.totalChunks === totalChunks) {
+                    const received = await (0, upload_session_1.receivedChunks)(exist.uploadId);
+                    console.log(`[upload] 续传命中：${originalName}（已收 ${received.length}/${totalChunks} 片）`);
+                    return res.json({ success: true, uploadId: exist.uploadId, received, resumed: true });
+                }
+            }
+            const session = await (0, upload_session_1.createSession)({ totalChunks, originalName, mime, size, uploadKey });
+            return res.json({ success: true, uploadId: session.uploadId, received: [], resumed: false });
         }
         if (q.chunked === 'true') {
             const uploadId = body.uploadId || q.uploadId || '';
-            const store = chunkStore.get(uploadId);
-            if (!store)
-                return res.status(400).json({ success: false, message: 'uploadId 无效或已过期' });
-            if (q.merge === 'true') {
-                const total = Number(store.totalChunks || body.totalChunks || q.totalChunks || 0);
-                const merged = Buffer.concat(Array.from({ length: total }, (_, i) => store.chunks.get(i) || Buffer.alloc(0)));
-                chunkStore.delete(uploadId);
-                const originalName = fixFilename(body.originalFileName || store.originalName);
-                const r = await this.svc.upload({ buffer: merged, mime: store.mime, originalName }, { ...opts, uploadStartedAt: new Date(store.startedAt || arrivedAt) });
-                if (r.error)
-                    return res.status(500).json({ success: false, message: r.error });
-                return res.json([{ src: await this.signedSrc(r.id, req), name: originalName }]);
+            const session = await (0, upload_session_1.getSession)(uploadId);
+            if (!session) {
+                return res.status(400).json({ success: false, message: '上传会话不存在或已过期，请重新上传' });
             }
-            const idx = Number(body.chunkIndex ?? q.chunkIndex ?? 0);
-            store.chunks.set(idx, file?.buffer || Buffer.alloc(0));
-            return res.json({ success: true });
+            if (q.merge === 'true') {
+                let merged;
+                try {
+                    merged = await (0, upload_session_1.mergeSession)(session);
+                }
+                catch (err) {
+                    const msg = err.message || '分片合并失败';
+                    app_log_1.appLog.warn('upload', `分片合并失败：${session.originalName}`, msg);
+                    return res.status(400).json({ success: false, message: msg });
+                }
+                const originalName = fixFilename(body.originalFileName || session.originalName);
+                try {
+                    const r = await this.svc.upload({
+                        buffer: Buffer.alloc(0),
+                        path: merged.path,
+                        size: merged.size,
+                        mime: session.mime,
+                        originalName,
+                    }, { ...opts, uploadStartedAt: new Date(session.startedAt || arrivedAt) });
+                    if (r.error) {
+                        return res.status(500).json({ success: false, message: r.error });
+                    }
+                    await (0, upload_session_1.markSessionCompleted)(session);
+                    return res.json([{ src: await this.signedSrc(r.id, req), name: r.finalName || originalName }]);
+                }
+                catch (err) {
+                    app_log_1.appLog.error('upload', `分片合并后上传异常：${originalName}`, err.message);
+                    return res.status(500).json({ success: false, message: err.message });
+                }
+            }
+            const idx = Number(body.chunkIndex ?? q.chunkIndex ?? -1);
+            if (!Number.isInteger(idx) || idx < 0 || idx >= session.totalChunks) {
+                return res.status(400).json({ success: false, message: `分片序号无效（${idx}）` });
+            }
+            if (!file?.buffer?.length) {
+                return res.status(400).json({ success: false, message: '分片内容为空' });
+            }
+            await (0, upload_session_1.writeChunk)(uploadId, idx, file.buffer);
+            await (0, upload_session_1.touchSession)(session);
+            return res.json({ success: true, chunkIndex: idx });
+        }
+        const stagingId = String(body.stagingId || q.stagingId || '');
+        if (stagingId) {
+            const meta = await (0, upload_session_1.getStaging)(stagingId);
+            if (!meta)
+                return res.status(400).json({ success: false, message: '暂存文件不存在或已过期，请重新转存' });
+            let st = null;
+            try {
+                st = await fs_1.promises.stat((0, upload_session_1.stagingFilePath)(stagingId));
+            }
+            catch {
+                st = null;
+            }
+            if (!st)
+                return res.status(400).json({ success: false, message: '暂存文件已丢失，请重新转存' });
+            const originalName = fixFilename(body.originalFileName || q.originalFileName || meta.name);
+            const r = await this.svc.upload({
+                buffer: Buffer.alloc(0),
+                path: (0, upload_session_1.stagingFilePath)(stagingId),
+                size: st.size,
+                mime: meta.mime,
+                originalName,
+            }, {
+                ...opts,
+                originalSize: Number(q.originalSize || 0) || st.size,
+                uploadStartedAt: new Date(meta.createdAt || arrivedAt),
+            });
+            if (r.error)
+                return res.status(500).json({ success: false, message: r.error });
+            await (0, upload_session_1.updateStaging)(meta, { committedAt: Date.now() });
+            return res.json([{ src: await this.signedSrc(r.id, req), name: r.finalName || originalName }]);
         }
         if (!file)
             return res.status(400).json({ success: false, message: '缺少文件' });
@@ -156,7 +235,7 @@ let UploadController = class UploadController {
         const r = await this.svc.upload({ buffer: file.buffer, mime: file.mimetype, originalName }, opts);
         if (r.error)
             return res.status(500).json({ success: false, message: r.error });
-        return res.json([{ src: await this.signedSrc(r.id, req), name: originalName }]);
+        return res.json([{ src: await this.signedSrc(r.id, req), name: r.finalName || originalName }]);
     }
     async fetchRes(body, res) {
         const url = body.url || '';
@@ -165,12 +244,15 @@ let UploadController = class UploadController {
             parsed = new URL(url);
         }
         catch {
+            app_log_1.appLog.warn('fetch', `链接转存失败：URL 无效`, url.slice(0, 200));
             return res.status(400).json({ success: false, message: 'URL 无效' });
         }
         if (!['http:', 'https:'].includes(parsed.protocol)) {
+            app_log_1.appLog.warn('fetch', `链接转存失败：仅支持 http/https`, url.slice(0, 200));
             return res.status(400).json({ success: false, message: '仅支持 http/https' });
         }
         if (isBlockedFetchHost(parsed.hostname)) {
+            app_log_1.appLog.warn('fetch', `链接转存失败：目标为云元数据/组播地址，已拦截`, url.slice(0, 200));
             return res.status(400).json({ success: false, message: '禁止访问该地址（云元数据/组播地址）' });
         }
         const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
@@ -182,8 +264,10 @@ let UploadController = class UploadController {
                 redirect: 'follow',
                 headers: { 'user-agent': UA },
             });
-            if (!resp.ok)
+            if (!resp.ok) {
+                app_log_1.appLog.warn('fetch', `链接转存失败：HTTP ${resp.status}`, url.slice(0, 200));
                 return res.status(400).json({ success: false, message: `拉取失败 HTTP ${resp.status}` });
+            }
             const firstMime = resp.headers.get('content-type')?.split(';')[0]?.trim() || '';
             let referer;
             let suggestedName = '';
@@ -209,12 +293,10 @@ let UploadController = class UploadController {
                 finally {
                     clearTimeout(secondTimer);
                 }
-                if (!resp.ok)
+                if (!resp.ok) {
+                    app_log_1.appLog.warn('fetch', `视频转存失败：HTTP ${resp.status}`, url.slice(0, 200));
                     return res.status(400).json({ success: false, message: `视频拉取失败 HTTP ${resp.status}` });
-            }
-            const buf = Buffer.from(await resp.arrayBuffer());
-            if (buf.length > 512 * 1024 * 1024) {
-                return res.status(400).json({ success: false, message: '文件超过 512MB 上限' });
+                }
             }
             let name = decodeURIComponent(safeTargetUrl(resp.url || url).pathname.split('/').pop() || '');
             const mime = resp.headers.get('content-type')?.split(';')[0]?.trim() || 'application/octet-stream';
@@ -224,23 +306,80 @@ let UploadController = class UploadController {
             }
             if (suggestedName)
                 name = suggestedName;
+            const declaredLen = Number(resp.headers.get('content-length') || 0) || 0;
+            const isImage = /^image\//i.test(mime);
+            const wantStage = !isImage || declaredLen > 256 * 1024 * 1024;
+            if (wantStage) {
+                if (!resp.body) {
+                    return res.status(400).json({ success: false, message: '目标地址没有返回可读取的内容' });
+                }
+                const staged = await (0, upload_session_1.createStaging)({ name, mime, size: declaredLen, sourceUrl: url });
+                try {
+                    await (0, promises_1.pipeline)(stream_1.Readable.fromWeb(resp.body), (0, fs_1.createWriteStream)((0, upload_session_1.stagingFilePath)(staged.stagingId)));
+                }
+                catch (err) {
+                    await (0, upload_session_1.removeStaging)(staged.stagingId);
+                    throw err;
+                }
+                const st = await fs_1.promises.stat((0, upload_session_1.stagingFilePath)(staged.stagingId));
+                if (st.size > MAX_FETCH_BYTES) {
+                    await (0, upload_session_1.removeStaging)(staged.stagingId);
+                    app_log_1.appLog.warn('fetch', `链接转存失败：文件超过 ${Math.round(MAX_FETCH_BYTES / 1024 / 1024)}MB 上限`, url.slice(0, 200));
+                    return res.status(400).json({ success: false, message: `文件超过 ${Math.round(MAX_FETCH_BYTES / 1024 / 1024)}MB 上限` });
+                }
+                const updated = await (0, upload_session_1.updateStaging)(staged, { size: st.size });
+                app_log_1.appLog.info('fetch', `链接已暂存到服务端：${name}`, `${st.size}B ｜ ${url.slice(0, 180)}`);
+                return res.json({
+                    success: true,
+                    staged: true,
+                    stagingId: updated.stagingId,
+                    name,
+                    size: st.size,
+                    mime,
+                });
+            }
+            const buf = Buffer.from(await resp.arrayBuffer());
+            if (buf.length > MAX_FETCH_BYTES) {
+                app_log_1.appLog.warn('fetch', `链接转存失败：文件超过 ${Math.round(MAX_FETCH_BYTES / 1024 / 1024)}MB 上限`, url.slice(0, 200));
+                return res.status(400).json({ success: false, message: `文件超过 ${Math.round(MAX_FETCH_BYTES / 1024 / 1024)}MB 上限` });
+            }
             res.setHeader('Content-Type', mime);
             res.setHeader('Content-Length', String(buf.length));
             res.setHeader('Content-Disposition', `attachment; filename="${name.replace(/[^\x20-\x7e]/g, '_')}"; filename*=UTF-8''${encodeURIComponent(name)}`);
             return res.send(buf);
         }
         catch (err) {
+            app_log_1.appLog.error('fetch', `链接转存异常：${err.message}`, url.slice(0, 200));
             return res.status(400).json({ success: false, message: `拉取失败: ${err.message}` });
         }
         finally {
             clearTimeout(firstTimer);
         }
     }
+    async deleteStaging(body) {
+        const id = String(body?.stagingId || '');
+        if (!id)
+            return { success: true };
+        try {
+            await (0, upload_session_1.removeStaging)(id);
+        }
+        catch {
+        }
+        return { success: true };
+    }
 };
 exports.UploadController = UploadController;
 __decorate([
+    (0, common_1.Get)('upload'),
+    __param(0, (0, common_1.Query)()),
+    __param(1, (0, common_2.Res)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Object]),
+    __metadata("design:returntype", Promise)
+], UploadController.prototype, "cleanupChunked", null);
+__decorate([
     (0, common_1.Post)('upload'),
-    (0, common_1.UseInterceptors)((0, platform_express_1.FileInterceptor)('file', { limits: { fileSize: 512 * 1024 * 1024 } })),
+    (0, common_1.UseInterceptors)((0, platform_express_1.FileInterceptor)('file', { limits: { fileSize: MAX_SINGLE_BYTES } })),
     __param(0, (0, common_2.UploadedFile)()),
     __param(1, (0, common_1.Query)()),
     __param(2, (0, common_1.Body)()),
@@ -259,6 +398,14 @@ __decorate([
     __metadata("design:paramtypes", [Object, Object]),
     __metadata("design:returntype", Promise)
 ], UploadController.prototype, "fetchRes", null);
+__decorate([
+    (0, common_1.Post)('api/staging/delete'),
+    (0, common_1.HttpCode)(200),
+    __param(0, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object]),
+    __metadata("design:returntype", Promise)
+], UploadController.prototype, "deleteStaging", null);
 exports.UploadController = UploadController = UploadController_1 = __decorate([
     (0, common_1.Controller)(),
     (0, common_1.UseGuards)(auth_guard_1.OptionalAuthGuard),

@@ -117,6 +117,33 @@ export class LocalAdapter implements StorageAdapter {
     return { remoteKey: relKey, metas: { local: true, owner: LocalAdapter.ownerSegment(ctx?.owner) } };
   }
 
+  /**
+   * v2.8.3：磁盘路径直接落盘（大文件流式）。
+   * 优先硬链接（同分区零拷贝），失败再 copyFile（跨分区/文件系统不支持硬链接）。
+   */
+  async uploadFile(
+    path: string,
+    _size: number,
+    _file: { mime: string; originalName: string },
+    key: string,
+    _channel: ChannelInfo,
+    ctx?: { owner?: string },
+  ): Promise<UploadResult> {
+    const relKey = LocalAdapter.toRelativePathFor(key, ctx?.owner);
+    const abs = LocalAdapter.absolutePath(relKey);
+    try {
+      await fsp.mkdir(dirname(abs), { recursive: true });
+      try {
+        await fsp.link(path, abs);
+      } catch {
+        await fsp.copyFile(path, abs);
+      }
+    } catch (err) {
+      throw new AdapterError(`写入本地文件失败：${(err as Error).message}`, 'local');
+    }
+    return { remoteKey: relKey, metas: { local: true, owner: LocalAdapter.ownerSegment(ctx?.owner) } };
+  }
+
   async delete(copy: CopyInfo, _channel: ChannelInfo): Promise<void> {
     const rel = String(copy.remoteKey || '');
     if (!rel) return;

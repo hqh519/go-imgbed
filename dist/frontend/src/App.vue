@@ -84,9 +84,10 @@ export default {
         this.$store.dispatch('fetchUserConfig').catch(() => {})
         window.dispatchEvent(new CustomEvent('goimgbed:activate', { detail: { reason } }))
         if (reason === 'pageshow') {
-          // bfcache 恢复：滚动条实例已失效，重建一次
+          // bfcache 恢复：滚动条实例已失效，重建一次（触屏设备不启用 OS，跳过）
           try {
-            if (OverlayScrollbars.valid(document.body)) {
+            const touchOnly = window.matchMedia && window.matchMedia('(hover: none) and (pointer: coarse)').matches;
+            if (!touchOnly && OverlayScrollbars.valid(document.body)) {
               this.osInstance = OverlayScrollbars(document.body)
             }
           } catch (e) {
@@ -108,12 +109,24 @@ export default {
     },
     initOverlayScrollbars() {
       try {
+        /*
+         * v20261027：触屏设备（手机 / 平板）不启用 OverlayScrollbars ——
+         * 移动端浏览器滚动时自带系统级悬浮指示条，OS 再画一条就是「双滚动条」；
+         * 且触屏上 OS 的悬浮条无法拖拽、收益为零。改为直接用原生滚动
+         * （原生滚动条已由 global.css 全局隐藏，移动端只剩系统瞬时指示条，只有一条）。
+         * 桌面端维持 OS 悬浮滚动条不变。
+         */
+        const touchOnly = window.matchMedia && window.matchMedia('(hover: none) and (pointer: coarse)').matches;
+        if (touchOnly) {
+          console.log('OverlayScrollbars skipped on touch device (native scroll)')
+          return
+        }
         // 检查是否已经初始化
         if (OverlayScrollbars.valid(document.body)) {
           this.osInstance = OverlayScrollbars(document.body)
           return
         }
-        
+
         // 应用到 body 实现全局悬浮滚动条
         this.osInstance = OverlayScrollbars(document.body, {
           scrollbars: {
@@ -129,7 +142,6 @@ export default {
             y: 'scroll'
           }
         })
-        
         console.log('OverlayScrollbars initialized successfully')
       } catch (error) {
         console.error('Failed to initialize OverlayScrollbars:', error)

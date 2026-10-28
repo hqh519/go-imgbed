@@ -102,29 +102,17 @@ function hostOf(urlOrHost: string): string {
 }
 
 /**
- * 是否「仅站点根地址」：http://host/ 或 host/（除根斜杠外无任何路径）。
- * 浏览器在跨站引用图片时，受默认 Referrer-Policy: strict-origin-when-cross-origin
- * 影响，Referer 常常只剩来源站点根地址（路径被截断），此时按完整地址匹配
- * 永远不可能命中 → 需要用站点（host:port）级兜底，否则白名单形同虚设。
+ * v2.8.2：白名单恢复为「按域名（含端口）匹配」。
+ * 完整来源地址无法保证 100% 拿到（浏览器 Referrer 策略会把跨站 Referer 截成根地址），
+ * 按完整地址匹配会误拦；域名+端口在任何场景都拿得到，稳定可靠。
+ * 条目与来源都取 host:port 比对（带协议的条目、带路径的条目同样只取域名部分）。
  */
-function isBareOrigin(s: string): boolean {
-  const stripped = stripAnchor(s).replace(/^[a-zA-Z][a-zA-Z0-9+.\-]*:\/\//, '');
-  if (!stripped.includes('/')) return false;
-  return stripped.slice(stripped.indexOf('/') + 1) === '';
-}
-
 function sourceAllowed(entry: string, sources: string[]): boolean {
-  const e = stripAnchor(entry);
+  const e = hostOf(entry);
   if (!e) return false;
   return sources.some((s) => {
-    const src = stripAnchor(s);
-    // 规则一：来源地址与条目完全相符；规则二：来源地址完全包含条目
-    if (src === e || src.includes(e)) return true;
-    // 规则三（v2.8.0 兜底）：来源地址被浏览器截断为仅站点根地址时，
-    // 若条目的站点部分（host:port）与来源站点一致，视为匹配放行。
-    // 注：这只放宽「Referer 只剩根地址」的场景；能拿到完整来源时仍按精确规则。
-    if (isBareOrigin(src) && hostOf(src) && hostOf(src) === hostOf(e)) return true;
-    return false;
+    const h = hostOf(s);
+    return !!h && h === e;
   });
 }
 
@@ -271,7 +259,25 @@ async function bootstrap() {
   // 其中 <parent> = debug/（开发）或 dist/（生产）或 /app（容器）。
   // 定位逻辑统一在 common/project-paths.ts，不再按 cwd 硬拼路径。
   const frontendDir = frontendAppDir();
-  if (frontendDir) server.use(express.static(frontendDir));
+  if (frontendDir) {
+    /*
+     * v2.8.2 缓存策略：vite 产物文件名自带内容哈希（内容变 → 文件名变），
+     * assets 目录里的 js/css 可以永久缓存（immutable）；
+     * index.html 必须每次协商缓存（no-cache，命中 304 也极快），
+     * 否则浏览器启发式缓存住旧 html、引用旧哈希资源 —— 表现为「系统更新后仍残留旧缓存」。
+     * index: false —— index.html 统一由下方 SPA 回退发出，便于统一控制响应头。
+     */
+    server.use(express.static(frontendDir, {
+      index: false,
+      setHeaders(res, filePath) {
+        if (/[/\\]assets[/\\]/.test(filePath)) {
+          res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        } else {
+          res.setHeader('Cache-Control', 'no-cache');
+        }
+      },
+    }));
+  }
 
   // SPA 历史路由回退：/dashboard、/systemConfig、/browse/xx 等深链接刷新时回落到 index.html。
   // 顺序关键：必须在静态资源之后（静态文件优先命中）、Nest 路由之前（Nest 的 404 会终止链路）；
@@ -285,6 +291,8 @@ async function bootstrap() {
       // 显式声明「只接受非 HTML」的请求不回落（例如脚本抓取 JSON 资源）
       const accept = req.headers.accept || '';
       if (accept && !accept.includes('*/*') && !accept.includes('text/html')) return next();
+      // v2.8.2：index.html 协商缓存 —— 更新后浏览器总能立刻拿到新版本入口
+      res.setHeader('Cache-Control', 'no-cache');
       return res.sendFile(join(frontendDir, 'index.html'));
     });
   }
@@ -427,6 +435,16 @@ async function bootstrap() {
 
   const port = Number(process.env.PORT || 3618);
   await app.listen(port, '0.0.0.0');
+  /*
+   * v2.8.3：大文件上传 / 合并 / ffmpeg 压缩可能持续数分钟。
+   * Node 18+ 默认 requestTimeout=300s，会在慢速网络传 500MB 时把请求掐断 →
+   * 默认改为 0（不限制），需要强制超时可设 UPLOAD_REQUEST_TIMEOUT_MS。
+   */
+  const httpServer = app.getHttpServer();
+  const uploadTimeout = Number(process.env.UPLOAD_REQUEST_TIMEOUT_MS || 0);
+  httpServer.requestTimeout = Number.isFinite(uploadTimeout) && uploadTimeout >= 0 ? uploadTimeout : 0;
+  httpServer.headersTimeout = 120_000;
+  httpServer.keepAliveTimeout = 65_000;
   console.log(`go-imgbed 已启动: http://localhost:${port}`);
 }
 

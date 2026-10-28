@@ -1,6 +1,8 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.WebdavAdapter = void 0;
+const fs_1 = require("fs");
+const stream_1 = require("stream");
 const adapter_interface_1 = require("./adapter.interface");
 const endpoint_1 = require("../common/endpoint");
 class WebdavAdapter {
@@ -16,25 +18,28 @@ class WebdavAdapter {
         const dir = (channel.config.directory || '').replace(/^\/+|\/+$/g, '');
         return `${base}/${dir ? dir + '/' : ''}${key}`;
     }
-    async upload(file, key, channel) {
-        if (!channel.config.baseUri)
-            throw new adapter_interface_1.AdapterError('缺少 baseUri 配置', channel.type);
-        const url = this.fullPath(key, channel);
+    async ensureKeyDirs(key, channel) {
         const base = this.baseOf(channel);
         const dir = (channel.config.directory || '').replace(/^\/+|\/+$/g, '');
         const keyDir = key.includes('/') ? key.slice(0, key.lastIndexOf('/')) : '';
         const fullDir = [dir, keyDir].filter(Boolean).join('/');
-        if (fullDir) {
-            const parts = fullDir.split('/').filter(Boolean);
-            for (let i = 1; i <= parts.length; i++) {
-                const p = `${base}/${parts.slice(0, i).join('/')}`;
-                try {
-                    const r = await fetch(p, { method: 'MKCOL', headers: { Authorization: this.authHeader(channel) } });
-                    if (!r.ok && r.status !== 405 && r.status !== 301) { }
-                }
-                catch { }
+        if (!fullDir)
+            return;
+        const parts = fullDir.split('/').filter(Boolean);
+        for (let i = 1; i <= parts.length; i++) {
+            const p = `${base}/${parts.slice(0, i).join('/')}`;
+            try {
+                const r = await fetch(p, { method: 'MKCOL', headers: { Authorization: this.authHeader(channel) } });
+                if (!r.ok && r.status !== 405 && r.status !== 301) { }
             }
+            catch { }
         }
+    }
+    async upload(file, key, channel) {
+        if (!channel.config.baseUri)
+            throw new adapter_interface_1.AdapterError('缺少 baseUri 配置', channel.type);
+        const url = this.fullPath(key, channel);
+        await this.ensureKeyDirs(key, channel);
         const ctrl = new AbortController();
         const timer = setTimeout(() => ctrl.abort(), 60000);
         try {
@@ -42,6 +47,38 @@ class WebdavAdapter {
                 method: 'PUT',
                 headers: { Authorization: this.authHeader(channel), 'Content-Type': file.mime },
                 body: new Uint8Array(file.buffer),
+                signal: ctrl.signal,
+            });
+            if (!resp.ok)
+                throw new adapter_interface_1.AdapterError(`WebDAV PUT 失败: HTTP ${resp.status}`, channel.type);
+            return { remoteKey: key };
+        }
+        catch (err) {
+            if (err instanceof adapter_interface_1.AdapterError)
+                throw err;
+            throw new adapter_interface_1.AdapterError(`WebDAV 请求失败: ${err.message}`, channel.type);
+        }
+        finally {
+            clearTimeout(timer);
+        }
+    }
+    async uploadFile(path, size, file, key, channel) {
+        if (!channel.config.baseUri)
+            throw new adapter_interface_1.AdapterError('缺少 baseUri 配置', channel.type);
+        const url = this.fullPath(key, channel);
+        await this.ensureKeyDirs(key, channel);
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 30 * 60 * 1000);
+        try {
+            const resp = await fetch(url, {
+                method: 'PUT',
+                headers: {
+                    Authorization: this.authHeader(channel),
+                    'Content-Type': file.mime,
+                    'Content-Length': String(size),
+                },
+                body: stream_1.Readable.toWeb((0, fs_1.createReadStream)(path)),
+                duplex: 'half',
                 signal: ctrl.signal,
             });
             if (!resp.ok)

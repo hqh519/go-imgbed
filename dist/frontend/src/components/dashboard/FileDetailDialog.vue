@@ -494,9 +494,9 @@ export default {
         dialogWidth() {
             return window.innerWidth < 768 ? '95%' : '900px';
         },
-        /** 二维码渲染尺寸：v2.7.0 起固定 250x250 */
+        /** 二维码渲染尺寸：v2.8.2 起固定 200x200 */
         qrSize() {
-            return 250;
+            return 200;
         },
         /**
          * 详情表列数：窄屏 1 列、宽屏 2 列。

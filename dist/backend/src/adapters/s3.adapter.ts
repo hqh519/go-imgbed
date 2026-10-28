@@ -1,4 +1,5 @@
-import { PutObjectCommand, DeleteObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { AbortMultipartUploadCommand, CompleteMultipartUploadCommand, CreateMultipartUploadCommand, PutObjectCommand, DeleteObjectCommand, S3Client, UploadPartCommand } from '@aws-sdk/client-s3';
+import { promises as fsp } from 'fs';
 import { AdapterError, ChannelInfo, CopyInfo, StorageAdapter, UploadResult } from './adapter.interface';
 import { ensureProtocol } from '../common/endpoint';
 
@@ -119,6 +120,80 @@ export class S3Adapter implements StorageAdapter {
       return { remoteKey: fullKey };
     } catch (err) {
       throw new AdapterError(`上传失败: ${(err as Error).message}`, channel.type);
+    }
+  }
+
+  /**
+   * v2.8.3：大文件分片上传（multipart upload）。
+   * 每片 16MB 从磁盘读入后发送，内存占用恒定；失败时 Abort，避免对象存储里留半截文件。
+   * 500MB 文件 = 32 片，顺序发送（并发会争抢上行，顺序更稳）。
+   */
+  async uploadFile(
+    path: string,
+    size: number,
+    file: { mime: string; originalName: string },
+    key: string,
+    channel: ChannelInfo,
+  ): Promise<UploadResult> {
+    const fullKey = key;
+    const PART_SIZE = 16 * 1024 * 1024;
+    // 小于一片直接单次 PUT，省一次 Create/Complete 往返
+    if (size <= PART_SIZE) {
+      const buffer = await fsp.readFile(path);
+      return this.upload({ buffer, mime: file.mime, originalName: file.originalName }, key, channel);
+    }
+
+    let uploadId: string | undefined;
+    try {
+      const created = await this.client.send(
+        new CreateMultipartUploadCommand({
+          Bucket: this.bucket,
+          Key: fullKey,
+          ContentType: file.mime,
+        }),
+      );
+      uploadId = created.UploadId;
+      if (!uploadId) throw new Error('未返回 UploadId');
+
+      const parts: Array<{ ETag?: string; PartNumber: number }> = [];
+      const fh = await fsp.open(path, 'r');
+      try {
+        for (let offset = 0, partNumber = 1; offset < size; offset += PART_SIZE, partNumber++) {
+          const len = Math.min(PART_SIZE, size - offset);
+          const buf = Buffer.allocUnsafe(len);
+          const { bytesRead } = await fh.read(buf, 0, len, offset);
+          if (bytesRead !== len) throw new Error(`读取第 ${partNumber} 片失败：期望 ${len}B，实际 ${bytesRead}B`);
+          const part = await this.client.send(
+            new UploadPartCommand({
+              Bucket: this.bucket,
+              Key: fullKey,
+              UploadId: uploadId,
+              PartNumber: partNumber,
+              Body: buf,
+            }),
+          );
+          parts.push({ ETag: part.ETag, PartNumber: partNumber });
+        }
+      } finally {
+        await fh.close().catch(() => undefined);
+      }
+
+      await this.client.send(
+        new CompleteMultipartUploadCommand({
+          Bucket: this.bucket,
+          Key: fullKey,
+          UploadId: uploadId,
+          MultipartUpload: { Parts: parts },
+        }),
+      );
+      return { remoteKey: fullKey };
+    } catch (err) {
+      if (uploadId) {
+        await this.client
+          .send(new AbortMultipartUploadCommand({ Bucket: this.bucket, Key: fullKey, UploadId: uploadId }))
+          .catch(() => undefined);
+      }
+      throw new AdapterError(`分片上传失败: ${(err as Error).message}`, channel.type);
     }
   }
 

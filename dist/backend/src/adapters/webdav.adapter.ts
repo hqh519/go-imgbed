@@ -1,3 +1,5 @@
+import { createReadStream } from 'fs';
+import { Readable } from 'stream';
 import { AdapterError, ChannelInfo, CopyInfo, StorageAdapter, UploadResult } from './adapter.interface';
 import { ensureProtocol } from '../common/endpoint';
 
@@ -28,26 +30,27 @@ export class WebdavAdapter implements StorageAdapter {
     return `${base}/${dir ? dir + '/' : ''}${key}`;
   }
 
-  async upload(file: { buffer: Buffer; mime: string; originalName: string }, key: string, channel: ChannelInfo): Promise<UploadResult> {
-    if (!channel.config.baseUri) throw new AdapterError('缺少 baseUri 配置', channel.type);
-    const url = this.fullPath(key, channel);
-    // 逐级建目录（PUT 对不存在的父目录会 409）
-    // 目录来源有两段：固定「存储目录」+ key 自带的对象前缀（{y}/{m}/ 渲染后的 2026/10/），
-    // 两段都要建，否则按日期分目录后第一次上传必然 409。
+  /** 逐级 MKCOL 建目录（PUT 对不存在的父目录会 409） */
+  private async ensureKeyDirs(key: string, channel: ChannelInfo): Promise<void> {
     const base = this.baseOf(channel);
     const dir = (channel.config.directory || '').replace(/^\/+|\/+$/g, '');
     const keyDir = key.includes('/') ? key.slice(0, key.lastIndexOf('/')) : '';
     const fullDir = [dir, keyDir].filter(Boolean).join('/');
-    if (fullDir) {
-      const parts = fullDir.split('/').filter(Boolean);
-      for (let i = 1; i <= parts.length; i++) {
-        const p = `${base}/${parts.slice(0, i).join('/')}`;
-        try {
-          const r = await fetch(p, { method: 'MKCOL', headers: { Authorization: this.authHeader(channel) } });
-          if (!r.ok && r.status !== 405 && r.status !== 301) { /* 已存在等情况忽略 */ }
-        } catch { /* 忽略 */ }
-      }
+    if (!fullDir) return;
+    const parts = fullDir.split('/').filter(Boolean);
+    for (let i = 1; i <= parts.length; i++) {
+      const p = `${base}/${parts.slice(0, i).join('/')}`;
+      try {
+        const r = await fetch(p, { method: 'MKCOL', headers: { Authorization: this.authHeader(channel) } });
+        if (!r.ok && r.status !== 405 && r.status !== 301) { /* 已存在等情况忽略 */ }
+      } catch { /* 忽略 */ }
     }
+  }
+
+  async upload(file: { buffer: Buffer; mime: string; originalName: string }, key: string, channel: ChannelInfo): Promise<UploadResult> {
+    if (!channel.config.baseUri) throw new AdapterError('缺少 baseUri 配置', channel.type);
+    const url = this.fullPath(key, channel);
+    await this.ensureKeyDirs(key, channel);
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 60000);
     try {
@@ -57,6 +60,42 @@ export class WebdavAdapter implements StorageAdapter {
         body: new Uint8Array(file.buffer),
         signal: ctrl.signal,
       });
+      if (!resp.ok) throw new AdapterError(`WebDAV PUT 失败: HTTP ${resp.status}`, channel.type);
+      return { remoteKey: key };
+    } catch (err) {
+      if (err instanceof AdapterError) throw err;
+      throw new AdapterError(`WebDAV 请求失败: ${(err as Error).message}`, channel.type);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /** v2.8.3：大文件流式 PUT（不再把整份文件读进内存） */
+  async uploadFile(
+    path: string,
+    size: number,
+    file: { mime: string; originalName: string },
+    key: string,
+    channel: ChannelInfo,
+  ): Promise<UploadResult> {
+    if (!channel.config.baseUri) throw new AdapterError('缺少 baseUri 配置', channel.type);
+    const url = this.fullPath(key, channel);
+    await this.ensureKeyDirs(key, channel);
+    const ctrl = new AbortController();
+    // 500MB 在慢速网盘上可能超过 10 分钟，给足 30 分钟
+    const timer = setTimeout(() => ctrl.abort(), 30 * 60 * 1000);
+    try {
+      const resp = await fetch(url, {
+        method: 'PUT',
+        headers: {
+          Authorization: this.authHeader(channel),
+          'Content-Type': file.mime,
+          'Content-Length': String(size),
+        },
+        body: Readable.toWeb(createReadStream(path)) as unknown as BodyInit,
+        duplex: 'half',
+        signal: ctrl.signal,
+      } as RequestInit);
       if (!resp.ok) throw new AdapterError(`WebDAV PUT 失败: HTTP ${resp.status}`, channel.type);
       return { remoteKey: key };
     } catch (err) {

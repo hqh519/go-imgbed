@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { createHash } from 'crypto';
-import { promises as fsp } from 'fs';
+import { createReadStream, promises as fsp } from 'fs';
 import { prisma } from '../common/prisma';
 import { CryptoService } from '../common/crypto.service';
 import { SettingsService } from '../settings/settings.service';
@@ -9,18 +9,24 @@ import { ChannelsService } from '../channels/channels.controller';
 import { StorageChannelService, StorageChannelInfo } from '../storage/storage-channel.service';
 import { createAdapter, toCopyInfo } from '../adapters/adapter.factory';
 import { localFileAbs } from '../adapters/local.adapter';
-import { ChannelInfo } from '../adapters/adapter.interface';
+import { AdapterError, ChannelInfo, StorageAdapter } from '../adapters/adapter.interface';
 import { normalizeUploadSource, fileTypeOf, channelShort } from '../common/file-view';
 import { appLog } from '../common/app-log';
 import { joinObjectKey, renderFileName, renderObjectPrefix, supportsPrefix } from '../common/path-template';
-import { compressMedia, readDimensions } from '../common/compress';
+import { compressFile, compressMedia, readDimensions, readDimensionsFile } from '../common/compress';
 
 /**
  * 压缩上限（字节）：超过就不压。
- * sharp 与 ffmpeg 都需要把内容读进内存，几百 MB 的视频在 2C2G 的容器里会把进程拖垮；
- * 这一步的收益也远小于风险（图床的主场景是图片与短视频）。
+ * v2.8.3 起大文件压缩走磁盘路径（ffmpeg / sharp 直接读文件），不再整份读内存，
+ * 所以上限从 512MB 提高到默认 4GB（可用 COMPRESS_MAX_MB 调整）。
  */
-const COMPRESS_MAX_BYTES = 512 * 1024 * 1024;
+const COMPRESS_MAX_BYTES = Math.max(512, Number(process.env.COMPRESS_MAX_MB || 4096)) * 1024 * 1024;
+
+/**
+ * 没有「流式写入」能力的渠道（http-post / immich / aliyun 等）超过该阈值直接报错，
+ * 而不是把 500MB 读进内存把进程拖垮。S3 / 本地 / WebDAV 走 uploadFile，不受此限。
+ */
+const STREAM_REQUIRED_BYTES = 256 * 1024 * 1024;
 
 interface UploadOptions {
   /** 渠道类型过滤（cos/minio/r2…）：仅用于「按类型挑一条可用渠道」 */
@@ -103,6 +109,13 @@ interface UploadInput {
   buffer: Buffer;
   mime: string;
   originalName: string;
+  /**
+   * v2.8.3：大文件以「磁盘路径」形式传入（分片合并结果 / 链接暂存），
+   * 避免把 500MB 读进内存。有 path 时 buffer 允许为空。
+   */
+  path?: string;
+  /** 文件字节数（有 path 时用于限额/校验/落库，避免反复 stat） */
+  size?: number;
 }
 
 @Injectable()
@@ -271,9 +284,24 @@ export class UploadService {
     }
   }
 
+  /** 图片类扩展名集合（v2.8.2 图片互串宽容判定用） */
+  private static readonly IMG_EXTS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp']);
+
+  /** 按魔数识别真实图片格式；非已知图片签名返回 null（v2.8.2） */
+  private static detectImageExt(buf: Buffer): string | null {
+    if (buf.length < 12) return null;
+    const hex = buf.subarray(0, 16).toString('hex');
+    const a4 = buf.subarray(0, 4).toString('latin1');
+    if (hex.startsWith('ffd8ff')) return 'jpg';
+    if (hex.startsWith('89504e47')) return 'png';
+    if (a4 === 'GIF8') return 'gif';
+    if (a4 === 'RIFF' && buf.subarray(8, 12).toString('latin1') === 'WEBP') return 'webp';
+    if (hex.startsWith('424d')) return 'bmp';
+    return null;
+  }
+
   /** 扩展名 → 权威 MIME 映射（与上传白名单一一对应） */
-  private static readonly EXT_MIME: Record<string, string> = {
-    jpg: 'image/jpeg',
+  private static readonly EXT_MIME: Record<string, string> = {    jpg: 'image/jpeg',
     jpeg: 'image/jpeg',
     png: 'image/png',
     gif: 'image/gif',
@@ -320,13 +348,45 @@ export class UploadService {
     if (!exts.includes(ext)) {
       return `不支持的格式 .${ext}，允许：${exts.join('/')}`;
     }
-    if (input.buffer.length > maxMB * 1024 * 1024) {
-      return `文件超过 ${maxMB}MB 上限，请改用腾讯云 COS / MinIO / S3 / R2 / Immich 等大容量存储渠道上传`;
+    const size = Number(input.size || 0) || (input.path ? (await fsp.stat(input.path)).size : input.buffer.length);
+    if (size > maxMB * 1024 * 1024) {
+      return `文件超过 ${maxMB}MB 上限（当前 ${(size / 1024 / 1024).toFixed(1)}MB），请到「其他设置 → 上传相关配置」调大单文件大小上限`;
     }
-    if (this.signatureOk(input.buffer, ext) === false) {
+    // 魔数只看文件头 64 字节：大文件不读整份，避免校验本身把内存吃掉
+    const head = input.buffer.length ? input.buffer.subarray(0, 64) : await this.readHead(input.path || '', 64);
+    if (this.signatureOk(head, ext) === false) {
+      /*
+       * v2.8.2：图片格式互串放行 —— 从网页保存的图片常被按 URL 命名，
+       * 扩展名 .jpg 但内容其实是 PNG（浏览器渲染按内容嗅探，不受影响）。
+       * 声明扩展名与真实内容同为图片格式时放行并记系统日志；
+       * 跨大类（如 exe 改名 .jpg）仍然拒绝。
+       */
+      const realExt = UploadService.detectImageExt(head);
+      if (realExt && UploadService.IMG_EXTS.has(ext) && UploadService.IMG_EXTS.has(realExt)) {
+        appLog.warn(
+          'upload',
+          `图片格式互串放行：声明 .${ext}，实际内容为 .${realExt}`,
+          input.originalName,
+        );
+        return null;
+      }
+      appLog.warn('upload', `魔数校验拒绝：声明 .${ext} 与内容不符`, input.originalName);
       return `文件内容与扩展名不符（.${ext}），已拒绝上传`;
     }
     return null;
+  }
+
+  /** 读取文件头（最多 n 字节），用于大文件魔数校验 */
+  private async readHead(path: string, n: number): Promise<Buffer> {
+    if (!path) return Buffer.alloc(0);
+    const fh = await fsp.open(path, 'r');
+    try {
+      const buf = Buffer.alloc(n);
+      const { bytesRead } = await fh.read(buf, 0, n, 0);
+      return buf.subarray(0, bytesRead);
+    } finally {
+      await fh.close().catch(() => undefined);
+    }
   }
 
   /**
@@ -820,6 +880,52 @@ export class UploadService {
     }
   }
 
+  /** 流式计算文件 MD5（大文件不读进内存） */
+  private hashFile(path: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const hash = createHash('md5');
+      const stream = createReadStream(path);
+      stream.on('data', (chunk) => hash.update(chunk as Buffer));
+      stream.on('end', () => resolve(hash.digest('hex')));
+      stream.on('error', reject);
+    });
+  }
+
+  /**
+   * 统一渠道写入：有 path 且适配器支持流式 → uploadFile；
+   * 否则回退到整块 Buffer（并对超大文件设阈值，避免把进程撑爆）。
+   */
+  private async uploadToAdapter(
+    adapter: StorageAdapter,
+    file: UploadInput,
+    key: string,
+    info: ChannelInfo,
+    owner?: string,
+  ): Promise<{ remoteKey: string; remoteUrl?: string; metas?: Record<string, unknown> }> {
+    if (file.path && typeof adapter.uploadFile === 'function') {
+      return adapter.uploadFile(
+        file.path,
+        file.size || 0,
+        { mime: file.mime, originalName: file.originalName },
+        key,
+        info,
+        { owner },
+      );
+    }
+    if (file.path) {
+      const size = file.size || 0;
+      if (size > STREAM_REQUIRED_BYTES) {
+        throw new AdapterError(
+          `渠道「${info.name || info.type}」不支持大文件流式写入，${Math.round(size / 1024 / 1024)}MB 超过直传安全阈值；请改用 S3 / 本地存储 / WebDAV 渠道`,
+          info.type,
+        );
+      }
+      const buffer = await fsp.readFile(file.path);
+      return adapter.upload({ buffer, mime: file.mime, originalName: file.originalName }, key, info, { owner });
+    }
+    return adapter.upload({ buffer: file.buffer, mime: file.mime, originalName: file.originalName }, key, info, { owner });
+  }
+
   /**
    * 服务端压缩（v2.3.0 起统一委托给 common/compress.ts）。
    * 保留这个薄封装是为了兼容历史调用点（内部已不再直接使用 sharp）。
@@ -852,7 +958,7 @@ export class UploadService {
    * 注意：整段流程都计入 activeUploads，因此上传过程中触发的备份任务
    * 会一直等到本次（以及后续并发的）主渠道上传结束后才开始传输。
    */
-  async upload(input: UploadInput, opts: UploadOptions): Promise<{ id: string; error?: string; dedup?: boolean }> {
+  async upload(input: UploadInput, opts: UploadOptions): Promise<{ id: string; error?: string; dedup?: boolean; finalName?: string }> {
     this.activeUploads += 1;
     try {
       return await this.uploadInner(input, opts);
@@ -861,8 +967,15 @@ export class UploadService {
     }
   }
 
-  private async uploadInner(input: UploadInput, opts: UploadOptions): Promise<{ id: string; error?: string; dedup?: boolean }> {
+  private async uploadInner(input: UploadInput, opts: UploadOptions): Promise<{ id: string; error?: string; dedup?: boolean; finalName?: string }> {
     let { buffer, mime, originalName } = input;
+    // v2.8.3：大文件走磁盘路径；small 文件仍是内存 Buffer。
+    // size 统一在这里确定，后面所有限额/落库/备份都用它，避免 path/buffer 双份逻辑。
+    let srcPath = input.path || '';
+    let size = Number(input.size || 0);
+    if (!size) {
+      size = srcPath ? (await fsp.stat(srcPath)).size : buffer.length;
+    }
 
     /*
      * 服务端校验：扩展名白名单 + 魔数 + 大小上限（客户端校验不可信）。
@@ -874,15 +987,21 @@ export class UploadService {
       if (invalid) return { id: '', error: invalid };
     }
 
-    // 初始（压缩前）大小：前端本地压缩后仍会带原始字节数上来；缺省时用当前 buffer 长度
-    const originalSize = opts.originalSize && opts.originalSize > 0 ? opts.originalSize : buffer.length;
+    // 初始（压缩前）大小：前端本地压缩后仍会带原始字节数上来；缺省时用实际大小
+    const originalSize = opts.originalSize && opts.originalSize > 0 ? opts.originalSize : size;
 
     // MIME 归一化：以扩展名为准（curl 等会把 mp4/mp3 传成 application/octet-stream）
     mime = this.normalizeMime(originalName, mime);
 
-    // 图像审查（可开关；接口异常时放行）
-    const rejected = await this.moderate(buffer, mime);
-    if (rejected) return { id: '', error: rejected };
+    /*
+     * 图像审查（可开关；接口异常时放行）。
+     * 大文件（>64MB 的图片极罕见）跳过：审查接口要求整图上传，读进内存不划算。
+     */
+    if (mime.startsWith('image/') && size <= 64 * 1024 * 1024) {
+      const reviewBuffer = buffer.length ? buffer : await fsp.readFile(srcPath);
+      const rejected = await this.moderate(reviewBuffer, mime);
+      if (rejected) return { id: '', error: rejected };
+    }
 
     // IP 归属地（可开关）：主链路只读缓存，未命中则落库后异步补写 ——
     // 归属地查询是外部网络请求（最长 6 秒），绝不能挡在上传主链路上。
@@ -896,6 +1015,7 @@ export class UploadService {
      *   · 开关优先级：本次请求显式传入（前端上传设置） > 后台「网页设置 → 默认开启压缩」；
      *     API Token / WebDAV 这类"没有前端开关"的入口因此也会跟随后台默认值；
      *   · 压缩失败 / 压不动 → 原文件照常上传（需求明确要求"跳过压缩直接上传"）。
+     * v2.8.3：大文件走 compressFile（输入/输出都是磁盘路径，不再整份读内存）。
      */
     const wantCompress = opts.serverCompress ?? (await this.defaultServerCompress());
     if (wantCompress) {
@@ -903,13 +1023,30 @@ export class UploadService {
       const pct =
         opts.compressPercent && opts.compressPercent > 0 ? opts.compressPercent : await this.defaultCompressPercent();
       // 超大文件不压缩：sharp/ffmpeg 都要把内容整体读进内存，几百 MB 的视频会把进程拖垮
-      if (buffer.length > COMPRESS_MAX_BYTES) {
-        console.log(`[upload] 跳过压缩：文件 ${(buffer.length / 1024 / 1024).toFixed(1)}MB 超过压缩上限`);
+      if (size > COMPRESS_MAX_BYTES) {
+        console.log(`[upload] 跳过压缩：文件 ${(size / 1024 / 1024).toFixed(1)}MB 超过压缩上限`);
+      } else if (srcPath) {
+        const r = await compressFile(srcPath, mime, srcExt, pct);
+        if (r.compressed) {
+          srcPath = r.path;
+          size = r.size;
+          mime = r.mime || mime;
+          if (r.ext) originalName = originalName.replace(/\.[^.]+$/, '') + r.ext;
+          appLog.info(
+            'upload',
+            `已压缩（流式）：${originalSize}B → ${size}B（${Math.round((1 - size / Math.max(1, originalSize)) * 100)}%）`,
+            `${originalName} ｜ 期望 ${pct}%`,
+            uploadIp,
+          );
+        } else if (r.reason) {
+          appLog.info('upload', `跳过压缩：${r.reason}`, originalName, uploadIp);
+        }
       } else {
         const r = await compressMedia(buffer, mime, srcExt, pct);
         if (r.compressed) {
           const before = buffer.length;
           buffer = r.buffer;
+          size = buffer.length;
           mime = r.mime || mime;
           if (r.ext) originalName = originalName.replace(/\.[^.]+$/, '') + r.ext;
           appLog.info(
@@ -926,7 +1063,9 @@ export class UploadService {
 
     // 尺寸（图片走 sharp）：详情页「图片尺寸」一直显示「无」就是因为这里从来没写过 metas.Width/Height。
     // 放在压缩之后读，拿到的是最终文件的真实尺寸。
-    const dims = await readDimensions(buffer, mime, mime.split('/')[1] || '');
+    const dims = srcPath
+      ? await readDimensionsFile(srcPath, mime, mime.split('/')[1] || '')
+      : await readDimensions(buffer, mime, mime.split('/')[1] || '');
 
     // 主渠道 / 备份渠道统一由 StorageChannelService 按优先级解析：
     //   本次请求显式指定 → API Token 配置 → 「用户管理」账户指定 → 后台「上传设置」全局渠道
@@ -956,11 +1095,11 @@ export class UploadService {
     // 范围（dedupScope）：
     //   all     —— 全库比较（默认）
     //   channel —— 只在「同一渠道」内比较（按渠道 ID 比对；渠道名可变，不能作为匹配依据）
-    const md5 = createHash('md5').update(buffer).digest('hex');
+    const md5 = srcPath ? await this.hashFile(srcPath) : createHash('md5').update(buffer).digest('hex');
     if (await this.dedupEnabled()) {
       const scope = await this.dedupScope();
       const dup = await prisma.fileRecord.findFirst({
-        where: { status: 'active', size: buffer.length, md5 },
+        where: { status: 'active', size, md5 },
         select: {
           name: true,
           originalName: true,
@@ -977,10 +1116,10 @@ export class UploadService {
         appLog.info(
           'upload',
           `命中去重：${originalName} 与已有文件 ${hit.originalName}（${hit.name}）内容相同，复用已有外链`,
-          `md5=${md5} ｜ 大小=${buffer.length}B ｜ 范围=${scope === 'channel' ? `同渠道（${main.name}）` : '全部渠道'}`,
+          `md5=${md5} ｜ 大小=${size}B ｜ 范围=${scope === 'channel' ? `同渠道（${main.name}）` : '全部渠道'}`,
           uploadIp,
         );
-        return { id: hit.name, dedup: true };
+        return { id: hit.name, dedup: true, finalName: originalName };
       }
     }
 
@@ -1023,7 +1162,13 @@ export class UploadService {
       if (ch.id !== main.id && !(await this.channelWritable(ch))) continue;
       try {
         const info = this.toChannelInfo(ch);
-        result = await createAdapter(info).upload({ buffer, mime, originalName }, key, info, { owner: opts.uploader });
+        result = await this.uploadToAdapter(createAdapter(info), {
+          buffer,
+          path: srcPath,
+          size,
+          mime,
+          originalName,
+        }, key, info, opts.uploader);
         usedChannel = ch;
         break;
       } catch (err) {
@@ -1033,7 +1178,7 @@ export class UploadService {
         appLog.warn(
           'upload',
           `渠道上传失败：${ch.name}（${ch.type}）${opts.autoRetry ? '，尝试自动切换下一个渠道' : ''}`,
-          `${lastErr} ｜ key=${key} ｜ 大小=${buffer.length}B ｜ 文件=${originalName}`,
+          `${lastErr} ｜ key=${key} ｜ 大小=${size}B ｜ 文件=${originalName}`,
           uploadIp,
         );
       }
@@ -1052,7 +1197,7 @@ export class UploadService {
     appLog.info(
       'upload',
       `上传成功：${usedChannel.name}（${usedChannel.type}）`,
-      `${key} ｜ ${buffer.length}B ｜ 耗时 ${Date.now() - startedAt}ms ｜ 文件=${originalName}`,
+      `${key} ｜ ${size}B ｜ 耗时 ${Date.now() - startedAt}ms ｜ 文件=${originalName}`,
       uploadIp,
     );
 
@@ -1069,7 +1214,7 @@ export class UploadService {
         firstName: fileId,
         prevName: '',
         originalName,
-        size: buffer.length,
+        size,
         originalSize,
         mime,
         md5,
@@ -1145,7 +1290,7 @@ export class UploadService {
     //   调用方显式指定（API 的 backup 参数）→ Token 配置 → 账户指定 → 全局备份渠道
     // 解析本身（查开关 + 查渠道）也放到后台队列执行，响应路径上不再多两次数据库查询。
     if (opts.backup !== false) {
-      const payload = { buffer, mime, originalName };
+      const payload: UploadInput = { buffer, path: srcPath, size, mime, originalName };
       this.enqueueBackground(async () => {
         if (!(await this.backupEnabled())) return;
         const backup = await this.resolveBackupChannel({
@@ -1160,7 +1305,7 @@ export class UploadService {
       });
     }
 
-    return { id: fileId };
+    return { id: fileId, finalName: originalName };
   }
 
   private async backupUpload(
@@ -1179,7 +1324,7 @@ export class UploadService {
       const info = this.toChannelInfo(backup);
       const adapter = createAdapter(info);
       const t0 = Date.now();
-      const result = await adapter.upload(file, key, info, { owner });
+      const result = await this.uploadToAdapter(adapter, file, key, info, owner);
       await prisma.fileCopy.update({
         where: { fileId_channelId: { fileId, channelId: backup.id } },
         data: { remoteKey: result.remoteKey, remoteUrl: result.remoteUrl || '', status: 'active' },
@@ -1187,7 +1332,7 @@ export class UploadService {
       appLog.info(
         'backup',
         `备份完成：${backup.name}（${backup.type}）`,
-        `${key} ｜ ${file.buffer.length}B ｜ 耗时 ${Date.now() - t0}ms（低优先级，主渠道上传期间自动让路）`,
+        `${key} ｜ ${file.size || file.buffer.length}B ｜ 耗时 ${Date.now() - t0}ms（低优先级，主渠道上传期间自动让路）`,
       );
     } catch (err) {
       appLog.error('backup', `备份渠道写入失败：${backup.name}（${backup.type}）`, `${(err as Error).message} ｜ key=${key}`);
