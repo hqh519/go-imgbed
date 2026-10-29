@@ -287,7 +287,7 @@ let StorageSettingsController = class StorageSettingsController {
             proxyTimeoutMs: Number(proxyTimeoutMs) || 15000,
             proxyCacheSeconds: Number(proxyCacheSeconds) || 86400,
             dedupEnabled: dedupEnabled === 'true',
-            dedupScope: dedupScope === 'channel' ? 'channel' : 'all',
+            dedupScope: dedupScope === 'channelType' ? 'channelType' : dedupScope === 'channel' ? 'channel' : 'all',
             customDomain,
             mainChannel: pickBrief(await this.storageChannel.getStorageChannel('', 'main')),
             backupChannel: pickBrief(await this.storageChannel.getStorageChannel('', 'backup')),
@@ -313,7 +313,8 @@ let StorageSettingsController = class StorageSettingsController {
             await this.settings.set('dedupEnabled', body.dedupEnabled ? 'true' : 'false');
         }
         if (body.dedupScope !== undefined) {
-            await this.settings.set('dedupScope', body.dedupScope === 'channel' ? 'channel' : 'all');
+            const v = body.dedupScope === 'channelType' ? 'channelType' : body.dedupScope === 'channel' ? 'channel' : 'all';
+            await this.settings.set('dedupScope', v);
         }
         if (body.customDomain !== undefined) {
             const dom = String(body.customDomain || '').trim().replace(/\/+$/, '');

@@ -532,6 +532,8 @@ let LinkController = class LinkController {
             if (!ordered.includes(c))
                 ordered.push(c);
         const candidates = [];
+        const mode = await this.settings.getLinkMode();
+        const preferInternal = mode !== 'redirect';
         for (const copy of ordered) {
             const ch = channels.find((c) => c.id === copy.channelId);
             if (!ch)
@@ -551,7 +553,7 @@ let LinkController = class LinkController {
                 config: this.channels.decryptConfig(ch.type, ch.config),
                 metas: {},
             };
-            const url = (0, adapter_factory_1.createAdapter)(info).buildDirectUrl((0, adapter_factory_1.toCopyInfo)(copy), info);
+            const url = (0, adapter_factory_1.createAdapter)(info).buildDirectUrl((0, adapter_factory_1.toCopyInfo)(copy), info, preferInternal);
             if (url)
                 candidates.push({ url, label: ch.name });
         }
@@ -559,20 +561,18 @@ let LinkController = class LinkController {
             await this.serveFallback(res, isHead, () => res.status(404).send('Not Found'));
             return;
         }
-        const mode = await this.settings.getLinkMode();
-        if (mode === 'redirect') {
-            res.setHeader('Cache-Control', 'no-cache, max-age=0');
-            return res.redirect(302, candidates[0].url);
-        }
         const t = await this.resolveImageTransform(req);
         if (t.error)
             return res.status(400).send(t.error);
         const imgExt = (0, file_view_1.fileExtOf)(record.name).toLowerCase().replace(/^\./, '');
         const scalable = ['jpg', 'jpeg', 'png', 'webp', 'avif'].includes(imgExt);
-        if ((t.width || t.height) && scalable) {
+        if ((t.width || t.height) && scalable && preferInternal) {
             return this.serveTransformedImage(res, candidates, t);
         }
-        return this.proxyStream(req, res, candidates);
+        if (preferInternal)
+            return this.proxyStream(req, res, candidates);
+        res.setHeader('Cache-Control', 'no-cache, max-age=0');
+        return res.redirect(302, candidates[0].url);
     }
 };
 exports.LinkController = LinkController;
@@ -663,6 +663,18 @@ let ManageController = class ManageController {
         const fUploadSource = splitCsv(q.uploadSource).map((s) => (0, file_view_1.normalizeUploadSource)(s));
         const fBackup = splitCsv(q.backup);
         const fRedirect = splitCsv(q.redirect);
+        const dateFrom = /^\d{4}-\d{2}-\d{2}$/.test(String(q.dateFrom || '')) ? String(q.dateFrom) : '';
+        const dateTo = /^\d{4}-\d{2}-\d{2}$/.test(String(q.dateTo || '')) ? String(q.dateTo) : '';
+        const tzMin = Number(q.tz);
+        const tzOffset = Number.isFinite(tzMin) ? Math.max(-840, Math.min(840, tzMin)) : 0;
+        const dayStartMs = (date) => {
+            const [y, m, d] = date.split('-').map(Number);
+            return Date.UTC(y, m - 1, d) + tzOffset * 60_000;
+        };
+        const fromMs = dateFrom ? dayStartMs(dateFrom) : 0;
+        const toMs = dateTo ? dayStartMs(dateTo) + 86_400_000 - 1 : 0;
+        const sizeMin = Math.max(0, Number(q.sizeMin) || 0);
+        const sizeMax = Math.max(0, Number(q.sizeMax) || 0);
         const rows = await prisma_1.prisma.fileRecord.findMany({
             where: { status: 'active', ...(ownerFilter ? { uploader: ownerFilter } : {}) },
             include: {
@@ -759,6 +771,19 @@ let ManageController = class ManageController {
                 if (!ok)
                     return false;
             }
+            if (fromMs || toMs) {
+                const t = r.createdAt ? new Date(r.createdAt).getTime() : 0;
+                if (!t)
+                    return false;
+                if (fromMs && t < fromMs)
+                    return false;
+                if (toMs && t > toMs)
+                    return false;
+            }
+            if (sizeMin > 0 && (r.size || 0) < sizeMin)
+                return false;
+            if (sizeMax > 0 && (r.size || 0) > sizeMax)
+                return false;
             return true;
         });
         const dirBare = dir.replace(/\/+$/, '');
@@ -1081,21 +1106,72 @@ let ManageController = class ManageController {
     async trashRecord(id, name) {
         await this.uploadSvc.softDeleteFile(id, name);
     }
-    async trashList(req) {
+    async trashList(req, q) {
         const owner = this.admin(req) ? '' : (0, auth_guard_1.currentSession)(req)?.user || '';
         const rows = await prisma_1.prisma.fileRecord.findMany({
             where: { status: 'deleted', ...(owner ? { uploader: owner } : {}) },
-            include: { copies: { select: { channelId: true, isPrimary: true, status: true } } },
+            include: { copies: { select: { channelId: true, isPrimary: true, status: true, channel: { select: { name: true } } } } },
             orderBy: { deletedAt: 'desc' },
             take: 500,
         });
-        const channelIds = Array.from(new Set(rows.flatMap((r) => r.copies.map((c) => c.channelId))));
+        const search = (q.search || '').trim().toLowerCase();
+        const fFileType = splitCsv(q.fileType);
+        const fUploadSource = splitCsv(q.uploadSource).map((s) => (0, file_view_1.normalizeUploadSource)(s));
+        const fChannelName = splitCsv(q.channelName);
+        const dateFrom = /^\d{4}-\d{2}-\d{2}$/.test(String(q.dateFrom || '')) ? String(q.dateFrom) : '';
+        const dateTo = /^\d{4}-\d{2}-\d{2}$/.test(String(q.dateTo || '')) ? String(q.dateTo) : '';
+        const tzMin = Number(q.tz);
+        const tzOffset = Number.isFinite(tzMin) ? Math.max(-840, Math.min(840, tzMin)) : 0;
+        const dayStartMs = (date) => {
+            const [y, m, d] = date.split('-').map(Number);
+            return Date.UTC(y, m - 1, d) + tzOffset * 60_000;
+        };
+        const fromMs = dateFrom ? dayStartMs(dateFrom) : 0;
+        const toMs = dateTo ? dayStartMs(dateTo) + 86_400_000 - 1 : 0;
+        const sizeMin = Math.max(0, Number(q.sizeMin) || 0);
+        const sizeMax = Math.max(0, Number(q.sizeMax) || 0);
+        const filtered = rows.filter((r) => {
+            if (search) {
+                const hit = r.name.toLowerCase().includes(search) ||
+                    r.originalName.toLowerCase().includes(search) ||
+                    (r.uploader || '').toLowerCase().includes(search) ||
+                    (r.folder || '').toLowerCase().includes(search) ||
+                    (r.md5 || '').toLowerCase().includes(search);
+                if (!hit)
+                    return false;
+            }
+            if (fFileType.length && !fFileType.includes((0, file_view_1.fileTypeOf)(r.mime)))
+                return false;
+            if (fUploadSource.length && !fUploadSource.includes((0, file_view_1.normalizeUploadSource)(r.uploadSource)))
+                return false;
+            if (fChannelName.length) {
+                const primary = r.copies.find((c) => c.isPrimary) || r.copies[0];
+                const primaryName = String(primary?.channel?.name || '');
+                if (!fChannelName.includes(primaryName))
+                    return false;
+            }
+            if (fromMs || toMs) {
+                const t = r.createdAt ? new Date(r.createdAt).getTime() : 0;
+                if (!t)
+                    return false;
+                if (fromMs && t < fromMs)
+                    return false;
+                if (toMs && t > toMs)
+                    return false;
+            }
+            if (sizeMin > 0 && (r.size || 0) < sizeMin)
+                return false;
+            if (sizeMax > 0 && (r.size || 0) > sizeMax)
+                return false;
+            return true;
+        });
+        const channelIds = Array.from(new Set(filtered.flatMap((r) => r.copies.map((c) => c.channelId))));
         const channels = await prisma_1.prisma.channel.findMany({
             where: { id: { in: channelIds } },
             select: { id: true, name: true, type: true },
         });
         const chMap = new Map(channels.map((c) => [c.id, c]));
-        const items = rows.map((r) => ({
+        const items = filtered.map((r) => ({
             id: r.id,
             name: r.name,
             originalName: r.originalName,
@@ -1734,8 +1810,9 @@ __decorate([
 __decorate([
     (0, common_1.Get)('trash'),
     __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Query)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [Object]),
+    __metadata("design:paramtypes", [Object, Object]),
     __metadata("design:returntype", Promise)
 ], ManageController.prototype, "trashList", null);
 __decorate([

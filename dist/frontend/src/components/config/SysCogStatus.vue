@@ -464,7 +464,14 @@
           <font-awesome-icon icon="history" />
           <span>{{ $t('sysStatus.recentUploads') }}</span>
         </h3>
-        <span class="section-hint">{{ $t('sysStatus.recentUploadsHint', { count: recentFiles.length }) }}</span>
+        <!-- v2.8.7：标题右侧补「查看全部」，新标签页打开最近记录（历史记录）页，样式与访问记录块一致 -->
+        <div class="section-header-actions">
+          <span class="section-hint">{{ $t('sysStatus.recentUploadsHint', { count: recentFiles.length }) }}</span>
+          <el-button link type="primary" size="small" class="section-link" @click="openRecentUploads()">
+            {{ $t('sysStatus.viewAccessLog') }}
+            <font-awesome-icon icon="external-link-alt" />
+          </el-button>
+        </div>
       </div>
 
       <div class="recent-list" v-if="recentFiles.length > 0">
@@ -1618,6 +1625,15 @@ export default {
       const query = {}
       if (row && typeof row === 'object' && row.ip) query.ip = row.ip
       const url = this.$router.resolve({ name: 'accessLog', query }).href
+      window.open(url, '_blank', 'noopener')
+    },
+
+    /**
+     * v2.8.7：打开「最近记录」（历史记录）页 —— 系统状态「最近上传」右侧的查看全部。
+     * 新标签页打开，行为与上方访问记录的「查看全部」一致。
+     */
+    openRecentUploads() {
+      const url = this.$router.resolve({ name: 'history' }).href
       window.open(url, '_blank', 'noopener')
     },
 

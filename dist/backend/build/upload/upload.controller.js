@@ -148,6 +148,22 @@ let UploadController = class UploadController {
             const size = Number(body.fileSize || q.fileSize || 0) || 0;
             const uploadKey = String(body.uploadKey || q.uploadKey || '').slice(0, 200);
             if (uploadKey) {
+                const done = await (0, upload_session_1.findCompletedSessionByKey)(uploadKey);
+                if (done && done.totalChunks === totalChunks) {
+                    if (done.mergeFileId) {
+                        app_log_1.appLog.info('upload', `幂等命中：${originalName} 已上传完成（会话 ${done.uploadId}），跳过重传直接返回已有结果`, `uploadKey=${uploadKey}`);
+                        return res.json({
+                            success: true,
+                            completed: true,
+                            uploadId: done.uploadId,
+                            received: [],
+                            resumed: false,
+                            result: [{ src: await this.signedSrc(done.mergeFileId, req), name: done.mergeName || done.originalName }],
+                        });
+                    }
+                    app_log_1.appLog.warn('upload', `幂等拦截：${originalName} 的会话 ${done.uploadId} 已完成但未记录结果，拒绝重传`, `uploadKey=${uploadKey}`);
+                    return res.json({ success: false, completed: true, message: '该文件已上传完成，请到文件管理确认，不要重复上传' });
+                }
                 const exist = await (0, upload_session_1.findSessionByKey)(uploadKey);
                 if (exist && exist.totalChunks === totalChunks) {
                     const received = await (0, upload_session_1.receivedChunks)(exist.uploadId);
@@ -165,33 +181,51 @@ let UploadController = class UploadController {
                 return res.status(400).json({ success: false, message: '上传会话不存在或已过期，请重新上传' });
             }
             if (q.merge === 'true') {
+                if (session.completedAt) {
+                    if (session.mergeFileId) {
+                        app_log_1.appLog.info('upload', `合并重入：${session.originalName} 已上传完成，直接返回已有结果（不重复落库）`, `uploadId=${session.uploadId}`);
+                        return res.json([
+                            { src: await this.signedSrc(session.mergeFileId, req), name: session.mergeName || session.originalName },
+                        ]);
+                    }
+                    app_log_1.appLog.warn('upload', `合并重入被拒：${session.originalName} 的会话已完成但未记录结果`, `uploadId=${session.uploadId}`);
+                    return res.status(400).json({ success: false, completed: true, message: '该文件已上传完成，请到文件管理确认，不要重复提交' });
+                }
+                if (!(await (0, upload_session_1.claimMergeLock)(session))) {
+                    app_log_1.appLog.warn('upload', `并发合并被拒：${session.originalName} 正在合并中，忽略重复的合并请求`, `uploadId=${session.uploadId}`);
+                    return res.status(400).json({ success: false, message: '该文件正在合并中，请耐心等待，不要重复提交' });
+                }
                 let merged;
                 try {
                     merged = await (0, upload_session_1.mergeSession)(session);
+                    const originalName = fixFilename(body.originalFileName || session.originalName);
+                    try {
+                        const r = await this.svc.upload({
+                            buffer: Buffer.alloc(0),
+                            path: merged.path,
+                            size: merged.size,
+                            mime: session.mime,
+                            originalName,
+                        }, { ...opts, uploadStartedAt: new Date(session.startedAt || arrivedAt) });
+                        if (r.error) {
+                            app_log_1.appLog.error('upload', `分片合并后写渠道失败：${originalName}`, r.error);
+                            return res.status(500).json({ success: false, message: r.error });
+                        }
+                        await (0, upload_session_1.markSessionCompleted)(session, { fileId: r.id, name: r.finalName || originalName });
+                        return res.json([{ src: await this.signedSrc(r.id, req), name: r.finalName || originalName }]);
+                    }
+                    catch (err) {
+                        app_log_1.appLog.error('upload', `分片合并后上传异常：${session.originalName}`, err.message);
+                        return res.status(500).json({ success: false, message: err.message });
+                    }
                 }
                 catch (err) {
                     const msg = err.message || '分片合并失败';
                     app_log_1.appLog.warn('upload', `分片合并失败：${session.originalName}`, msg);
                     return res.status(400).json({ success: false, message: msg });
                 }
-                const originalName = fixFilename(body.originalFileName || session.originalName);
-                try {
-                    const r = await this.svc.upload({
-                        buffer: Buffer.alloc(0),
-                        path: merged.path,
-                        size: merged.size,
-                        mime: session.mime,
-                        originalName,
-                    }, { ...opts, uploadStartedAt: new Date(session.startedAt || arrivedAt) });
-                    if (r.error) {
-                        return res.status(500).json({ success: false, message: r.error });
-                    }
-                    await (0, upload_session_1.markSessionCompleted)(session);
-                    return res.json([{ src: await this.signedSrc(r.id, req), name: r.finalName || originalName }]);
-                }
-                catch (err) {
-                    app_log_1.appLog.error('upload', `分片合并后上传异常：${originalName}`, err.message);
-                    return res.status(500).json({ success: false, message: err.message });
+                finally {
+                    await (0, upload_session_1.releaseMergeLock)(session);
                 }
             }
             const idx = Number(body.chunkIndex ?? q.chunkIndex ?? -1);

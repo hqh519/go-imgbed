@@ -1799,25 +1799,27 @@ beforeUnmount() {
 
 .token-table {
     width: 100%;
-    border-radius: 12px !important;
+    /* v2.8.7b：背景改为毛玻璃卡片（var(--glass-bg) + blur），与上下模块（邮箱配置等 el-form 卡片）观感一致 */
+    border-radius: 16px !important;
     overflow: hidden;
     box-shadow: var(--glass-shadow);
-    /* v2.7.0：主体背景改为透明（与上下模块一致），仅表头保留白色调 */
-    background-color: transparent !important;
+    background-color: var(--glass-bg) !important;
+    backdrop-filter: blur(20px) saturate(1.4);
+    -webkit-backdrop-filter: blur(20px) saturate(1.4);
     border: 1px solid var(--glass-border);
 }
 
 .token-table :deep(.el-table__header-wrapper) {
-    border-radius: 12px 12px 0 0;
+    border-radius: 16px 16px 0 0;
 }
 
 .token-table :deep(.el-table__body-wrapper) {
-    border-radius: 0 0 12px 12px;
+    border-radius: 0 0 16px 16px;
     background: transparent;
 }
 
 .token-table :deep(.el-table) {
-    border-radius: 12px;
+    border-radius: 16px;
     background: transparent;
 }
 

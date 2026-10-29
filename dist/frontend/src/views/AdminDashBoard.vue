@@ -89,24 +89,29 @@
                                 </template>
                             </el-input>
                         </div>
-                        <FilterDropdown
+                        <!-- v2.8.7：筛选改弹窗（筛选 / 日期 / 大小 三标签页）；有任一筛选值时按钮显示角标 + 高亮提示 -->
+                        <span
+                            class="el-dropdown-link filter-trigger filter-dialog-trigger"
+                            :class="{ 'is-active': activeFilterCount > 0 }"
+                            role="button"
+                            tabindex="0"
+                            :title="$t('filter.dialogTitle')"
+                            :aria-label="$t('filter.dialogTitle')"
+                            @click="showFilterDialog = true"
+                            @keydown.enter="showFilterDialog = true"
+                        >
+                            <el-badge :value="activeFilterCount" :hidden="activeFilterCount === 0" class="filter-badge">
+                                <font-awesome-icon icon="filter" class="header-icon"/>
+                            </el-badge>
+                        </span>
+                        <FilterDialog
+                            v-model="showFilterDialog"
                             v-model:filters="filters"
                             :channelNameOptions="channelNameOptions"
+                            :tagOptions="allTags"
                             @change="handleFilterChange"
                         />
-                        <!-- 标签筛选：弹窗里多选标签，支持「或 / 且」 -->
-                        <el-badge :value="filters.tagNames.length" :hidden="filters.tagNames.length === 0" class="tag-filter-badge">
-                            <el-button
-                                class="tag-filter-btn"
-                                :class="{ 'is-active': filters.tagNames.length > 0 }"
-                                size="small"
-                                :title="$t('dashboard.tagFilter')"
-                                :aria-label="$t('dashboard.tagFilter')"
-                                @click="openTagFilterDialog"
-                            >
-                                <font-awesome-icon icon="tags" class="tag-filter-icon"/>
-                            </el-button>
-                        </el-badge>
+                        <!-- v2.8.7c：标签筛选已并入筛选弹窗「标签」页，顶栏原「标签」按钮移除 -->
                         <!-- 刷新：不刷新页面，重新拉取当前分类下的文件列表 -->
                         <el-button
                             class="refresh-files-btn"
@@ -127,6 +132,17 @@
                             @click="toggleTrashMode"
                         >
                             <font-awesome-icon icon="trash-alt" :class="{ 'fa-spin': trashLoading }" class="refresh-files-icon"/>
+                        </el-button>
+                        <!-- v2.8.7：全局视频静音开关 —— 控制预览浮层与文件详情页视频是否播放声音（默认静音） -->
+                        <el-button
+                            class="refresh-files-btn mute-toggle-btn"
+                            :class="{ 'is-active': !globalVideoMuted }"
+                            size="small"
+                            :title="globalVideoMuted ? $t('dashboard.videoMutedOn') : $t('dashboard.videoMutedOff')"
+                            :aria-label="globalVideoMuted ? $t('dashboard.videoMutedOn') : $t('dashboard.videoMutedOff')"
+                            @click="toggleVideoMuted"
+                        >
+                            <font-awesome-icon :icon="globalVideoMuted ? 'volume-mute' : 'volume-up'" class="refresh-files-icon"/>
                         </el-button>
                     </div>
                 </template>
@@ -656,7 +672,7 @@ import BatchActionBar from '@/components/dashboard/BatchActionBar.vue';
 import MobileActionSheet from '@/components/dashboard/MobileActionSheet.vue';
 import MobileDirectoryDrawer from '@/components/dashboard/MobileDirectoryDrawer.vue';
 import DashboardCheckbox from '@/components/dashboard/DashboardCheckbox.vue';
-import FilterDropdown from '@/components/dashboard/FilterDropdown.vue';
+import FilterDialog from '@/components/dashboard/FilterDialog.vue';
 import LanguageSwitcher from '@/components/LanguageSwitcher.vue';
 import { fileManager } from '@/utils/fileManager';
 // 文件详情通用数据构造器（与「历史记录」页共用同一套模板 + 同一套链接拼装逻辑）
@@ -763,7 +779,17 @@ data() {
             ,tags: []          // 标签有无: 'has'（含标签） | 'none'（未含标签）
             ,tagNames: []      // 标签筛选弹窗选中的标签名
             ,tagMode: 'or'     // 标签筛选模式: 'or'（任一） | 'and'（全部）
+            // v2.8.7：日期 / 大小筛选（筛选弹窗「日期」「大小」标签页）
+            ,datePreset: ''    // 日期快捷预设: today|yesterday|beforeYesterday|thisWeek|lastWeek|thisMonth
+            ,dateFrom: ''      // 起始日期 YYYY-MM-DD（含当天）
+            ,dateTo: ''        // 结束日期 YYYY-MM-DD（含当天）
+            ,sizePreset: ''    // 大小快捷预设: lt100k|lt1m|lt10m|lt100m|gt100m
+            ,sizeMin: 0        // 最小大小（字节，0 = 不限）
+            ,sizeMax: 0        // 最大大小（字节，0 = 不限）
+            ,sizeUnit: 'MB'    // 自定义大小输入单位
         },
+        // v2.8.7：筛选弹窗显隐
+        showFilterDialog: false,
         channelNameOptions: [], // 动态从文件列表中提取
         // 标签筛选弹窗
         showTagFilterDialog: false,
@@ -796,7 +822,7 @@ components: {
     MobileActionSheet,
     MobileDirectoryDrawer,
     DashboardCheckbox,
-    FilterDropdown,
+    FilterDialog,
     MoveFileDialog,
     LanguageSwitcher
 },
@@ -827,6 +853,10 @@ setup() {
 computed: {
     tagFileMetadata() { return this.tableData.find(file => file.name === this.currentTagFile)?.metadata || {}; },
     ...mapGetters(['adminUrlSettings', 'userConfig']),
+    /** v2.8.7：全局视频静音开关（Vuex 持久化，跨页面记忆） */
+    globalVideoMuted() {
+        return this.$store.state.globalVideoMuted;
+    },
     filteredTableData() {
         return this.tableData;
     },
@@ -840,7 +870,11 @@ computed: {
     },
     // 计算当前激活的筛选条件数量（数组形式）
     activeFilterCount() {
-        return Object.values(this.filters).reduce((count, arr) => count + (Array.isArray(arr) ? arr.length : 0), 0);
+        // v2.8.7：数组条件 + 日期 / 大小条件一起计数（任一标签页有值 → 筛选按钮显示角标）
+        let count = Object.values(this.filters).reduce((acc, v) => acc + (Array.isArray(v) ? v.length : 0), 0);
+        if (this.filters.dateFrom || this.filters.dateTo) count += 1;
+        if ((Number(this.filters.sizeMin) || 0) > 0 || (Number(this.filters.sizeMax) || 0) > 0) count += 1;
+        return count;
     },
     // 判断是否处于搜索或筛选模式
     hasSearchOrFilter() {
@@ -979,6 +1013,10 @@ computed: {
     }
 },
 watch: {
+    // v2.8.7b：筛选弹窗打开时加载全部标签（供弹窗「标签」页多选）
+    showFilterDialog(v) {
+        if (v) this.loadAllTags();
+    },
     // Sync viewMode data property to the ref used by useDragSelect
     viewMode: {
         handler(newVal) {
@@ -1331,7 +1369,15 @@ methods: {
             redirect: [],
             tags: [],
             tagNames: [],
-            tagMode: 'or'
+            tagMode: 'or',
+            // v2.8.7：清空日期 / 大小筛选
+            datePreset: '',
+            dateFrom: '',
+            dateTo: '',
+            sizePreset: '',
+            sizeMin: 0,
+            sizeMax: 0,
+            sizeUnit: 'MB'
         };
         this.currentPage = 1;
         this.refreshFileList();
@@ -1570,6 +1616,15 @@ methods: {
     },
     // ==================== 回收站 ====================
     /** 进入 / 退出回收站模式 */
+    /** v2.8.7：切换全局视频静音（预览浮层 + 文件详情页视频共用这一个开关） */
+    toggleVideoMuted() {
+        this.$store.commit('setGlobalVideoMuted', !this.globalVideoMuted);
+        this.$message({
+            type: 'success',
+            message: this.globalVideoMuted ? this.$t('dashboard.videoMutedOn') : this.$t('dashboard.videoMutedOff')
+        });
+    },
+
     async toggleTrashMode() {
         if (this.trashLoading) return;
         if (this.trashMode) {
@@ -1585,7 +1640,11 @@ methods: {
     async enterTrashMode() {
         this.trashLoading = true;
         try {
-            const resp = await fetchWithAuth('/api/manage/trash');
+            // v2.8.7：回收站同样带上搜索 / 筛选 / 日期 / 大小等条件（后端联合过滤）
+            const fm = (await import('@/utils/fileManager')).fileManager;
+            const filterParams = fm.buildFilterParams(this.filters) + fm.buildExtraParams(this.searchType, this.userFilter);
+            const searchQ = this.searchKeywords ? `&search=${encodeURIComponent(this.searchKeywords)}` : '';
+            const resp = await fetchWithAuth(`/api/manage/trash?1=1${filterParams}${searchQ}`);
             if (!resp.ok) throw new Error('Request failed');
             const data = await resp.json();
             // 备份普通列表，切换渲染数据
@@ -2722,6 +2781,11 @@ methods: {
     },
     // 刷新文件列表
     async refreshFileList() {
+        // v2.8.7：回收站模式下刷新 → 走回收站接口（同样带全部筛选 / 搜索条件联合查询）
+        if (this.trashMode) {
+            await this.enterTrashMode();
+            return;
+        }
         this.refreshLoading = true;
         this.loading = true;
         try {
@@ -2998,10 +3062,24 @@ beforeUnmount() {
     padding: 0;
 }
 
-/* 顶部工具栏「刷新」按钮 */
+/* v2.8.7：筛选弹窗触发按钮（沿用 AdminHeader 的 .filter-trigger 基础样式；
+   有任一筛选值时图标着主题色 + 角标提示） */
+.filter-dialog-trigger {
+    cursor: pointer;
+    border-radius: 8px;
+    transition: color 0.2s ease, background-color 0.2s ease;
+}
+.filter-dialog-trigger:hover .header-icon {
+    color: var(--primary-color-accent, var(--el-color-primary));
+}
+.filter-dialog-trigger.is-active .header-icon {
+    color: var(--primary-color-accent, var(--el-color-primary));
+}
+
+/* 顶部工具栏「刷新」按钮（刷新 / 回收站 / 声音三个按钮共用；v2.8.7c 左右边距收窄） */
 .refresh-files-btn {
-    margin-left: 4px;
-    padding: 6px 10px;
+    margin-left: 2px;
+    padding: 6px 7px;
 }
 /* 回收站模式提示条（v2.8.6：底色加深，暗色/亮色下都足够醒目） */
 .trash-banner {
@@ -3031,6 +3109,21 @@ beforeUnmount() {
     color: #fff;
     background: var(--el-color-danger);
     border-color: var(--el-color-danger);
+}
+
+/* v2.8.7b：声音切换按钮 —— 默认（静音）态与左侧回收站按钮默认样式完全一致；
+   开启声音（is-active）时保持当前高亮不变 */
+.mute-toggle-btn:not(.is-active) {
+    color: var(--el-button-text-color, var(--el-text-color-regular));
+    background-color: var(--el-button-bg-color, var(--el-fill-color-blank));
+    border-color: var(--el-button-border-color, var(--el-border-color));
+}
+.mute-toggle-btn:not(.is-active):hover,
+.mute-toggle-btn:not(.is-active):focus {
+    color: var(--el-button-hover-text-color, var(--el-color-primary));
+    background-color: var(--el-button-hover-bg-color, var(--el-color-primary-light-9));
+    border-color: var(--el-button-hover-border-color, var(--el-color-primary-light-7));
+    outline: none;
 }
 
 /* 标签筛选按钮：选中态高亮为蓝色 */
@@ -3299,6 +3392,19 @@ beforeUnmount() {
         padding: 0 5px;
         margin-top: 2px; /* v2.8.0：与顶行距离再调小一点（原 4px） */
         margin-bottom: 2px;
+        /* v2.8.7：移动端一行放不下所有按钮 → 单行 + 左右滑动（隐藏滚动条，手势滑动） */
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        overflow-y: hidden;
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: none;
+    }
+    .breadcrumb-container::-webkit-scrollbar {
+        display: none;
+    }
+    /* 滑动行内的按钮一律不收缩，保证横向可滑出完整内容 */
+    .breadcrumb-container > * {
+        flex-shrink: 0;
     }
     .breadcrumb-view-toggle {
         height: 28px;
@@ -3984,9 +4090,12 @@ beforeUnmount() {
 @media (max-width: 768px) {
     .mobile-directory-trigger {
         display: flex;
-        /* 目录按钮不再撑满整行，把宽度让给右侧的操作按钮 */
-        flex: 0 1 auto;
-        max-width: 38vw;
+        /* v2.8.7b：禁止被同行按钮挤压（flex-shrink:0），配合容器横向滑动；
+           overflow:hidden + path ellipsis 保证内容超宽时只裁文字，图标 / 背景框不错位 */
+        flex: 0 0 auto;
+        max-width: 40vw;
+        min-width: 0;
+        overflow: hidden;
     }
     
     .desktop-only {
@@ -3998,16 +4107,17 @@ beforeUnmount() {
         margin-left: 0;
         width: 100%;
         box-sizing: border-box;
-        /* 一行塞不下时整体换行，避免「全选 / 视图切换 / 排序 / 右侧按钮组」互相挤压溢出 */
-        flex-wrap: wrap;
+        /* v2.8.7：移动端改单行横向滑动（上面的 .breadcrumb-container 已设 nowrap + overflow-x），
+           不再整体换行 —— 塞不下的部分左右滑出查看 */
+        flex-wrap: nowrap;
         gap: 8px;
     }
 
-    /* 右侧按钮组：换行后右对齐，各按钮按内容收缩 */
+    /* 右侧按钮组：跟随单行滑动，不再换行 */
     .breadcrumb-right-group {
         gap: 6px;
-        flex-wrap: wrap;
-        justify-content: flex-end;
+        flex-wrap: nowrap;
+        justify-content: flex-start;
     }
 
     /* 「新建目录」在窄屏只留图标，省下横向空间 */

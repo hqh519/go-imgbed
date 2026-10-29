@@ -44,6 +44,8 @@ export default createStore({
       customUrlPrefix: '',
     },
     autoReUpload: true,
+    // v2.8.7：后台文件管理全局视频静音开关（true=静音）。控制预览浮层与文件详情页的视频声音
+    globalVideoMuted: true,
     // 深色模式
     useDarkMode: null,
     cusDarkMode: false,
@@ -75,6 +77,7 @@ export default createStore({
     useDarkMode: state => state.useDarkMode,
     cusDarkMode: state => state.cusDarkMode,
     storeAutoReUpload: state => state.autoReUpload,
+    globalVideoMuted: state => state.globalVideoMuted,
   },
   mutations: {
     setUserConfig(state, userConfig) {
@@ -164,6 +167,10 @@ export default createStore({
     },
     setStoreAutoReUpload(state, autoReUpload) {
       state.autoReUpload = autoReUpload;
+    },
+    // v2.8.7：后台文件管理全局视频静音开关
+    setGlobalVideoMuted(state, muted) {
+      state.globalVideoMuted = !!muted;
     }
   },
   actions: {
@@ -218,6 +225,7 @@ export default createStore({
       'customUrlSettings',
       'adminUrlSettings',
       'autoReUpload',
+      'globalVideoMuted',
       'useDarkMode',
       'cusDarkMode',
     ]

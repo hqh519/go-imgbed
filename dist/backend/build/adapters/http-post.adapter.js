@@ -188,12 +188,12 @@ class HttpPostAdapter {
             throw new adapter_interface_1.AdapterError(`删除失败: ${err.message}`, channel.type);
         }
     }
-    buildDirectUrl(copy, channel) {
+    buildDirectUrl(copy, channel, preferInternal) {
         const cfg = channel.config;
         let url = copy.remoteUrl;
         if (!url)
             return null;
-        url = normalizeUrl(url, cfg.publicDomain, cfg.apiUrl);
+        url = normalizeUrl(url, (preferInternal && cfg.internalDomain) || cfg.publicDomain, cfg.apiUrl);
         return url;
     }
 }

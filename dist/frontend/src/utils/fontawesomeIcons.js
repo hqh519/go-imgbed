@@ -3,6 +3,8 @@ import { faCloudflare } from '@fortawesome/free-brands-svg-icons/faCloudflare';
 import { faDiscord } from '@fortawesome/free-brands-svg-icons/faDiscord';
 import { faAngleDoubleLeft } from '@fortawesome/free-solid-svg-icons/faAngleDoubleLeft';
 import { faAdjust } from '@fortawesome/free-solid-svg-icons/faAdjust';
+import { faVolumeMute } from '@fortawesome/free-solid-svg-icons/faVolumeMute';
+import { faVolumeUp } from '@fortawesome/free-solid-svg-icons/faVolumeUp';
 import { faAngleDoubleRight } from '@fortawesome/free-solid-svg-icons/faAngleDoubleRight';
 import { faArrowDown } from '@fortawesome/free-solid-svg-icons/faArrowDown';
 import { faArrowLeft } from '@fortawesome/free-solid-svg-icons/faArrowLeft';
@@ -211,5 +213,7 @@ export default [
     faPlug,
     faCommentDots,
     faUsers,
-    faAdjust
+    faAdjust,
+    faVolumeMute,
+    faVolumeUp
 ];

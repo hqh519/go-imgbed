@@ -881,12 +881,14 @@ export class UploadService {
 
   /**
    * 去重范围（仅当去重开关打开时生效）：
-   *   all     —— 全库范围内比较（默认）：任意渠道上已有相同内容即复用外链
-   *   channel —— 仅在同一「渠道名称」内比较：先比渠道名，渠道名相同再比大小 + MD5
+   *   all         —— 全库范围内比较（默认）：任意渠道上已有相同内容即复用外链
+   *   channel     —— 仅在同一「渠道名称」内比较：先比渠道名，渠道名相同再比大小 + MD5
+   *   channelType —— 仅在同一「渠道类型」内比较：先比渠道类型，类型相同再比大小 + MD5
    */
-  private async dedupScope(): Promise<'all' | 'channel'> {
+  private async dedupScope(): Promise<'all' | 'channel' | 'channelType'> {
     try {
-      return (await this.settings.get('dedupScope', 'all')) === 'channel' ? 'channel' : 'all';
+      const v = await this.settings.get('dedupScope', 'all');
+      return v === 'channel' ? 'channel' : v === 'channelType' ? 'channelType' : 'all';
     } catch {
       return 'all';
     }
@@ -1060,8 +1062,9 @@ export class UploadService {
      *   3) 库里 md5 列从本版起统一存「原始文件内容 MD5」，所以原样上传的历史记录
      *      也能被命中；老记录里 originalSize 为 0 的，用 size 兜底比较。
      * 范围（dedupScope）：
-     *   all     —— 全库比较（默认）
-     *   channel —— 只在「同一渠道」内比较（按渠道 ID 比对；渠道名可变，不能作为匹配依据）
+     *   all         —— 全库比较（默认）
+     *   channel     —— 只在「同一渠道名称」内比较：先比渠道名，渠道名相同再比大小 + MD5
+     *   channelType —— 只在「同一渠道类型」内比较：先比渠道类型，类型相同再比大小 + MD5
      */
     const md5 = srcPath ? await this.hashFile(srcPath) : createHash('md5').update(buffer).digest('hex');
     if (await this.dedupEnabled()) {
@@ -1076,19 +1079,26 @@ export class UploadService {
         select: {
           name: true,
           originalName: true,
-          copies: { select: { channelId: true, status: true, isPrimary: true } },
+          // v2.8.7b：附带渠道信息 —— 「同一渠道名称内 / 同一渠道类型内」两种范围都需要比对渠道属性
+          copies: { select: { channelId: true, status: true, isPrimary: true, channel: { select: { name: true, type: true } } } },
         },
       });
       let hit = dup;
-      if (dup && scope === 'channel') {
-        // 取该文件「主渠道」的渠道 ID 与本次目标渠道 ID 比对，不一致则视为不重复
+      if (dup && scope !== 'all') {
+        // 取该文件「主渠道」与本次目标渠道比对：
+        //   channel     —— 比渠道「名称」（渠道名相同才算重复）
+        //   channelType —— 比渠道「类型」（类型相同才算重复）
         const primaryCopy = dup.copies.find((c) => c.isPrimary) || dup.copies[0];
-        if (!primaryCopy || primaryCopy.channelId !== main.id) {
+        const scopeHit =
+          scope === 'channel'
+            ? (primaryCopy?.channel?.name || '') === main.name
+            : (primaryCopy?.channel?.type || '') === main.type;
+        if (!primaryCopy || !scopeHit) {
           hit = null;
           appLog.info(
             'upload',
-            `去重跳过：${originalName} 与已有文件 ${dup.name} 内容相同，但渠道不同（去重范围为「仅同一渠道」）`,
-            `目标渠道=${main.name} ｜ 已有文件渠道=${primaryCopy ? primaryCopy.channelId : '未知'}`,
+            `去重跳过：${originalName} 与已有文件 ${dup.name} 内容相同，但渠道${scope === 'channel' ? '名称' : '类型'}不同（去重范围为「${scope === 'channel' ? '同一渠道名称内' : '同一渠道类型内'}」）`,
+            `目标渠道=${main.name}（类型=${main.type}） ｜ 已有文件渠道=${primaryCopy?.channel?.name || '未知'}（类型=${primaryCopy?.channel?.type || '未知'}）`,
             uploadIp,
           );
         }
@@ -1097,7 +1107,7 @@ export class UploadService {
         appLog.info(
           'upload',
           `命中去重：${originalName} 与已有文件 ${hit.originalName}（${hit.name}）内容相同，复用已有外链`,
-          `md5=${md5} ｜ 原始大小=${originalSize}B ｜ 范围=${scope === 'channel' ? `同渠道（${main.name}）` : '全部渠道'}`,
+          `md5=${md5} ｜ 原始大小=${originalSize}B ｜ 范围=${scope === 'channel' ? `同一渠道名称内（${main.name}）` : scope === 'channelType' ? `同一渠道类型内（${main.type}）` : '全部渠道'}`,
           uploadIp,
         );
         return { id: hit.name, dedup: true, finalName: originalName };

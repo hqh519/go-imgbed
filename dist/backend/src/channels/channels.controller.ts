@@ -295,7 +295,8 @@ export class StorageSettingsController {
       proxyTimeoutMs: Number(proxyTimeoutMs) || 15000,
       proxyCacheSeconds: Number(proxyCacheSeconds) || 86400,
       dedupEnabled: dedupEnabled === 'true',
-      dedupScope: dedupScope === 'channel' ? 'channel' : 'all',
+      // v2.8.7b：去重范围支持 all / channel（同一渠道名称内）/ channelType（同一渠道类型内）
+      dedupScope: dedupScope === 'channelType' ? 'channelType' : dedupScope === 'channel' ? 'channel' : 'all',
       customDomain,
       mainChannel: pickBrief(await this.storageChannel.getStorageChannel('', 'main')),
       backupChannel: pickBrief(await this.storageChannel.getStorageChannel('', 'backup')),
@@ -335,7 +336,9 @@ export class StorageSettingsController {
       await this.settings.set('dedupEnabled', body.dedupEnabled ? 'true' : 'false');
     }
     if (body.dedupScope !== undefined) {
-      await this.settings.set('dedupScope', body.dedupScope === 'channel' ? 'channel' : 'all');
+      // v2.8.7b：all / channel（同一渠道名称内）/ channelType（同一渠道类型内）
+      const v = body.dedupScope === 'channelType' ? 'channelType' : body.dedupScope === 'channel' ? 'channel' : 'all';
+      await this.settings.set('dedupScope', v);
     }
     if (body.customDomain !== undefined) {
       // 统一去掉首尾空白与结尾斜杠；允许带协议，未带协议时前端拼接时按 http(s) 处理

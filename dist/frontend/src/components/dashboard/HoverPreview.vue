@@ -18,12 +18,14 @@
         >
             <video
                 v-if="type === 'video'"
+                ref="videoEl"
                 :src="src"
                 autoplay
                 muted
                 loop
                 class="hover-preview-media"
                 @loadedmetadata="onMediaLoad"
+                @canplay="startVideo"
             ></video>
             <img
                 v-else
@@ -58,6 +60,10 @@ export default {
         };
     },
     computed: {
+        /** v2.8.7：跟随文件管理右上角的全局视频静音开关（Vuex 持久化） */
+        videoMuted() {
+            return this.$store ? this.$store.state.globalVideoMuted : true;
+        },
         popupStyle() {
             const innerW = window.innerWidth;
             const innerH = window.innerHeight;
@@ -117,7 +123,19 @@ export default {
             this.ratio = null;
         },
         visible(v) {
-            if (!v) this.ratio = null;
+            if (!v) {
+                this.ratio = null;
+                // v2.8.7b：预览浮层消失时同步暂停视频，不允许关掉后继续播放
+                this.pauseVideo();
+            }
+        },
+        // v2.8.7b：静音开关切换时实时应用到已挂载的 video 元素
+        videoMuted(v) {
+            const el = this.$refs.videoEl;
+            if (!el) return;
+            el.muted = v;
+            // 关掉静音后若视频处于暂停（此前被浏览器策略拦下），补一次播放
+            if (!v && el.paused) el.play().catch(() => { el.muted = true; });
         },
     },
     methods: {
@@ -126,6 +144,24 @@ export default {
             const w = el.videoWidth || el.naturalWidth;
             const h = el.videoHeight || el.naturalHeight;
             if (w && h) this.ratio = w / h;
+        },
+        /**
+         * v2.8.7b：视频起播策略 —— 始终先以静音起播（浏览器 autoplay 策略对静音视频放行，
+         * 修复「开启声音模式后预览视频长时间不出画面」），可播放后再按全局开关设置声音。
+         * play() 被拒（极端场景）时回退静音重试，保证有画面。
+         */
+        startVideo() {
+            const el = this.$refs.videoEl;
+            if (!el) return;
+            el.muted = true;
+            const p = el.play();
+            if (p && typeof p.then === 'function') {
+                p.then(() => { el.muted = this.videoMuted; }).catch(() => {});
+            }
+        },
+        pauseVideo() {
+            const el = this.$refs.videoEl;
+            if (el && !el.paused) el.pause();
         },
         /**
          * v2.8.6b：贴眼四向择大定位。

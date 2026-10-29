@@ -253,6 +253,14 @@ class FileManager {
             params += `&filterTags=${encodeURIComponent(filters.tagNames.join(','))}`;
             params += `&tagMode=${filters.tagMode === 'or' ? 'or' : 'and'}`;
         }
+        // v2.8.7：日期范围筛选（按上传日期；YYYY-MM-DD，两端都含当天）
+        if (filters.dateFrom) params += `&dateFrom=${encodeURIComponent(filters.dateFrom)}`;
+        if (filters.dateTo) params += `&dateTo=${encodeURIComponent(filters.dateTo)}`;
+        // 时区偏移（JS getTimezoneOffset 约定，分钟）—— 让「今天/本周」按浏览器本地时区切边界
+        params += `&tz=${new Date().getTimezoneOffset()}`;
+        // v2.8.7：大小范围筛选（字节）
+        if ((Number(filters.sizeMin) || 0) > 0) params += `&sizeMin=${Number(filters.sizeMin)}`;
+        if ((Number(filters.sizeMax) || 0) > 0) params += `&sizeMax=${Number(filters.sizeMax)}`;
         return params;
     }
 

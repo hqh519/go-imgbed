@@ -127,6 +127,14 @@ const PUBLIC_DOMAIN_TIP =
     '读写全走内网、速度最快，访客看到的仍是图床自己的域名；' +
     '② 302 重定向模式（访客浏览器直接打开该地址）→ 必须填公网可访问的地址，否则访客打不开图片。';
 
+/** v2.8.7：内网通信域名（internalDomain）字段提示 */
+const INTERNAL_DOMAIN_TIP =
+    '可选。填容器内网 IP 或容器名作为通信地址（如 http://minio:9000/imgbed、immich:2283），' +
+    '设置后系统内部所有加载该渠道文件的地方（文件管理、文件详情、历史记录、访客图库、签发外链的代理转发等）' +
+    '都会优先用这个内网地址取流：提高加载速度、节省公网流量；' +
+    '未设置时用上面的公开访问域名，再为空则用 Endpoint。' +
+    '注意：文件详情页「存储渠道 / 备份渠道」的渠道源链接仍使用公开访问域名；302 重定向模式下外链也走公开访问域名。';
+
 
 /** 各类型的业务字段 */
 export const CHANNEL_FIELDS = {
@@ -156,7 +164,7 @@ export const CHANNEL_FIELDS = {
             placeholder: '留空将按地域自动生成',
             tip: '留空自动使用 https://cos.<region>.myqcloud.com；如使用私有或加速端点可在此覆盖。' + INTERNAL_ADDR_TIP
         }),
-        f('publicDomain', '自定义访问域名', {
+        f('publicDomain', '公开访问域名', {
             placeholder: 'https://img.example.com',
             tip: '优先用于拼接外链（如 COS 的 CDN 加速域名）。留空则按 endpoint + bucket 自动拼接。' + PUBLIC_DOMAIN_TIP
         }),
@@ -185,6 +193,7 @@ export const CHANNEL_FIELDS = {
             placeholder: 'http://minio:9000/imgbed 或 https://minio.example.com/imgbed',
             tip: 'MinIO 需将桶设为公开读；这里填写可直接访问的前缀地址（host 或 host/bucket）。' + PUBLIC_DOMAIN_TIP
         }),
+        f('internalDomain', '内网通信域名（可选）', { placeholder: 'http://minio:9000/imgbed', tip: INTERNAL_DOMAIN_TIP }),
         f('pathStyle', 'Path-Style 寻址', { type: 'switch', def: true, tip: 'MinIO 必须开启 Path-Style。' }),
         f('objectPrefix', '对象前缀（可选）', { placeholder: '{y}/{m}/', tip: OBJECT_PREFIX_TIP }),
         f('customName', '自定义文件命名（可选）', { placeholder: '{filename}-{timestamp}', tip: CUSTOM_NAME_TIP })
@@ -219,10 +228,11 @@ export const CHANNEL_FIELDS = {
         f('accessKeyId', 'Access Key ID', { required: true, secret: true }),
         f('secretAccessKey', 'Secret Access Key', { type: 'password', required: true, secret: true }),
         f('pathStyle', 'Path-Style 寻址', { type: 'switch', def: false }),
-        f('publicDomain', '自定义访问域名', {
+        f('publicDomain', '公开访问域名', {
             placeholder: 'https://cdn.example.com',
             tip: '留空则按 endpoint + bucket 自动拼接外链。' + PUBLIC_DOMAIN_TIP
         }),
+        f('internalDomain', '内网通信域名（可选）', { placeholder: 'http://s3.internal:9000', tip: INTERNAL_DOMAIN_TIP }),
         f('objectPrefix', '对象前缀（可选）', { placeholder: '{y}/{m}/', tip: OBJECT_PREFIX_TIP }),
         f('customName', '自定义文件命名（可选）', { placeholder: '{filename}-{timestamp}', tip: CUSTOM_NAME_TIP }),
         f('userAgent', '自定义 User-Agent（可选）', {
@@ -243,7 +253,7 @@ export const CHANNEL_FIELDS = {
         }),
         f('accessKeyId', 'AccessKeyId', { required: true, secret: true }),
         f('accessKeySecret', 'AccessKeySecret', { type: 'password', required: true, secret: true }),
-        f('publicDomain', '自定义访问域名', {
+        f('publicDomain', '公开访问域名', {
             placeholder: 'https://img.example.com',
             tip: '优先用于拼接外链（如 OSS 绑定的自定义域名 / CDN 加速域名）。留空则用 bucket.oss-<region>.aliyuncs.com（公共读才能直接访问）。' + PUBLIC_DOMAIN_TIP
         }),
@@ -281,7 +291,8 @@ export const CHANNEL_FIELDS = {
             tip: '文件在 multipart 表单中的字段名。EasyImages 固定为 image（不是 file！填错就会报「没有选择上传的文件」）。同样可改以适配其它图床。'
         }),
         f('responsePath', '响应 URL 路径', { placeholder: 'url', def: 'url', tip: '响应 JSON 中外链所在路径，如 url、data.url、[0].src。' }),
-        f('publicDomain', '域名重写（可选）', { placeholder: 'https://cdn.example.com', tip: PUBLIC_DOMAIN_TIP }),
+        f('publicDomain', '公开访问域名（可选）', { placeholder: 'https://cdn.example.com', tip: PUBLIC_DOMAIN_TIP }),
+        f('internalDomain', '内网通信域名（可选）', { placeholder: 'http://192.168.1.10/api/index.php', tip: INTERNAL_DOMAIN_TIP }),
         f('customDeleteUrl', '删除接口模板（可选）', { placeholder: 'https://img.example.com/app/del.php?hash=' })
     ],
     lsky: () => [
@@ -304,7 +315,8 @@ export const CHANNEL_FIELDS = {
             tip: 'Lsky Pro v2 需要指定存储策略 ID 时填写。'
         }),
         f('responsePath', '响应 URL 路径', { placeholder: 'data.links.url', def: 'data.links.url', tip: 'Lsky v1 用 data.url，v2 用 data.links.url。' }),
-        f('publicDomain', '域名重写（可选）', { placeholder: 'https://cdn.example.com', tip: PUBLIC_DOMAIN_TIP })
+        f('publicDomain', '公开访问域名（可选）', { placeholder: 'https://cdn.example.com', tip: PUBLIC_DOMAIN_TIP }),
+        f('internalDomain', '内网通信域名（可选）', { placeholder: 'http://192.168.1.10:8080', tip: INTERNAL_DOMAIN_TIP })
     ],
     webdav: () => [
         f('baseUri', 'WebDAV 地址', {
@@ -320,7 +332,8 @@ export const CHANNEL_FIELDS = {
         f('publicDomain', '公开访问域名（可选）', {
             placeholder: 'https://img.example.com',
             tip: '若网盘提供公网直链域名可填写；留空则外链回落到 WebDAV 自身地址。' + PUBLIC_DOMAIN_TIP
-        })
+        }),
+        f('internalDomain', '内网通信域名（可选）', { placeholder: 'http://nas.local:5005', tip: INTERNAL_DOMAIN_TIP })
     ],
     immich: () => [
         f('serverUrl', 'Immich 服务地址', {
@@ -334,10 +347,11 @@ export const CHANNEL_FIELDS = {
             placeholder: '留空则每张图单独创建分享链接',
             tip: '可选项：填写后不再为每张图创建分享链接，直接复用该共享 Key 生成外链（适合已配置好相册共享链接的场景）。'
         }),
-        f('domain', '自定义访问域名（可选）', {
+        f('domain', '公开访问域名（可选）', {
             placeholder: 'https://img.example.com',
             tip: '外链使用的域名（对齐 PHP 案例的 immich_domain）；留空则用上面的服务地址。' + PUBLIC_DOMAIN_TIP
-        })
+        }),
+        f('internalDomain', '内网通信域名（可选）', { placeholder: 'http://immich:2283', tip: INTERNAL_DOMAIN_TIP })
     ],
     custom: () => [
         // ---- 与 PHP 联调案例一一对应的核心字段（apiUrl / fileField / responsePath / publicDomain / headers / body），
@@ -376,10 +390,11 @@ export const CHANNEL_FIELDS = {
             def: 'url',
             tip: '对齐 PHP 案例的 custom_json_path，默认 url；支持 a.b.c、[0].src、data.list.0.url 等路径，也可用「|」写多候选（如 data.url|url|data.links.url），填 auto 或留空则自动探测主流图床的常见位置。'
         }),
-        f('publicDomain', '访问域名（可选）', {
+        f('publicDomain', '公开访问域名（可选）', {
             placeholder: 'https://cdn.example.com',
             tip: '对齐 PHP 案例的 custom_domain：把响应 URL 的域名替换为此值，用于加 CDN 或修正内网地址。' + PUBLIC_DOMAIN_TIP
         }),
+        f('internalDomain', '内网通信域名（可选）', { placeholder: 'http://192.168.1.10:8080', tip: INTERNAL_DOMAIN_TIP }),
         f('headers', '自定义请求头 (JSON)', {
             type: 'textarea',
             placeholder: '{"Authorization":"Bearer xxx","X-Custom":"1"}',

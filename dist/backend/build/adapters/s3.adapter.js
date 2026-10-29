@@ -141,13 +141,13 @@ class S3Adapter {
             throw new adapter_interface_1.AdapterError(`删除失败: ${err.message}`, channel.type);
         }
     }
-    buildDirectUrl(copy, channel) {
+    buildDirectUrl(copy, channel, preferInternal) {
         const cfg = channel.config;
         const key = copy.remoteKey;
         const suffix = (cfg.suffix || '').trim();
         const withSuffix = (u) => (suffix ? u + (suffix.startsWith('?') ? suffix : `?${suffix}`) : u);
         const pathStyle = cfg.pathStyle === 'true' || channel.type === 'minio';
-        const domain = (0, endpoint_1.ensureProtocol)(cfg.publicDomain || '').replace(/\/+$/, '');
+        const domain = (0, endpoint_1.ensureProtocol)((preferInternal && cfg.internalDomain) || cfg.publicDomain || '').replace(/\/+$/, '');
         if (domain) {
             if (pathStyle) {
                 let pathHasBucket = false;

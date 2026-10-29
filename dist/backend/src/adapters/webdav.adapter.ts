@@ -116,11 +116,12 @@ export class WebdavAdapter implements StorageAdapter {
     }
   }
 
-  buildDirectUrl(copy: CopyInfo, channel: ChannelInfo): string | null {
-    // 优先自定义公开域名（跟随配置），否则就是 WebDAV 自身地址
-    if (channel.config.publicDomain) {
+  buildDirectUrl(copy: CopyInfo, channel: ChannelInfo, preferInternal?: boolean): string | null {
+    // v2.8.7：preferInternal 时优先「内网通信域名」，其次公开域名，否则就是 WebDAV 自身地址
+    const domainRaw = (preferInternal && channel.config.internalDomain) || channel.config.publicDomain;
+    if (domainRaw) {
       // 同样支持不写协议的内网地址（如 nas.local:5005）
-      const domain = ensureProtocol(channel.config.publicDomain).replace(/\/+$/, '');
+      const domain = ensureProtocol(domainRaw).replace(/\/+$/, '');
       const dir = (channel.config.directory || '').replace(/^\/+|\/+$/g, '');
       return `${domain}/${dir ? dir + '/' : ''}${copy.remoteKey}`;
     }

@@ -54,8 +54,13 @@ export interface StorageAdapter {
   ): Promise<UploadResult>;
   /** 删除渠道内资源 */
   delete(copy: CopyInfo, channel: ChannelInfo): Promise<void>;
-  /** 按渠道当前配置构造直链（返回 null 表示无法构造） */
-  buildDirectUrl(copy: CopyInfo, channel: ChannelInfo): string | null;
+  /**
+   * 按渠道当前配置构造直链（返回 null 表示无法构造）。
+   * v2.8.7：preferInternal=true 时优先使用渠道配置的「内网通信域名」（internalDomain）——
+   * 供服务端代理拉取（/file 出口代理模式）使用，走内网提速并省公网流量；
+   * 302 重定向模式与文件详情页「渠道源链接」仍用公开访问域名（内网地址外网访客打不开）。
+   */
+  buildDirectUrl(copy: CopyInfo, channel: ChannelInfo, preferInternal?: boolean): string | null;
 }
 
 export class AdapterError extends Error {

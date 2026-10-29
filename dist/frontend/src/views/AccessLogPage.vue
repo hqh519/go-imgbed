@@ -726,6 +726,22 @@ export default {
     width: 100%;
   }
 
+  /* v2.8.7c：筛选区此前被日期控件的固有宽度撑出屏幕右侧（整条 topbar-right 370px > 可用 351px），
+     这里显式给它定宽并允许收缩，让 width:100% 有确定的参照系 */
+  .topbar-left,
+  .topbar-right {
+    max-width: 100%;
+    min-width: 0;
+  }
+
+  .topbar-right {
+    flex: 1 1 100%;
+  }
+
+  .topbar-right > * {
+    min-width: 0;
+  }
+
   /* v2.4.0：Element Plus 的 daterange 默认固定 350px（特异性更高），
      会把筛选行撑出屏幕右侧 —— 这里提高特异性强制收窄 */
   .topbar-right .filter-search,
@@ -734,6 +750,7 @@ export default {
   .topbar-right .filter-date.el-date-editor--daterange {
     width: 100% !important;
     max-width: 100%;
+    min-width: 0 !important;
     box-sizing: border-box;
   }
 

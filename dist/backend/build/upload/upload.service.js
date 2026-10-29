@@ -607,7 +607,8 @@ let UploadService = class UploadService {
     }
     async dedupScope() {
         try {
-            return (await this.settings.get('dedupScope', 'all')) === 'channel' ? 'channel' : 'all';
+            const v = await this.settings.get('dedupScope', 'all');
+            return v === 'channel' ? 'channel' : v === 'channelType' ? 'channelType' : 'all';
         }
         catch {
             return 'all';
@@ -723,19 +724,22 @@ let UploadService = class UploadService {
                 select: {
                     name: true,
                     originalName: true,
-                    copies: { select: { channelId: true, status: true, isPrimary: true } },
+                    copies: { select: { channelId: true, status: true, isPrimary: true, channel: { select: { name: true, type: true } } } },
                 },
             });
             let hit = dup;
-            if (dup && scope === 'channel') {
+            if (dup && scope !== 'all') {
                 const primaryCopy = dup.copies.find((c) => c.isPrimary) || dup.copies[0];
-                if (!primaryCopy || primaryCopy.channelId !== main.id) {
+                const scopeHit = scope === 'channel'
+                    ? (primaryCopy?.channel?.name || '') === main.name
+                    : (primaryCopy?.channel?.type || '') === main.type;
+                if (!primaryCopy || !scopeHit) {
                     hit = null;
-                    app_log_1.appLog.info('upload', `去重跳过：${originalName} 与已有文件 ${dup.name} 内容相同，但渠道不同（去重范围为「仅同一渠道」）`, `目标渠道=${main.name} ｜ 已有文件渠道=${primaryCopy ? primaryCopy.channelId : '未知'}`, uploadIp);
+                    app_log_1.appLog.info('upload', `去重跳过：${originalName} 与已有文件 ${dup.name} 内容相同，但渠道${scope === 'channel' ? '名称' : '类型'}不同（去重范围为「${scope === 'channel' ? '同一渠道名称内' : '同一渠道类型内'}」）`, `目标渠道=${main.name}（类型=${main.type}） ｜ 已有文件渠道=${primaryCopy?.channel?.name || '未知'}（类型=${primaryCopy?.channel?.type || '未知'}）`, uploadIp);
                 }
             }
             if (hit) {
-                app_log_1.appLog.info('upload', `命中去重：${originalName} 与已有文件 ${hit.originalName}（${hit.name}）内容相同，复用已有外链`, `md5=${md5} ｜ 原始大小=${originalSize}B ｜ 范围=${scope === 'channel' ? `同渠道（${main.name}）` : '全部渠道'}`, uploadIp);
+                app_log_1.appLog.info('upload', `命中去重：${originalName} 与已有文件 ${hit.originalName}（${hit.name}）内容相同，复用已有外链`, `md5=${md5} ｜ 原始大小=${originalSize}B ｜ 范围=${scope === 'channel' ? `同一渠道名称内（${main.name}）` : scope === 'channelType' ? `同一渠道类型内（${main.type}）` : '全部渠道'}`, uploadIp);
                 return { id: hit.name, dedup: true, finalName: originalName };
             }
         }

@@ -15,6 +15,10 @@ class ImmichAdapter {
         const base = (0, endpoint_1.ensureProtocol)(channel.config.domain || channel.config.serverUrl || '').replace(/\/+$/, '');
         return base;
     }
+    internalLinkBase(channel) {
+        const base = (0, endpoint_1.ensureProtocol)(channel.config.internalDomain || channel.config.domain || channel.config.serverUrl || '').replace(/\/+$/, '');
+        return base;
+    }
     async upload(file, key, channel) {
         const cfg = channel.config;
         if (!cfg.serverUrl || !cfg.apiKey)
@@ -108,11 +112,11 @@ class ImmichAdapter {
         if (!resp.ok)
             throw new adapter_interface_1.AdapterError(`删除失败: HTTP ${resp.status}`, channel.type);
     }
-    buildDirectUrl(copy, channel) {
+    buildDirectUrl(copy, channel, preferInternal) {
         const [assetId, shareKey] = copy.remoteKey.split('|');
         if (!assetId)
             return null;
-        const base = this.linkBase(channel);
+        const base = preferInternal ? this.internalLinkBase(channel) : this.linkBase(channel);
         if (!base)
             return null;
         if (!shareKey)

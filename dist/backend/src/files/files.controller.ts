@@ -716,6 +716,15 @@ export class LinkController {
 
     const candidates: { url: string; label: string }[] = [];
     /**
+     * v2.8.7：先取外链模式 —— 决定直链用「内网通信域名」还是公开访问域名：
+     *   · 代理模式（默认）：服务端自己拉源文件 → 优先内网域名（提速 + 省公网流量）；
+     *   · 302 重定向：浏览器直连源站 → 内网地址外网打不开，仍用公开访问域名。
+     * 文件详情页「存储渠道 / 备份渠道」源链接走 serializeFile 的 directUrlResolver
+     * （不带 preferInternal），同样保持公开访问域名。
+     */
+    const mode = await this.settings.getLinkMode();
+    const preferInternal = mode !== 'redirect';
+    /**
      * 本地存储渠道没有「渠道直链」，必须由服务端直接读盘下发。
      * 只有在它之前没有任何可用的 URL 候选时才走本地 —— 保持「主渠道优先」的既有语义：
      *   主渠道是 COS → 走 COS；主渠道是本地存储 → 直接读盘。
@@ -736,7 +745,7 @@ export class LinkController {
         config: this.channels.decryptConfig(ch.type, ch.config),
         metas: {},
       };
-      const url = createAdapter(info).buildDirectUrl(toCopyInfo(copy), info);
+      const url = createAdapter(info).buildDirectUrl(toCopyInfo(copy), info, preferInternal);
       if (url) candidates.push({ url, label: ch.name });
     }
     if (candidates.length === 0) {
@@ -744,23 +753,20 @@ export class LinkController {
       return;
     }
 
-    const mode = await this.settings.getLinkMode();
-    if (mode === 'redirect') {
-      // 302（临时）+ no-cache：后台一键切换渠道、改配置域名，下一次访问立即生效。
-      // 302 模式由源站直接下发原文件，图片尺寸参数不参与（忽略）。
-      res.setHeader('Cache-Control', 'no-cache, max-age=0');
-      return res.redirect(302, candidates[0].url);
-    }
     // 图片尺寸处理（?width=&height=&fit=）：仅代理模式生效，且只对可缩放的位图类型生效
     // （gif 含多帧动画、svg 为矢量，sharp 处理会丢帧/转码，均跳过按原图返回）
     const t = await this.resolveImageTransform(req);
     if (t.error) return res.status(400).send(t.error);
     const imgExt = fileExtOf(record.name).toLowerCase().replace(/^\./, '');
     const scalable = ['jpg', 'jpeg', 'png', 'webp', 'avif'].includes(imgExt);
-    if ((t.width || t.height) && scalable) {
+    if ((t.width || t.height) && scalable && preferInternal) {
       return this.serveTransformedImage(res, candidates, t);
     }
-    return this.proxyStream(req, res, candidates);
+    if (preferInternal) return this.proxyStream(req, res, candidates);
+    // 302（临时）+ no-cache：后台一键切换渠道、改配置域名，下一次访问立即生效。
+    // 302 模式由源站直接下发原文件，图片尺寸参数不参与（忽略）。
+    res.setHeader('Cache-Control', 'no-cache, max-age=0');
+    return res.redirect(302, candidates[0].url);
   }
 }
 
@@ -861,6 +867,28 @@ export class ManageController {
     const fBackup = splitCsv(q.backup);
     const fRedirect = splitCsv(q.redirect);
 
+    /*
+     * v2.8.7：日期 / 大小范围筛选（与搜索、搜索类型、用户、回收站状态、其余筛选条件
+     * 全部一起做联合过滤 —— 有值的条件同时生效，返回满足全部条件的交集）。
+     * 日期按「上传日期 createdAt」，前端传 YYYY-MM-DD（两端都含当天）；
+     * tz = 浏览器 getTimezoneOffset()（分钟），按用户本地时区切当天边界，
+     * 避免「今天 / 本周」在 UTC 容器里被切成前一天的 16:00。
+     */
+    const dateFrom = /^\d{4}-\d{2}-\d{2}$/.test(String(q.dateFrom || '')) ? String(q.dateFrom) : '';
+    const dateTo = /^\d{4}-\d{2}-\d{2}$/.test(String(q.dateTo || '')) ? String(q.dateTo) : '';
+    const tzMin = Number(q.tz);
+    const tzOffset = Number.isFinite(tzMin) ? Math.max(-840, Math.min(840, tzMin)) : 0;
+    const dayStartMs = (date: string) => {
+      const [y, m, d] = date.split('-').map(Number);
+      // getTimezoneOffset() 为「本地 = UTC - offset」：东八区返回 -480，
+      // 本地当天 00:00 的真实时刻 = Date.UTC(...) + offset 分钟
+      return Date.UTC(y, m - 1, d) + tzOffset * 60_000;
+    };
+    const fromMs = dateFrom ? dayStartMs(dateFrom) : 0;
+    const toMs = dateTo ? dayStartMs(dateTo) + 86_400_000 - 1 : 0;
+    const sizeMin = Math.max(0, Number(q.sizeMin) || 0);
+    const sizeMax = Math.max(0, Number(q.sizeMax) || 0);
+
     const rows = await prisma.fileRecord.findMany({
       where: { status: 'active', ...(ownerFilter ? { uploader: ownerFilter } : {}) },
       include: {
@@ -958,6 +986,17 @@ export class ManageController {
           (fAccess.includes('white') && listType === 'White');
         if (!ok) return false;
       }
+
+      // v2.8.7：日期范围（按上传日期 createdAt；两端含当天）
+      if (fromMs || toMs) {
+        const t = r.createdAt ? new Date(r.createdAt).getTime() : 0;
+        if (!t) return false;
+        if (fromMs && t < fromMs) return false;
+        if (toMs && t > toMs) return false;
+      }
+      // v2.8.7：大小范围（按文件当前大小 size，字节；0 = 不限）
+      if (sizeMin > 0 && (r.size || 0) < sizeMin) return false;
+      if (sizeMax > 0 && (r.size || 0) > sizeMax) return false;
       return true;
     });
 
@@ -1335,21 +1374,76 @@ export class ManageController {
    * 普通用户只能看到自己移入的文件；附带渠道概要（恢复/彻底删除时前端可直接展示影响面）。
    */
   @Get('trash')
-  async trashList(@Req() req: Request) {
+  async trashList(@Req() req: Request, @Query() q: Record<string, string>) {
     const owner = this.admin(req) ? '' : currentSession(req)?.user || '';
     const rows = await prisma.fileRecord.findMany({
       where: { status: 'deleted', ...(owner ? { uploader: owner } : {}) },
-      include: { copies: { select: { channelId: true, isPrimary: true, status: true } } },
+      // v2.8.7b：附带渠道信息 —— channelName 筛选需要按渠道「名称」匹配（此前误用 channelId 匹配导致恒不命中）
+      include: { copies: { select: { channelId: true, isPrimary: true, status: true, channel: { select: { name: true } } } } },
       orderBy: { deletedAt: 'desc' },
       take: 500,
     });
-    const channelIds = Array.from(new Set(rows.flatMap((r) => r.copies.map((c) => c.channelId))));
+
+    /*
+     * v2.8.7：回收站同样支持联合筛选 —— 与普通列表同一套参数：
+     * search / fileType / uploadSource / channelName / 日期(dateFrom/dateTo/tz) / 大小(sizeMin/sizeMax)。
+     * 搜索、筛选、用户归属、回收站状态全部一起生效（交集）。
+     */
+    const search = (q.search || '').trim().toLowerCase();
+    const fFileType = splitCsv(q.fileType);
+    const fUploadSource = splitCsv(q.uploadSource).map((s) => normalizeUploadSource(s));
+    const fChannelName = splitCsv(q.channelName);
+    const dateFrom = /^\d{4}-\d{2}-\d{2}$/.test(String(q.dateFrom || '')) ? String(q.dateFrom) : '';
+    const dateTo = /^\d{4}-\d{2}-\d{2}$/.test(String(q.dateTo || '')) ? String(q.dateTo) : '';
+    const tzMin = Number(q.tz);
+    const tzOffset = Number.isFinite(tzMin) ? Math.max(-840, Math.min(840, tzMin)) : 0;
+    const dayStartMs = (date: string) => {
+      const [y, m, d] = date.split('-').map(Number);
+      // getTimezoneOffset() 为「本地 = UTC - offset」：东八区返回 -480，
+      // 本地当天 00:00 的真实时刻 = Date.UTC(...) + offset 分钟
+      return Date.UTC(y, m - 1, d) + tzOffset * 60_000;
+    };
+    const fromMs = dateFrom ? dayStartMs(dateFrom) : 0;
+    const toMs = dateTo ? dayStartMs(dateTo) + 86_400_000 - 1 : 0;
+    const sizeMin = Math.max(0, Number(q.sizeMin) || 0);
+    const sizeMax = Math.max(0, Number(q.sizeMax) || 0);
+
+    const filtered = rows.filter((r) => {
+      if (search) {
+        const hit =
+          r.name.toLowerCase().includes(search) ||
+          r.originalName.toLowerCase().includes(search) ||
+          (r.uploader || '').toLowerCase().includes(search) ||
+          (r.folder || '').toLowerCase().includes(search) ||
+          (r.md5 || '').toLowerCase().includes(search);
+        if (!hit) return false;
+      }
+      if (fFileType.length && !fFileType.includes(fileTypeOf(r.mime))) return false;
+      if (fUploadSource.length && !fUploadSource.includes(normalizeUploadSource(r.uploadSource))) return false;
+      if (fChannelName.length) {
+        // v2.8.7b：按渠道「名称」匹配（与 /api/manage/list 同口径）；此前用 channelId 匹配导致筛选恒为空
+        const primary = r.copies.find((c) => c.isPrimary) || r.copies[0];
+        const primaryName = String(primary?.channel?.name || '');
+        if (!fChannelName.includes(primaryName)) return false;
+      }
+      if (fromMs || toMs) {
+        const t = r.createdAt ? new Date(r.createdAt).getTime() : 0;
+        if (!t) return false;
+        if (fromMs && t < fromMs) return false;
+        if (toMs && t > toMs) return false;
+      }
+      if (sizeMin > 0 && (r.size || 0) < sizeMin) return false;
+      if (sizeMax > 0 && (r.size || 0) > sizeMax) return false;
+      return true;
+    });
+
+    const channelIds = Array.from(new Set(filtered.flatMap((r) => r.copies.map((c) => c.channelId))));
     const channels = await prisma.channel.findMany({
       where: { id: { in: channelIds } },
       select: { id: true, name: true, type: true },
     });
     const chMap = new Map(channels.map((c) => [c.id, c]));
-    const items = rows.map((r) => ({
+    const items = filtered.map((r) => ({
       id: r.id,
       name: r.name,
       originalName: r.originalName,

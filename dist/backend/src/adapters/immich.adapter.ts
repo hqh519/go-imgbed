@@ -36,6 +36,14 @@ export class ImmichAdapter implements StorageAdapter {
     return base;
   }
 
+  /** v2.8.7：内网通信域名（preferInternal 时优先，未配置回落对外域名 / 服务地址） */
+  private internalLinkBase(channel: ChannelInfo): string {
+    const base = ensureProtocol(
+      channel.config.internalDomain || channel.config.domain || channel.config.serverUrl || '',
+    ).replace(/\/+$/, '');
+    return base;
+  }
+
   async upload(file: { buffer: Buffer; mime: string; originalName: string }, key: string, channel: ChannelInfo): Promise<UploadResult> {
     const cfg = channel.config;
     if (!cfg.serverUrl || !cfg.apiKey) throw new AdapterError('缺少 serverUrl / apiKey 配置', channel.type);
@@ -143,10 +151,10 @@ export class ImmichAdapter implements StorageAdapter {
     if (!resp.ok) throw new AdapterError(`删除失败: HTTP ${resp.status}`, channel.type);
   }
 
-  buildDirectUrl(copy: CopyInfo, channel: ChannelInfo): string | null {
+  buildDirectUrl(copy: CopyInfo, channel: ChannelInfo, preferInternal?: boolean): string | null {
     const [assetId, shareKey] = copy.remoteKey.split('|');
     if (!assetId) return null;
-    const base = this.linkBase(channel);
+    const base = preferInternal ? this.internalLinkBase(channel) : this.linkBase(channel);
     if (!base) return null;
     // 无分享 key 时退化为原始资源地址（Immich 需登录，仅作兜底）
     if (!shareKey) return `${base}/api/assets/${assetId}/original`;

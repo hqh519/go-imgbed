@@ -200,11 +200,13 @@ export class AliyunOssAdapter implements StorageAdapter {
    *   自定义访问域名（CDN / 绑定域名）优先，直接拼 key；
    *   否则按寻址风格拼 OSS 默认域名（bucket.endpoint 或 endpoint/bucket）。
    */
-  buildDirectUrl(copy: CopyInfo, channel: ChannelInfo): string | null {
+  buildDirectUrl(copy: CopyInfo, channel: ChannelInfo, preferInternal?: boolean): string | null {
     const cfg = channel.config;
     const key = copy.remoteKey;
     const suffix = cfg.suffix || '';
-    const domain = ensureProtocol(cfg.publicDomain || '').replace(/\/+$/, '');
+    const domain = ensureProtocol(
+      (preferInternal && cfg.internalDomain) || cfg.publicDomain || '',
+    ).replace(/\/+$/, '');
     if (domain) return withSuffix(`${domain}/${encodeObjectPath(key)}`, suffix);
 
     const endpoint = resolveOssEndpoint(cfg).replace(/\/+$/, '');

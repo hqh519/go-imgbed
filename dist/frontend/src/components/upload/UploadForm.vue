@@ -1155,6 +1155,9 @@ methods: {
         files.forEach(req => {
             const item = this.fileList.find(i => i.uid === req.file.uid)
             if (!item) return // 已被用户删除，跳过
+            // v2.8.7：被幂等拦截的条目（后端确认该文件早已上传成功）不参与重试，
+            // 否则每轮重试都会再撞一次「已上传完成」，永远循环
+            if (item.dupBlocked) return
             item.progreess = 0
             item.status = 'uploading'
             // 重试属于「本轮用户已发起的上传」，不受手动上传模式的入列拦截
@@ -1334,7 +1337,32 @@ methods: {
             })
 
             if (!initResponse.data.success) {
-                throw new Error(this.$t('uploadForm.chunkInitFailed') + ': ' + initResponse.data.message)
+                // v2.8.7：completed=true 表示该文件其实早已上传成功（旧会话已完成），
+                // 后端拒绝重传 —— 不要进失败重试队列（否则会无限循环提示）
+                if (initResponse.data.completed) {
+                    const dupItem = this.fileList.find(item => item.uid === file.file.uid)
+                    if (dupItem) {
+                        dupItem.status = 'exception'
+                        dupItem.dupBlocked = true
+                        dupItem.compressing = false
+                    }
+                    this.$message({
+                        type: 'warning',
+                        message: this.$t('uploadForm.alreadyUploaded', { name: this.truncateFilename(file.file.name) }),
+                        duration: 5000
+                    })
+                    console.warn('[upload] 幂等拦截：该文件已上传完成，跳过重传', file.file.name)
+                } else {
+                    throw new Error(this.$t('uploadForm.chunkInitFailed') + ': ' + initResponse.data.message)
+                }
+                return
+            }
+
+            // v2.8.7：后端命中「已完成会话」并直接返还上次的上传结果 → 不再重传，直接按成功处理
+            if (initResponse.data.completed && Array.isArray(initResponse.data.result)) {
+                console.log('[upload] 幂等命中：该文件已上传成功，直接复用已有结果', file.file.name)
+                file.onSuccess({ data: initResponse.data.result }, file.file)
+                return
             }
 
             const uploadId = initResponse.data.uploadId
@@ -1464,11 +1492,18 @@ methods: {
             }
 
             // 第三步：所有分块上传完成，发送合并请求
-            this.$message({
+            // v2.8.7：合并提示只弹一条（重试不再叠加），成功/失败后精确关闭这条
+            const mergeItem = this.fileList.find(item => item.uid === file.file.uid)
+            if (mergeItem && mergeItem._mergeToast && mergeItem._mergeToast.close) {
+                try { mergeItem._mergeToast.close() } catch (e) { /* 忽略 */ }
+                mergeItem._mergeToast = null
+            }
+            const mergeToast = this.$message({
                 type: 'info',
                 message: this.$t('uploadForm.chunkMerging'),
                 duration: 0 // 不自动关闭
             })
+            if (mergeItem) mergeItem._mergeToast = mergeToast
             // 合并阶段后端会顺带压缩（仅「文件压缩」开关开启 + 视频/音频）：
             // v2.4.0 只在真的会压缩时才打「压缩中」标识，开关关闭不再误显
             if (fileItem && needServerCompress) fileItem.compressing = true
@@ -1509,9 +1544,15 @@ methods: {
                 }
             }
             if (mergeError) throw mergeError
-            
-            // 关闭提示
-            this.$message.closeAll()
+
+            // 关闭合并提示（v2.8.7：精确关闭本条，不再 closeAll 误伤其它提示）
+            try {
+                const doneItem = this.fileList.find(item => item.uid === file.file.uid)
+                if (doneItem && doneItem._mergeToast && doneItem._mergeToast.close) {
+                    doneItem._mergeToast.close()
+                    doneItem._mergeToast = null
+                }
+            } catch (e) { /* 忽略 */ }
 
             // 同步处理完成
             file.onSuccess(response, file.file)
@@ -1528,6 +1569,11 @@ methods: {
             // 只有用户主动移除条目或清空列表才删（见 releaseItem / clearFileList）。
             const failedItem = this.fileList.find(item => item.uid === file.file.uid)
             if (failedItem) failedItem.keepSessionOnError = true
+            // v2.8.7：失败也要关掉「正在合并」的长驻提示
+            if (failedItem && failedItem._mergeToast && failedItem._mergeToast.close) {
+                try { failedItem._mergeToast.close() } catch (e) { /* 忽略 */ }
+                failedItem._mergeToast = null
+            }
             
             if (err.response && err.response.status !== 401) {
                 this.exceptionList.push(file)
@@ -1649,6 +1695,11 @@ methods: {
      */
     releaseItem(file) {
         if (!file) return
+        // v2.8.7：条目移除时顺手关掉它的「正在合并」长驻提示
+        if (file._mergeToast && file._mergeToast.close) {
+            try { file._mergeToast.close() } catch (e) { /* 忽略 */ }
+            file._mergeToast = null
+        }
         try {
             if (file.url && String(file.url).startsWith('blob:')) URL.revokeObjectURL(file.url)
         } catch (e) { /* 忽略 */ }

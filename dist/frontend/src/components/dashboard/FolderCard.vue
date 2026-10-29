@@ -38,11 +38,7 @@
                             <font-awesome-icon icon="file-export"></font-awesome-icon>
                         </button>
                     </el-tooltip>
-                    <el-tooltip :disabled="disableTooltip" :content="$t('dashboard.delete')" placement="top" :show-after="600">
-                        <button class="overlay-btn is-danger" @click.stop="$emit('delete')">
-                            <font-awesome-icon icon="trash-alt"></font-awesome-icon>
-                        </button>
-                    </el-tooltip>
+                    <!-- v2.8.7：文件夹卡片悬浮层移除「删除」按钮（删除走批量操作栏 / 列表视图，避免悬浮误触） -->
                 </div>
             </div>
         </div>

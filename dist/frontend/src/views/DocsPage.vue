@@ -113,6 +113,7 @@ const ZH = {
         { t: '自定义 Web 通道', d: '只需「上传接口地址 + 文件表单字段名 + 响应 URL 路径」三件套；需要鉴权或附加参数时，用「自定义请求头 (JSON)」与「附加表单字段 (JSON)」。请求方法可选 POST/PUT/PATCH，请求体可选 multipart 或 JSON+Base64。' },
         { t: '主渠道与备份渠道', d: '主渠道同步上传（决定上传耗时），备份渠道异步双写（不阻塞响应）。每个渠道可单独启用/禁用。' },
         { t: '停用渠道（v2.8.6）', d: '关掉某个渠道右上角的启用开关后：它不会出现在任何渠道下拉 / 渠道选择里（上传设置、Token、用户管理、系统状态一致），也不再接受任何来源的上传 —— 网页、WebDAV、API 显式指定该渠道时会直接报「渠道已停用」，不会静默改投别的渠道。' },
+        { t: '公开访问域名 / 内网通信域名（v2.8.7）', d: '各渠道编辑页的域名字段统一命名为「公开访问域名」。简单图床、兰空图床、Immich、MinIO、S3、WebDAV、自定义Web 还支持「内网通信域名（可选）」：填容器内网 IP 或容器名后，系统内部加载该渠道文件的所有地方（文件管理、详情、历史记录、访客图库、签发外链的代理转发）都优先走内网取流 —— 提速且省公网流量；为空则用公开访问域名，再为空用 Endpoint。文件详情页「存储渠道 / 备份渠道」的渠道源链接始终用公开访问域名（内网地址外网打不开）。302 重定向模式下外链同样走公开访问域名。' },
         { t: '容量限制', d: '勾选「启用容量限制」后才会出现「容量上限」「告警阈值」；超出阈值的渠道不再参与上传分流，避免写满。' },
         { t: '测试连接', d: '新增或编辑渠道时可点「测试连接」验证配置，成功会返回一条可点击查看的直链。' },
         {
@@ -145,7 +146,8 @@ const ZH = {
         { t: '为什么用原始大小', d: '同一份原文件在不同压缩档位下压出来的字节数并不稳定（JPEG 重编码、ffmpeg 转码都有浮动）。用压缩后的体积比对，会出现「同一个文件却判不成重复」，所以统一按原始大小 + 原始 MD5 比对。' },
         { t: 'MD5 口径', d: '文件记录里的 MD5 存的是原始文件内容的 MD5，原样上传的历史记录同样能被命中；老数据缺失原始大小时用当前大小兜底。' },
         { t: '去重范围：所有渠道之间', d: '只要 MD5 与大小相同即视为重复（默认模式，最省空间）。' },
-        { t: '去重范围：仅同一渠道内', d: '按渠道 ID 比对（渠道名可改，不作依据）：同一份文件可以分别落到不同渠道。' },
+        { t: '去重范围：同一渠道类型内（v2.8.7b）', d: '先比对渠道类型，类型相同再比大小与 MD5 —— 同一类型（如多个 S3 渠道）之间互相去重，不同类型各存一份。' },
+        { t: '去重范围：同一渠道名称内（v2.8.7b）', d: '先比对渠道名称，名称相同再比大小与 MD5：同一份文件可以分别落到不同渠道（同名渠道之间仍会去重）。' },
         { t: '开关位置', d: '后台「存储与分发设置」里去重开关与去重范围可随时切换，关闭后每次都真实上传。' }
       ]
     },
@@ -172,7 +174,10 @@ const ZH = {
             '可组合使用：风景 #山 -#水'
           ]
         },
-        { t: '筛选', d: '支持访问状态、黑白名单、审查结果、文件类型、存储渠道类型、渠道名称，以及「已备份 / 未备份」。' },
+        { t: '筛选弹窗（v2.8.7）', d: '右上角筛选按钮改为弹窗，内含四个标签页：「常规」= 原有全部条件（访问状态 / 黑白名单 / 审查结果 / 文件类型 / 备份状态 / 重定向 / 渠道类型 / 渠道名称 / 上传方式）；「标签」= 有无标签 + 具体标签多选（多选时可选「任一命中 / 全部命中」）；「日期」= 今天 / 昨天 / 前天 / 本周内 / 上周内 / 本月内 / 本年内快捷选项 + 日历自选范围；「大小」= 小于100K / 1M / 10M / 100M、大于100M 快捷选项 + 自定义最小/最大值。弹窗固定为视口高度的 96% 且水平垂直居中，切换标签页不跳动；任一标签页有值时，筛选按钮显示角标、对应标签名上显示小圆点提示。所有条件与搜索框、搜索范围、用户筛选、回收站状态一起提交后端联合查询（回收站内同样生效）。顶栏原先独立的「标签」按钮已移除，标签筛选统一在弹窗「标签」页操作（v2.8.7c）。' },
+        { t: '视频静音开关（v2.8.7）', d: '右上角「回收站」旁新增声音按钮：默认静音（喇叭斜杠图标），此时预览浮层与文件详情页的视频都不出声；点击切换为有声（喇叭图标），两处视频即可播放声音。视频始终先以静音快速起播、再按开关设置声音（避免有声模式下浏览器拦截自动播放导致画面长时间出不来）；关闭文件详情弹窗或预览浮层消失时，正在播放的视频 / 音频会被彻底停止（媒体元素随弹窗关闭直接销毁，不会被后台缓冲或页面操作重新拉起；再次打开详情页会重新加载并起播，v2.8.7c）。开关状态跨页面记忆。' },
+        { t: '防重复上传（v2.8.7）', d: '大文件「正在合并」期间若遇到网络异常 / 页面误判失败，自动重试不再产生重复文件：合并接口幂等（已完成会话直接返回上次结果），已上传成功的文件再次提交会被拦截并提示「此前已上传成功」。「正在合并」提示也不再重复叠加。' },
+        { t: '移动端文件管理（v2.8.7）', d: '列表视图在存储渠道简称后显示文件大小；批量选择 / 视图切换 / 排序那一行改为单行左右滑动；文件夹卡片悬浮层不再显示删除按钮（删除走批量操作栏）。' },
         { t: '排序', d: '按上传时间、文件大小、原始文件名、显示文件名，以及按访问次数。' },
         { t: '访问次数', d: '外链每次被真实访问（下发文件）都会累计一次；管理后台预览不计入，避免刷新后台刷爆计数。卡片视图悬浮可见，列表视图有独立列。' },
         { t: '预览小眼睛（v2.8.6）', d: '图片 / 视频卡片第三行左侧的小眼睛：PC 鼠标悬停即弹出大图预览，移动端长按小眼睛弹出（居中显示，松手收起）；列表视图在移动端长按缩略图同样弹出预览。' },
@@ -346,6 +351,7 @@ const EN = {
         { t: 'Custom Web channel', d: 'Only three things are required: upload endpoint, file form field name and response URL path. Use the custom headers / extra form fields JSON for auth or extra params. Legacy token/headers/extraFields fields are still accepted.' },
         { t: 'Main & backup channel', d: 'The main channel uploads synchronously (drives latency); the backup channel is written asynchronously and never blocks the response. Each channel can be enabled independently.' },
         { t: 'Disabled channels (v2.8.6)', d: 'Turning a channel off removes it from every channel dropdown / picker (upload settings, tokens, user management, status page) and it no longer accepts uploads from any source: web, WebDAV or API requests that name it explicitly get a clear "channel disabled" error instead of silently landing on another channel.' },
+        { t: 'Public / internal domain (v2.8.7)', d: 'Channel domain fields are now uniformly labeled "public access domain". EasyImages, Lsky, Immich, MinIO, S3, WebDAV and custom Web channels also support an optional "internal communication domain": set it to a container IP or container name and every internal file load (file manager, detail, history, public gallery, proxy fetching for issued links) prefers the internal address - faster and saves public traffic; falls back to the public domain, then the endpoint. The detail page "storage / backup channel" source links always use the public domain, and 302 redirect mode also uses the public domain.' },
         { t: 'Quota', d: 'Enable the quota switch to reveal the limit and alert threshold. Channels above the threshold stop receiving new uploads.' },
         { t: 'Test connection', d: 'Use "Test connection" when adding or editing a channel; a successful test returns a clickable direct link.' },
         {
@@ -378,7 +384,8 @@ const EN = {
         { t: 'Why the original size', d: 'The compressed byte count of the same source file is not stable across quality settings (JPEG re-encoding, ffmpeg transcoding both vary). Comparing post-compression sizes makes the same file look like a new one, so the original size + original MD5 are used.' },
         { t: 'MD5 semantics', d: 'The MD5 stored on a record is the MD5 of the original file content, so older as-is uploads still match. Legacy rows without an original size fall back to the current size.' },
         { t: 'Scope: across all channels', d: 'Same MD5 + same size means duplicate (default, saves the most space).' },
-        { t: 'Scope: within the same channel', d: 'Compared by channel ID (names can change), so the same file can live in different channels.' },
+        { t: 'Scope: same channel type (v2.8.7b)', d: 'Compares channel type first, then size + MD5 — dedupes among channels of the same type (e.g. multiple S3 channels), while different types each keep a copy.' },
+        { t: 'Scope: same channel name (v2.8.7b)', d: 'Compares channel name first, then size + MD5: the same file can live in different channels (channels sharing a name still dedupe).' },
         { t: 'Toggle', d: 'The dedup switch and scope live in the storage/distribution settings; turn it off to always upload for real.' }
       ]
     },
@@ -405,7 +412,10 @@ const EN = {
             'Combine freely: landscape #mountain -#water'
           ]
         },
-        { t: 'Filters', d: 'Access status, black/white list, review result, file type, storage channel type, channel name, and backed up / not backed up.' },
+        { t: 'Filter dialog (v2.8.7)', d: 'The filter button now opens a dialog with four tabs: "General" (all original conditions: access status, black/white list, review result, file type, backup status, redirect, channel type / name, upload method), "Tags" (tag presence plus multi-select specific tags with any/all match), "Date" (quick picks: today / yesterday / day before yesterday / this week / last week / this month / this year, plus a calendar range), and "Size" (<100K / <1M / <10M / <100M / >100M quick picks plus custom min/max). The dialog is fixed at 96% of the viewport height, centered both ways, with no jump when switching tabs; any tab with values shows a badge on the button and a dot on the tab label. All conditions combine with the search box, search scope, user filter and trash state into one backend query (also effective inside the trash). The former standalone tag button in the toolbar has been removed — tag filtering now lives in the Tags tab of the dialog (v2.8.7c).' },
+        { t: 'Video mute toggle (v2.8.7)', d: 'A sound button next to the trash button: muted by default (hover preview and file detail videos stay silent); click to enable sound. Videos always start muted for instant playback and then follow the toggle (browsers block unmuted autoplay, which previously stalled the picture); closing the detail dialog or dismissing the hover preview stops any playing video/audio for good — the media elements are destroyed on close and cannot be revived by background buffering or page updates; reopening the dialog reloads and replays (v2.8.7c). The choice is remembered across pages.' },
+        { t: 'Duplicate-upload guard (v2.8.7)', d: 'Retrying after a network hiccup during "merging" no longer creates duplicate files: the merge endpoint is idempotent (a completed session returns the previous result) and re-submitting an already-uploaded file is blocked with a clear notice. The "merging" toast no longer stacks.' },
+        { t: 'Mobile file manager (v2.8.7)', d: 'List view shows the file size next to the channel badge; the checkbox / view / sort row becomes a single horizontally scrollable line; the folder card hover layer no longer shows a delete button (use the batch action bar).' },
         { t: 'Sorting', d: 'By upload time, file size, raw name, display name, and by view count.' },
         { t: 'View count', d: 'Incremented on every real external access; admin previews are excluded so refreshing the console does not inflate it. Hover a card to see it, or check the list column.' },
         { t: 'Preview eye (v2.8.6)', d: 'The eye icon on the left of a card\'s third row: hover on PC to preview the full image/video; long-press on mobile to preview (centered, release to close). In list view, long-press the thumbnail on mobile for the same preview.' },

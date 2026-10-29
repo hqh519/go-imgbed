@@ -80,6 +80,8 @@
                         :title="bk.full"
                     >{{ bk.short }}</span>
                 </template>
+                <!-- v2.8.7：移动端在渠道简称后面补文件大小（PC 端第三列已有大小，隐藏避免重复） -->
+                <span class="channel-size">{{ fileSizeDisplay }}</span>
             </div>
         </div>
         <!-- 4. 大小（上）/ 上传用户（中）/ 上传时间（下）
@@ -503,6 +505,20 @@ export default {
     background: color-mix(in srgb, var(--el-color-warning) 12%, transparent);
     color: var(--el-color-warning);
     border-color: color-mix(in srgb, var(--el-color-warning) 40%, transparent);
+}
+
+/* v2.8.7：渠道行内文件大小 —— 只在移动端显示（PC 端右侧第三列已有大小列） */
+.channel-size {
+    display: none;
+    font-size: 11px;
+    opacity: 0.65;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+@media (hover: none) and (pointer: coarse) {
+    .channel-size {
+        display: inline;
+    }
 }
 
 /* v2.6.0：文件夹统计行（名称下方） */

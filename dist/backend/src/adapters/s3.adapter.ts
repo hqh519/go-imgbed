@@ -215,7 +215,7 @@ export class S3Adapter implements StorageAdapter {
    *   未配置公开域名时回退 endpoint 推导；endpoint 缺协议会自动补齐
    *   （内网 / 容器名补 http，公网域名补 https，见 common/endpoint.ts）。
    */
-  buildDirectUrl(copy: CopyInfo, channel: ChannelInfo): string | null {
+  buildDirectUrl(copy: CopyInfo, channel: ChannelInfo, preferInternal?: boolean): string | null {
     const cfg = channel.config;
     const key = copy.remoteKey;
     // COS 等支持在 URL 末尾追加图片处理参数（对齐 PHP 案例的 tencent_suffix）
@@ -224,7 +224,8 @@ export class S3Adapter implements StorageAdapter {
     const pathStyle = cfg.pathStyle === 'true' || channel.type === 'minio';
 
     // 外链域名同样允许不写协议（如填 minio:9000/imgbed 走内网）：内网补 http、公网补 https
-    const domain = ensureProtocol(cfg.publicDomain || '').replace(/\/+$/, '');
+    // v2.8.7：preferInternal 时优先「内网通信域名」（服务端代理拉取走内网）
+    const domain = ensureProtocol((preferInternal && cfg.internalDomain) || cfg.publicDomain || '').replace(/\/+$/, '');
     if (domain) {
       // MinIO 的公开域名一般只到 host（不含 bucket）→ 补 bucket。
       // ⚠️ 判断「域名里是否已含 bucket」必须按 URL 的路径分段比较：

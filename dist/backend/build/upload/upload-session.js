@@ -6,6 +6,9 @@ exports.newId = newId;
 exports.createSession = createSession;
 exports.getSession = getSession;
 exports.findSessionByKey = findSessionByKey;
+exports.findCompletedSessionByKey = findCompletedSessionByKey;
+exports.claimMergeLock = claimMergeLock;
+exports.releaseMergeLock = releaseMergeLock;
 exports.touchSession = touchSession;
 exports.receivedChunks = receivedChunks;
 exports.writeChunk = writeChunk;
@@ -119,6 +122,55 @@ async function findSessionByKey(uploadKey) {
     }
     return best;
 }
+async function findCompletedSessionByKey(uploadKey) {
+    if (!uploadKey)
+        return null;
+    let dirs = [];
+    try {
+        dirs = await fs_1.promises.readdir(sessionsRoot());
+    }
+    catch {
+        return null;
+    }
+    const now = Date.now();
+    let best = null;
+    for (const d of dirs) {
+        if (!ID_RE.test(d))
+            continue;
+        const s = await getSession(d);
+        if (!s || !s.completedAt)
+            continue;
+        if (s.uploadKey !== uploadKey)
+            continue;
+        if (now - s.updatedAt > COMPLETED_TTL_MS)
+            continue;
+        if (!best || s.updatedAt > best.updatedAt)
+            best = s;
+    }
+    return best;
+}
+async function claimMergeLock(session) {
+    const now = Date.now();
+    if (session.mergingAt && now - session.mergingAt < 10 * 60_000)
+        return false;
+    session.mergingAt = now;
+    session.updatedAt = now;
+    try {
+        await writeJsonAtomic(manifestPath(session.uploadId), session);
+    }
+    catch {
+    }
+    return true;
+}
+async function releaseMergeLock(session) {
+    session.mergingAt = 0;
+    session.updatedAt = Date.now();
+    try {
+        await writeJsonAtomic(manifestPath(session.uploadId), session);
+    }
+    catch {
+    }
+}
 async function touchSession(s) {
     s.updatedAt = Date.now();
     try {
@@ -186,9 +238,14 @@ async function mergeSession(session) {
     }
     return { path: merged, size: total };
 }
-async function markSessionCompleted(session) {
+async function markSessionCompleted(session, result) {
     session.completedAt = Date.now();
     session.updatedAt = session.completedAt;
+    session.mergingAt = 0;
+    if (result && result.fileId) {
+        session.mergeFileId = result.fileId;
+        session.mergeName = result.name;
+    }
     await writeJsonAtomic(manifestPath(session.uploadId), session);
 }
 async function removeSession(uploadId) {

@@ -251,11 +251,12 @@ export class HttpPostAdapter implements StorageAdapter {
   }
 
   /** 直链：custom 渠道存了完整 URL（remoteUrl），访问时检测域名是否需替换 */
-  buildDirectUrl(copy: CopyInfo, channel: ChannelInfo): string | null {
+  buildDirectUrl(copy: CopyInfo, channel: ChannelInfo, preferInternal?: boolean): string | null {
     const cfg = channel.config;
     let url = copy.remoteUrl;
     if (!url) return null;
-    url = normalizeUrl(url, cfg.publicDomain, cfg.apiUrl);
+    // v2.8.7：preferInternal 时域名替换优先用「内网通信域名」
+    url = normalizeUrl(url, (preferInternal && cfg.internalDomain) || cfg.publicDomain, cfg.apiUrl);
     return url;
   }
 }

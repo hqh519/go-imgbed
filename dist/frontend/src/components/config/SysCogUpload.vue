@@ -152,6 +152,7 @@
                         @change="(v) => saveStorage({ dedupScope: v })"
                     >
                         <el-radio-button label="all">{{ $t('sysUpload.dedupScopeAll') }}</el-radio-button>
+                        <el-radio-button label="channelType">{{ $t('sysUpload.dedupScopeChannelType') }}</el-radio-button>
                         <el-radio-button label="channel">{{ $t('sysUpload.dedupScopeChannel') }}</el-radio-button>
                     </el-radio-group>
                     <el-tooltip placement="top" raw-content>
@@ -743,7 +744,8 @@ export default {
                         proxyTimeoutMs: d.proxyTimeoutMs ?? 15000,
                         proxyCacheSeconds: d.proxyCacheSeconds ?? 86400,
                         dedupEnabled: d.dedupEnabled === true,
-                        dedupScope: d.dedupScope === 'channel' ? 'channel' : 'all',
+                        // v2.8.7b：all / channelType（同一渠道类型内）/ channel（同一渠道名称内）
+                        dedupScope: d.dedupScope === 'channelType' ? 'channelType' : d.dedupScope === 'channel' ? 'channel' : 'all',
                         customDomain: d.customDomain || ''
                     };
                 }

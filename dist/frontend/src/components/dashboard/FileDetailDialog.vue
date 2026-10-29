@@ -106,8 +106,11 @@
                     <QRCodeBox :value="qrValue" :size="qrSize" :empty-text="$t('fileDetail.qrEmpty')" />
                 </template>
                 <template v-else>
-                    <video v-if="isVideo" :src="fileLink" autoplay muted loop class="video-preview" @click="openImageLink"></video>
-                    <audio v-else-if="isAudio" :src="fileLink" controls autoplay class="audio-preview"></audio>
+                    <!-- v2.8.7b：视频始终静音起播（修复开启声音模式后长时间不出画面），可播放后再按全局开关设置声音；关闭弹窗时暂停 -->
+                    <!-- v2.8.7c：mediaMounted 控制 —— 关闭弹窗即销毁媒体元素（彻底停止播放、
+                         不会再被后台缓冲的 canplay 触发复活），重新打开时重建元素并主动起播 -->
+                    <video v-if="isVideo && mediaMounted" ref="detailVideo" :src="fileLink" muted loop class="video-preview" @click="openImageLink" @canplay="startDetailVideo"></video>
+                    <audio v-else-if="isAudio && mediaMounted" ref="detailAudio" :src="fileLink" controls class="audio-preview" @canplay="startDetailAudio"></audio>
                     <el-image
                         v-else-if="isImage"
                         :src="fileLink"
@@ -427,6 +430,16 @@ export default {
     },
     emits: ['update:modelValue', 'download', 'tagManagement', 'block', 'white', 'delete', 'restore', 'purge', 'metadataUpdated', 'fileRenamed'],
     watch: {
+        /** v2.8.7c：弹窗开着时切换了文件（同一实例复用）—— 重建媒体并重新起播 */
+        fileLink() {
+            if (!this.visible) return;
+            this.mediaMounted = true;
+            this.mediaAutoStarted = false;
+            this.$nextTick(() => {
+                this.startDetailVideo();
+                this.startDetailAudio();
+            });
+        },
         visible(val) {
             if (!val) {
                 // 关闭弹窗时退出编辑状态
@@ -436,14 +449,32 @@ export default {
                 this.noteVisible = false;
                 this.noteText = '';
                 this.expiryAt = 0;
+                // v2.8.7c：关闭弹窗先暂停、再销毁媒体元素 —— 彻底结束视频 / 音频，
+                // 不留后台元素等 canplay / 重渲染把它再拉起来
+                this.pauseDetailMedia();
+                this.mediaMounted = false;
                 return;
             }
+            // v2.8.7c：打开时重建媒体元素并主动起播（元素是新的，canplay 一定会再次触发，
+            // 修复「关闭后再打开同一个详情页视频不加载」）
+            this.mediaMounted = true;
+            this.mediaAutoStarted = false;
+            this.$nextTick(() => {
+                this.startDetailVideo();
+                this.startDetailAudio();
+            });
             // 打开时补拉一次元数据：限时截止时间 / 作者备注只在详情接口下发
             this.loadExtraMeta();
         }
     },
     data() {
         return {
+            // v2.8.7c：媒体元素挂载开关 —— 只在弹窗打开时渲染 video / audio，
+            // 关闭即销毁（彻底停止播放、杜绝后台复活），重开重建保证重新加载
+            mediaMounted: false,
+            // v2.8.7c：每次打开只自动起播一次（canplay 会随缓冲多次触发，不设防会把
+            // 用户手动暂停的视频再拉起来）
+            mediaAutoStarted: false,
             activeTab: 'originUrl',
             isEditing: false,
             editForm: {
@@ -483,6 +514,10 @@ export default {
         }
     },
     computed: {
+        /** v2.8.7：全局视频静音开关（文件管理右上角按钮；本弹窗被多页面共用，取不到 store 时默认静音） */
+        videoMuted() {
+            return this.$store ? this.$store.state.globalVideoMuted : true;
+        },
         /** 二维码内容：优先用签发外链（原始链接），没有则退回当前文件链接 */
         qrValue() {
             return String(this.urls?.originUrl || this.fileLink || '').trim();
@@ -846,6 +881,38 @@ export default {
             const video = e.target;
             if (video.paused) video.play();
             else video.pause();
+        },
+        /**
+         * v2.8.7b：详情视频起播策略 —— 始终先静音起播（浏览器 autoplay 策略对静音放行，
+         * 修复「开启声音模式后详情视频长时间不出画面」），可播放后再按全局开关设置声音。
+         * v2.8.7c：弹窗已关闭时直接返回（canplay 可能在关闭后因后台缓冲再次触发，
+         * 不设防会把刚关掉的video重新拉起来）。
+         */
+        startDetailVideo() {
+            const el = this.$refs.detailVideo;
+            if (!el || !this.visible || this.mediaAutoStarted) return;
+            this.mediaAutoStarted = true;
+            el.muted = true;
+            const p = el.play();
+            if (p && typeof p.then === 'function') {
+                p.then(() => { if (this.visible) el.muted = this.videoMuted; })
+                 .catch(() => { console.log('[fileDetail] 详情视频自动播放被浏览器策略拒绝，等待用户手动播放'); });
+            }
+        },
+        /** v2.8.7b：音频自动播放（unmuted autoplay 被浏览器策略拒绝时静默降级，用户可手点 controls 播放） */
+        startDetailAudio() {
+            const el = this.$refs.detailAudio;
+            if (!el || !this.visible || this.mediaAutoStarted) return;
+            this.mediaAutoStarted = true;
+            const p = el.play();
+            if (p && typeof p.catch === 'function') p.catch(() => { console.log('[fileDetail] 详情音频自动播放被浏览器策略拒绝，等待用户手动播放'); });
+        },
+        /** v2.8.7c：关闭详情弹窗时暂停正在播放的视频 / 音频（随后元素即被销毁） */
+        pauseDetailMedia() {
+            const v = this.$refs.detailVideo;
+            if (v && !v.paused) v.pause();
+            const a = this.$refs.detailAudio;
+            if (a && !a.paused) a.pause();
         },
         handleTabClick() {},
         async handleUrlClick(e) {

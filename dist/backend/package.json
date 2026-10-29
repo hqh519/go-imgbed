@@ -1,6 +1,6 @@
 {
   "name": "go-imgbed-backend",
-  "version": "2.8.6",
+  "version": "2.8.7",
   "description": "go-imgbed 图床系统后端（NestJS + TypeScript + Prisma + SQLite）",
   "private": true,
   "scripts": {

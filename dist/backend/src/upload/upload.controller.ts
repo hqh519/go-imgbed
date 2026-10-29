@@ -13,14 +13,17 @@ import { isClientUploadSource, normalizeUploadSource } from '../common/file-view
 import { resolveVideoFromHtml } from './video-resolve';
 import { appLog } from '../common/app-log';
 import {
+  claimMergeLock,
   createSession,
   createStaging,
+  findCompletedSessionByKey,
   findSessionByKey,
   getSession,
   getStaging,
   markSessionCompleted,
   mergeSession,
   receivedChunks,
+  releaseMergeLock,
   removeSession,
   removeStaging,
   stagingFilePath,
@@ -309,6 +312,35 @@ export class UploadController {
       const uploadKey = String(body.uploadKey || q.uploadKey || '').slice(0, 200);
 
       if (uploadKey) {
+        /*
+         * v2.8.7：先查「已完成」的旧会话 —— 文件可能早已上传成功（例如上次合并
+         * 实际成功但响应丢失 / 前端误判失败进重试队列），这里直接把上次的结果
+         * 返还，绝不让前端重传整份文件造成重复落库。
+         */
+        const done = await findCompletedSessionByKey(uploadKey);
+        if (done && done.totalChunks === totalChunks) {
+          if (done.mergeFileId) {
+            appLog.info(
+              'upload',
+              `幂等命中：${originalName} 已上传完成（会话 ${done.uploadId}），跳过重传直接返回已有结果`,
+              `uploadKey=${uploadKey}`,
+            );
+            return res.json({
+              success: true,
+              completed: true,
+              uploadId: done.uploadId,
+              received: [],
+              resumed: false,
+              result: [{ src: await this.signedSrc(done.mergeFileId, req), name: done.mergeName || done.originalName }],
+            });
+          }
+          appLog.warn(
+            'upload',
+            `幂等拦截：${originalName} 的会话 ${done.uploadId} 已完成但未记录结果，拒绝重传`,
+            `uploadKey=${uploadKey}`,
+          );
+          return res.json({ success: false, completed: true, message: '该文件已上传完成，请到文件管理确认，不要重复上传' });
+        }
         const exist = await findSessionByKey(uploadKey);
         if (exist && exist.totalChunks === totalChunks) {
           const received = await receivedChunks(exist.uploadId);
@@ -336,37 +368,76 @@ export class UploadController {
       }
 
       if (q.merge === 'true') {
+        /*
+         * v2.8.7：合并幂等 + 并发锁。
+         * 此前同一会话收到重复 merge 请求（前端自动重试 / 响应丢失后再来一次）
+         * 会把文件重新写一遍渠道、再落一条记录 —— 这就是「重复上传多份相同文件」
+         * 的直接来源。现在：
+         *   · 会话已完成 → 有结果直接返回结果；没结果（历史会话）明确拒绝；
+         *   · 合并进行中（10 分钟内的锁）→ 拒绝并发请求；
+         *   · 合并成功把 fileId/name 写进 manifest，之后永远幂等。
+         */
+        if (session.completedAt) {
+          if (session.mergeFileId) {
+            appLog.info(
+              'upload',
+              `合并重入：${session.originalName} 已上传完成，直接返回已有结果（不重复落库）`,
+              `uploadId=${session.uploadId}`,
+            );
+            return res.json([
+              { src: await this.signedSrc(session.mergeFileId, req), name: session.mergeName || session.originalName },
+            ]);
+          }
+          appLog.warn(
+            'upload',
+            `合并重入被拒：${session.originalName} 的会话已完成但未记录结果`,
+            `uploadId=${session.uploadId}`,
+          );
+          return res.status(400).json({ success: false, completed: true, message: '该文件已上传完成，请到文件管理确认，不要重复提交' });
+        }
+        if (!(await claimMergeLock(session))) {
+          appLog.warn(
+            'upload',
+            `并发合并被拒：${session.originalName} 正在合并中，忽略重复的合并请求`,
+            `uploadId=${session.uploadId}`,
+          );
+          return res.status(400).json({ success: false, message: '该文件正在合并中，请耐心等待，不要重复提交' });
+        }
         let merged: { path: string; size: number };
         try {
           merged = await mergeSession(session);
+          const originalName = fixFilename(body.originalFileName || session.originalName);
+          try {
+            const r = await this.svc.upload(
+              {
+                buffer: Buffer.alloc(0),
+                path: merged.path,
+                size: merged.size,
+                mime: session.mime,
+                originalName,
+              },
+              // 合并请求的时刻不是上传起点：用第一片 init 的时刻算时长
+              { ...opts, uploadStartedAt: new Date(session.startedAt || arrivedAt) },
+            );
+            if (r.error) {
+              // 写渠道失败：分片保留 24h，前端重试合并即可，不需要重传 500MB
+              appLog.error('upload', `分片合并后写渠道失败：${originalName}`, r.error);
+              return res.status(500).json({ success: false, message: r.error });
+            }
+            await markSessionCompleted(session, { fileId: r.id, name: r.finalName || originalName });
+            return res.json([{ src: await this.signedSrc(r.id, req), name: r.finalName || originalName }]);
+          } catch (err) {
+            appLog.error('upload', `分片合并后上传异常：${session.originalName}`, (err as Error).message);
+            return res.status(500).json({ success: false, message: (err as Error).message });
+          }
         } catch (err) {
           const msg = (err as Error).message || '分片合并失败';
           appLog.warn('upload', `分片合并失败：${session.originalName}`, msg);
           // 会话与分片全部保留，前端可直接重试合并（不必重传）
           return res.status(400).json({ success: false, message: msg });
-        }
-        const originalName = fixFilename(body.originalFileName || session.originalName);
-        try {
-          const r = await this.svc.upload(
-            {
-              buffer: Buffer.alloc(0),
-              path: merged.path,
-              size: merged.size,
-              mime: session.mime,
-              originalName,
-            },
-            // 合并请求的时刻不是上传起点：用第一片 init 的时刻算时长
-            { ...opts, uploadStartedAt: new Date(session.startedAt || arrivedAt) },
-          );
-          if (r.error) {
-            // 写渠道失败：分片保留 24h，前端重试合并即可，不需要重传 500MB
-            return res.status(500).json({ success: false, message: r.error });
-          }
-          await markSessionCompleted(session);
-          return res.json([{ src: await this.signedSrc(r.id, req), name: r.finalName || originalName }]);
-        } catch (err) {
-          appLog.error('upload', `分片合并后上传异常：${originalName}`, (err as Error).message);
-          return res.status(500).json({ success: false, message: (err as Error).message });
+        } finally {
+          // 无论成败都释放锁，前端随后的重试合并才进得来
+          await releaseMergeLock(session);
         }
       }
 

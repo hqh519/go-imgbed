@@ -103,9 +103,10 @@ class WebdavAdapter {
             throw new adapter_interface_1.AdapterError(`WebDAV DELETE 失败: HTTP ${resp.status}`, channel.type);
         }
     }
-    buildDirectUrl(copy, channel) {
-        if (channel.config.publicDomain) {
-            const domain = (0, endpoint_1.ensureProtocol)(channel.config.publicDomain).replace(/\/+$/, '');
+    buildDirectUrl(copy, channel, preferInternal) {
+        const domainRaw = (preferInternal && channel.config.internalDomain) || channel.config.publicDomain;
+        if (domainRaw) {
+            const domain = (0, endpoint_1.ensureProtocol)(domainRaw).replace(/\/+$/, '');
             const dir = (channel.config.directory || '').replace(/^\/+|\/+$/g, '');
             return `${domain}/${dir ? dir + '/' : ''}${copy.remoteKey}`;
         }

@@ -85,8 +85,12 @@ video {
         border-radius: 14px !important;
     }
 
+    /* v2.8.7c：align-center 弹窗在 flex 遮罩层里交给 align-items:center 垂直居中；
+       此前这里的 margin-top:auto 会吸收全部剩余空间把弹窗压到底部（趋势预览日期弹窗、
+       筛选弹窗在手机上不居中的根因），改为 0 交还 flex 居中 */
     .el-dialog.is-align-center:not(.is-fullscreen) {
-        margin-top: auto !important;
+        margin-top: 0 !important;
+        margin-bottom: 0 !important;
     }
 
     .el-dialog__header,

@@ -41,6 +41,11 @@ export interface UploadSession {
   updatedAt: number;
   /** 合并成功并已落库的时间；有值表示后续只等备份读完就清理 */
   completedAt?: number;
+  /** v2.8.7：合并进行中的时间戳（防并发重复合并/重复落库；完成或失败后清零） */
+  mergingAt?: number;
+  /** v2.8.7：合并成功后落库的文件记录（幂等依据 —— 重复 merge 请求直接返回这份结果） */
+  mergeFileId?: string;
+  mergeName?: string;
 }
 
 export interface StagedFile {
@@ -155,6 +160,61 @@ export async function findSessionByKey(uploadKey: string): Promise<UploadSession
   return best;
 }
 
+/**
+ * v2.8.7：按前端指纹找「已完成」的会话（保留期内）。
+ * 用于失败重试场景 —— 文件其实早已上传成功，前端再来 init 时不许新建会话重传，
+ * 直接把上次的上传结果还给前端（幂等），否则每重试一轮就多落一份重复文件。
+ */
+export async function findCompletedSessionByKey(uploadKey: string): Promise<UploadSession | null> {
+  if (!uploadKey) return null;
+  let dirs: string[] = [];
+  try {
+    dirs = await fsp.readdir(sessionsRoot());
+  } catch {
+    return null;
+  }
+  const now = Date.now();
+  let best: UploadSession | null = null;
+  for (const d of dirs) {
+    if (!ID_RE.test(d)) continue;
+    const s = await getSession(d);
+    if (!s || !s.completedAt) continue;
+    if (s.uploadKey !== uploadKey) continue;
+    if (now - s.updatedAt > COMPLETED_TTL_MS) continue;
+    if (!best || s.updatedAt > best.updatedAt) best = s;
+  }
+  return best;
+}
+
+/**
+ * v2.8.7：尝试占住合并锁（防同一会话被并发/重复 merge）。
+ * 锁有效期 10 分钟 —— 超时视为上一次合并异常退出，允许重新占锁。
+ * @returns true = 占到锁；false = 已有合并在进行中
+ */
+export async function claimMergeLock(session: UploadSession): Promise<boolean> {
+  const now = Date.now();
+  if (session.mergingAt && now - session.mergingAt < 10 * 60_000) return false;
+  session.mergingAt = now;
+  session.updatedAt = now;
+  try {
+    await writeJsonAtomic(manifestPath(session.uploadId), session);
+  } catch {
+    /* manifest 写失败不阻塞合并（与 touchSession 同理，TTL 有目录 mtime 兜底） */
+  }
+  return true;
+}
+
+/** v2.8.7：释放合并锁（合并成功/失败都要调，否则 10 分钟内该会话无法再次合并） */
+export async function releaseMergeLock(session: UploadSession): Promise<void> {
+  session.mergingAt = 0;
+  session.updatedAt = Date.now();
+  try {
+    await writeJsonAtomic(manifestPath(session.uploadId), session);
+  } catch {
+    /* 同上，静默 */
+  }
+}
+
 export async function touchSession(s: UploadSession): Promise<void> {
   s.updatedAt = Date.now();
   try {
@@ -234,9 +294,22 @@ export async function mergeSession(session: UploadSession): Promise<{ path: stri
   return { path: merged, size: total };
 }
 
-export async function markSessionCompleted(session: UploadSession): Promise<void> {
+/**
+ * 标记会话完成。
+ * v2.8.7：同时把上传结果（fileId/name）写进 manifest —— 这是合并幂等的依据，
+ * 任何迟到的重复 merge 请求都直接返回这份结果，绝不再次落库。
+ */
+export async function markSessionCompleted(
+  session: UploadSession,
+  result?: { fileId: string; name: string },
+): Promise<void> {
   session.completedAt = Date.now();
   session.updatedAt = session.completedAt;
+  session.mergingAt = 0;
+  if (result && result.fileId) {
+    session.mergeFileId = result.fileId;
+    session.mergeName = result.name;
+  }
   await writeJsonAtomic(manifestPath(session.uploadId), session);
 }
 
