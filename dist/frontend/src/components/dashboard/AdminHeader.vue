@@ -220,8 +220,20 @@ export default {
         width: 100%;
     }
 
-    .admin-header-content :deep(.search-area > .filter-trigger),
-    .admin-header-content :deep(.search-area > *:not(.search-card):not(.tag-filter-badge):not(.refresh-files-btn):not(.dashboard-header-buttons)) {
+    /*
+     * v2.8.9：移动端顶行顺序调整为「搜索 筛选 → 刷新 回收站 → 更多」——
+     * 搜索 / 筛选按钮 order 提前到刷新组之前，间距收紧（margin 4px），
+     * 保证五个按钮一行显示完整；刷新组保持 margin-left:auto 靠右。
+     */
+    .admin-header-content :deep(.search-area > .mobile-search-trigger),
+    .admin-header-content :deep(.search-area > .filter-trigger) {
+        order: 1;
+        flex: 0 0 auto;
+        margin-left: 0;
+        margin-right: 4px;
+    }
+
+    .admin-header-content :deep(.search-area > *:not(.search-card):not(.tag-filter-badge):not(.refresh-files-btn):not(.dashboard-header-buttons):not(.filter-trigger):not(.mobile-search-trigger)) {
         order: 4;
         flex: 0 0 auto;
         margin-left: 8px;
@@ -234,11 +246,11 @@ export default {
      * 「更多菜单」一起顶到右侧，形成「…… 刷新 回收站 声音 更多」的右对齐排列。
      */
     .admin-header-content :deep(.search-area > .dashboard-header-buttons) {
-        order: 1;
+        order: 2;
         margin-left: auto;
         display: flex;
         align-items: center;
-        gap: 6px;
+        gap: 4px;
     }
 
     /* 容器内已有 6px 间距，去掉按钮自带的 2px 左边距，避免桌面/移动端间距不一致 */

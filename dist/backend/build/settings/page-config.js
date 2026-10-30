@@ -106,12 +106,12 @@ exports.PAGE_CONFIG_DEFAULTS = {
         },
         {
             "id": "showDirectorySuggestions",
-            "label": "目录候选项",
-            "label_en": "Directory Suggestions",
+            "label": "上传目录选项",
+            "label_en": "Upload Directory Options",
             "type": "boolean",
             "default": true,
-            "tooltip": "控制上传页面是否展示目录树选择器",
-            "tooltip_en": "Show directory tree picker on upload page",
+            "tooltip": "开启后前台上传页右上角显示目录输入框、右下角快捷栏显示「目录选择」。关闭后两处一并隐藏，上传将使用「默认上传目录」（留空则按年份/月份自动分类）",
+            "tooltip_en": "When on, the upload page shows the folder input at the top right and the Directory button in the quick toolbar. When off both are hidden and uploads use Default Upload Directory",
             "category": "客户端设置",
             "category_en": "Client Settings"
         },
@@ -192,12 +192,33 @@ exports.PAGE_CONFIG_DEFAULTS = {
         },
         {
             "id": "defaultAutoRetry",
-            "label": "自动重试",
-            "label_en": "Auto Retry",
+            "label": "失败自动重试",
+            "label_en": "Auto Retry on Failure",
             "type": "boolean",
             "default": true,
-            "tooltip": "上传失败时自动切换到下一个可用渠道重试（v2.8.8 起由后台统一配置，前台不再提供开关）",
-            "tooltip_en": "Automatically switch to the next available channel when an upload fails. Since v2.8.8 this is configured here only; the upload page no longer shows a switch",
+            "tooltip": "总开关：开启后上传失败会自动重试（前台上传 / 链接转存 / WebDAV / API 全部生效），同时决定前台上传设置里「其他 → 失败自动重试」开关是否显示；关闭后所有入口都不再自动重试，失败项停在列表里等手动处理",
+            "tooltip_en": "Master switch: failed uploads are retried automatically (web upload, link transfer, WebDAV and API all covered). It also controls whether the Auto retry switch appears in the upload settings dialog. When off nothing retries automatically",
+            "category": "客户端设置",
+            "category_en": "Client Settings"
+        },
+        {
+            "id": "defaultRetryTimes",
+            "label": "失败重试次数",
+            "label_en": "Retry Attempts",
+            "placeholder": "3",
+            "tooltip": "留空默认 3 次；填 0 表示不限制（会一直重试到成功或被手动停止）。达到该次数后停止重试，失败文件保留在列表里",
+            "tooltip_en": "Defaults to 3 when empty; 0 means unlimited (retries until success or manual stop). Once the limit is reached retries stop and failed files stay in the list",
+            "category": "客户端设置",
+            "category_en": "Client Settings"
+        },
+        {
+            "id": "defaultAutoSwitch",
+            "label": "自动切换存储库",
+            "label_en": "Auto Switch Storage Pool",
+            "type": "boolean",
+            "default": true,
+            "tooltip": "建立在「失败自动重试」之上：仅当失败自动重试开启时本项才显示并生效——上传失败重试期间自动切换到下一个可用渠道（优先「设为备用库」的渠道池，按轮转顺序尝试）。关闭后重试仍执行，但只在主渠道上重试，不切换渠道；失败自动重试关闭时本项隐藏且完全不执行",
+            "tooltip_en": "Depends on Auto Retry on Failure: this item only shows and takes effect when auto retry is on — on failure, retries switch to the next available channel (backup pool first, rotated). When off, retries still run but stay on the main channel; hidden and disabled entirely when auto retry is off",
             "category": "客户端设置",
             "category_en": "Client Settings"
         },
@@ -209,6 +230,28 @@ exports.PAGE_CONFIG_DEFAULTS = {
             "default": true,
             "tooltip": "开启后：上传 H.265/HEVC、ProRes、MPEG-4 Part 2 等浏览器无法播放编码的视频时，服务器自动转码为 H.264（需 ffmpeg，已内置）。已经是 H.264/AV1/VP9 的视频不会转码，无额外开销。与压缩开关相互独立",
             "tooltip_en": "When on: videos encoded in H.265/HEVC, ProRes or MPEG-4 Part 2 (which browsers cannot play) are automatically transcoded to H.264 (requires ffmpeg, bundled). H.264/AV1/VP9 videos pass through untouched. Independent of the compression switch",
+            "hint": "可在用户编辑中对用户单独开启",
+            "hint_en": "Can be enabled per user in user edit",
+            "category": "客户端设置",
+            "category_en": "Client Settings"
+        },
+        {
+            "id": "videoTranscodeMaxSeconds",
+            "label": "视频转码上限时长(秒)",
+            "label_en": "Transcode Time Limit (s)",
+            "placeholder": "600",
+            "tooltip": "留空默认 600 秒；填 0 表示不限制。预估耗时或实际执行耗时超过该值即放弃这个视频的转码，保留原文件与外链",
+            "tooltip_en": "Defaults to 600s when empty; 0 means unlimited. If the estimated or actual time exceeds it, transcoding for that video is abandoned and the original file is kept",
+            "category": "客户端设置",
+            "category_en": "Client Settings"
+        },
+        {
+            "id": "videoTranscodeConcurrency",
+            "label": "同时处理任务数（转码）",
+            "label_en": "Concurrent Transcode Jobs",
+            "placeholder": "1",
+            "tooltip": "留空默认 1；填 0 表示不限制。全局同时执行的转码任务路数，低配机器建议保持 1",
+            "tooltip_en": "Defaults to 1 when empty; 0 means unlimited. Global concurrency for transcoding jobs; keep 1 on low-end hardware",
             "category": "客户端设置",
             "category_en": "Client Settings"
         },
@@ -251,6 +294,26 @@ exports.PAGE_CONFIG_DEFAULTS = {
             "placeholder": "80",
             "tooltip": "压缩后体积占原文件的百分比，范围 10-100。例如填 80 表示把原文件压缩到约 80% 的体积",
             "tooltip_en": "Target size as a percentage of the original (10-100). e.g. 80 means compress to ~80% of original size",
+            "category": "客户端设置",
+            "category_en": "Client Settings"
+        },
+        {
+            "id": "compressMaxSeconds",
+            "label": "压缩文件上限时长(秒)",
+            "label_en": "Compress Time Limit (s)",
+            "placeholder": "600",
+            "tooltip": "留空默认 600 秒；填 0 表示不限制。预估耗时或实际执行耗时超过该值即放弃压缩，保留原文件",
+            "tooltip_en": "Defaults to 600s when empty; 0 means unlimited. If the estimated or actual time exceeds it, compression is abandoned and the original file is kept",
+            "category": "客户端设置",
+            "category_en": "Client Settings"
+        },
+        {
+            "id": "compressConcurrency",
+            "label": "同时处理任务数（压缩）",
+            "label_en": "Concurrent Compress Jobs",
+            "placeholder": "1",
+            "tooltip": "留空默认 1；填 0 表示不限制。全局同时执行的压缩任务路数，低配机器建议保持 1",
+            "tooltip_en": "Defaults to 1 when empty; 0 means unlimited. Global concurrency for compression jobs; keep 1 on low-end hardware",
             "category": "客户端设置",
             "category_en": "Client Settings"
         },
@@ -322,6 +385,8 @@ exports.PAGE_CONFIG_DEFAULTS = {
             "default": 1024,
             "tooltip": "单位 MB，留空默认 1024。分片/暂存上传已落盘，可放心调大（如 1024）以上传大视频；超过上限仍会被拒绝",
             "tooltip_en": "Unit: MB. Defaults to 1024 when empty. Chunked/staged uploads are written to disk, so a larger value (e.g. 1024) is safe for big videos",
+            "hint": "可在用户编辑中对用户单独开启",
+            "hint_en": "Can be enabled per user in user edit",
             "category": "客户端设置",
             "category_en": "Client Settings"
         }

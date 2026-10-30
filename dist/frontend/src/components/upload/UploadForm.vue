@@ -202,6 +202,37 @@
                                         </template>
                                     </el-dropdown>
                                 </el-tooltip>
+                                <!--
+                                    v2.8.9： 「转换为WebP」移到「文件压缩」正后方，交互与文件压缩一致
+                                    （点图标展开「转换为WebP + 开关」）；后台总开关关闭时整颗按钮不加载。
+                                -->
+                                <el-tooltip v-if="webpEnabled" :disabled="disableTooltip" :content="$t('upload.convertToWebp')" placement="top" :show-after="1000">
+                                    <el-dropdown>
+                                        <button
+                                            type="button"
+                                            class="modern-action-btn modern-action-btn-webp"
+                                            :class="{ 'is-active': convertToWebp }"
+                                            :aria-pressed="convertToWebp"
+                                            :aria-label="$t('upload.convertToWebp')"
+                                        >
+                                            <font-awesome-icon icon="file-image" />
+                                        </button>
+                                        <template #dropdown>
+                                            <el-dropdown-menu class="modern-dropdown-menu">
+                                                <el-dropdown-item>
+                                                    <div class="modern-dropdown-item-content">
+                                                        <span>{{ $t('upload.convertToWebp') }}</span>
+                                                        <el-switch
+                                                            :model-value="convertToWebp"
+                                                            @update:model-value="$emit('update:convertToWebp', $event)"
+                                                            size="small"
+                                                        />
+                                                    </div>
+                                                </el-dropdown-item>
+                                            </el-dropdown-menu>
+                                        </template>
+                                    </el-dropdown>
+                                </el-tooltip>
                                 <el-tooltip :disabled="disableTooltip" :content="$t('upload.copyAll')" placement="top" :show-after="1000">
                                     <el-dropdown trigger="hover" @command="copyAll">
                                         <button
@@ -235,30 +266,10 @@
                                     </el-dropdown>
                                 </el-tooltip>
                                 <!--
-                                    v2.8.8：「自动重试」开关已迁到后台（其他设置 → 上传相关配置），
-                                    这里只保留「重试失败」按钮本体。
+                                    v2.8.9：顶栏「失败重试」图标按钮移除 —— 自动重试开关已迁后台
+                                    （其他设置 → 上传相关配置 → 失败自动重试），前台不再保留该入口。
+                                    失败项仍可在列表内单独重试，无需顶栏按钮。
                                 -->
-                                <el-tooltip :disabled="disableTooltip" :content="$t('upload.retryFailed')" placement="top" :show-after="1000">
-                                    <button class="modern-action-btn modern-action-btn-retry" @click="retryError">
-                                        <font-awesome-icon icon="redo" />
-                                    </button>
-                                </el-tooltip>
-                                <!--
-                                    v2.8.8：「转换为WebP」从上传设置弹窗搬到列表顶栏（原自动重试所在位置），
-                                    紧挨「清空」按钮左侧；后台「WebP转换」总开关关闭时整颗按钮不加载。
-                                -->
-                                <el-tooltip v-if="webpEnabled" :disabled="disableTooltip" :content="$t('upload.convertToWebp')" placement="top" :show-after="1000">
-                                    <button
-                                        type="button"
-                                        class="modern-action-btn modern-action-btn-webp"
-                                        :class="{ 'is-active': convertToWebp }"
-                                        :aria-pressed="convertToWebp"
-                                        :aria-label="$t('upload.convertToWebp')"
-                                        @click="$emit('update:convertToWebp', !convertToWebp)"
-                                    >
-                                        <font-awesome-icon icon="file-image" />
-                                    </button>
-                                </el-tooltip>
                                 <el-tooltip :disabled="disableTooltip" :content="$t('upload.clearList')" placement="top" :show-after="1000">
                                     <el-dropdown>
                                         <button class="modern-action-btn modern-action-btn-danger">
@@ -401,6 +412,24 @@ props: {
         default: true,
         required: false
     },
+    /**
+     * v2.8.9：失败重试次数（后台「失败自动重试 → 失败重试次数」）：
+     *   0 = 不限制（一直重试到全部成功）；正数 = 达到该轮次后停止重试，失败项留在列表里。
+     */
+    retryTimes: {
+        type: Number,
+        default: 3,
+        required: false
+    },
+    /**
+     * v2.8.9：前台上传设置「其他 → 失败自动重试」开关（只管前台上传 / 链接转存）。
+     * 仅在后台总开关开启时才可见；后台关闭时忽略该值（整条链路都不自动重试）。
+     */
+    localAutoRetry: {
+        type: Boolean,
+        default: true,
+        required: false
+    },
     urlPrefix: {
         type: String,
         default: '',
@@ -493,7 +522,7 @@ props: {
         required: false
     }
 },
-emits: ['update:autoUpload', 'update:convertToWebp'],
+emits: ['update:autoUpload', 'update:customerCompress', 'update:convertToWebp', 'update:localAutoRetry'],
 data() {
     return {
         fileList: [],
@@ -715,11 +744,20 @@ created() {
     this._heightRaf = null
     this._listRO = null
 },
+watch: {
+    // v2.8.9：前台上传设置里的「失败自动重试」开关 → 立即影响本页的重试循环
+    localAutoRetry(val) {
+        this.autoReUpload = this.autoRetry !== false && val !== false
+    },
+    autoRetry(val) {
+        this.autoReUpload = val !== false && this.localAutoRetry !== false
+    }
+},
 mounted() {
     document.addEventListener('paste', this.handlePaste)
     document.addEventListener('keydown', this.handlePasteShortcut)
-    // v2.8.8：初始值来自后台全局配置（userConfig.autoRetry），前台不再有本地开关
-    this.autoReUpload = this.autoRetry !== false
+    // v2.8.9：后台总开关（autoRetry）与前台开关（localAutoRetry）同时开启才自动重试
+    this.autoReUpload = this.autoRetry !== false && this.localAutoRetry !== false
     window.addEventListener('resize', this.updateUploadListHeight)
     // 高度自适应：先挂观察器，再量一次（列表可能是带着历史文件重新挂载的）
     this.$nextTick(() => {
@@ -781,10 +819,24 @@ methods: {
          * v2.8.8：「上传限制」（允许格式 / 单文件大小）已从上传设置里移除，
          * 统一由后台「上传相关配置」与「用户管理 → 单文件大小限制」决定，前端不再传覆盖值。
          */
+        /*
+         * v2.8.9：把「处理事件」所需的上下文一并带给后端，落库到 FileRecord.metas.ProcessEvent：
+         *   retryRound —— 该文件已经历的失败重试轮次
+         *   failReason —— 上一次失败的原因（用于详情页展示失败原因）
+         *   webpSkip   —— 需要转 WebP 但未转换的原因（转换失败/超时/不支持的格式）
+         */
+        const retryRound = Number(item?.retryRound) || 0
+        const failReason = item?.failReason
+            ? '&failReason=' + encodeURIComponent(String(item.failReason).slice(0, 200))
+            : ''
+        const webpSkip = item?.webpSkip
+            ? '&webpSkip=' + encodeURIComponent(String(item.webpSkip).slice(0, 100))
+            : ''
         return '&compressPercent=' + (p.compressPercent || 0) +
             '&backupChannel=' + encodeURIComponent(p.backupChannel || '') +
             '&originalSize=' + originalSize +
-            '&uploadSource=' + source + transcode
+            '&uploadSource=' + source + transcode +
+            '&retryRound=' + retryRound + failReason + webpSkip
     },
     /**
      * 列表区高度自适应（v2.0.0 重新设计）：
@@ -912,7 +964,7 @@ methods: {
         item.progreess = 10
         item.compressing = !!item.serverCompress
         const uploadChannel = item.uploadChannel || this.effParams.uploadChannel
-        const autoRetry = this.effParams.autoRetry && uploadChannel !== 'external'
+        // v2.8.9：不再覆盖后端「自动切换」策略 —— 传 autoSwitch 会使后台配置失效，统一交由后台决定
         const uploadNameType = this.effParams.uploadNameType
         const targetUploadFolder = item.uploadFolder ?? this.uploadFolder
         const formData = new FormData()
@@ -924,7 +976,6 @@ methods: {
                 '&uploadChannel=' + uploadChannel +
                 (this.channelName ? '&channelName=' + encodeURIComponent(this.channelName) : '') +
                 '&uploadNameType=' + uploadNameType +
-                '&autoRetry=' + autoRetry +
                 '&uploadFolder=' + encodeURIComponent(targetUploadFolder) +
                 this.extraUploadParams({ uid: item.uid }),
             method: 'post',
@@ -1161,6 +1212,19 @@ methods: {
             this.retryLoopActive = false
             return
         }
+        // v2.8.9：重试次数上限（0 = 不限制）—— 达到后台设定的轮次后停止，失败项留在列表
+        const maxRounds = Number(this.retryTimes) || 0
+        if (maxRounds > 0 && this.retryRound >= maxRounds) {
+            this.retryLoopActive = false
+            this.$message({
+                type: 'error',
+                message: this.$t('uploadForm.retryLimitReached', {
+                    round: this.retryRound,
+                    count: this.exceptionList.length
+                })
+            })
+            return
+        }
 
         this.retryLoopActive = true
         this.retryRound += 1
@@ -1201,6 +1265,8 @@ methods: {
             if (item.dupBlocked) return
             item.progreess = 0
             item.status = 'uploading'
+            // v2.8.9：记下该文件已进入第几轮重试，随请求上报（详情页「处理事件」）
+            item.retryRound = this.retryRound
             // 重试属于「本轮用户已发起的上传」，不受手动上传模式的入列拦截
             this.enqueueUploadRequest(req)
         })
@@ -1271,7 +1337,7 @@ methods: {
         
         const needServerCompress = fileItem.serverCompress
         const uploadChannel = fileItem.uploadChannel || this.effParams.uploadChannel
-        const autoRetry = this.effParams.autoRetry && uploadChannel !== 'external'
+        // v2.8.9：不再覆盖后端「自动切换」策略 —— 传 autoSwitch 会使后台配置失效，统一交由后台决定
         const uploadNameType = uploadChannel === 'external' ? 'default' : this.effParams.uploadNameType
         const targetUploadFolder = this.getFileUploadFolder(file)
         
@@ -1295,7 +1361,6 @@ methods: {
                 '&uploadChannel=' + uploadChannel +
                 (this.channelName ? '&channelName=' + encodeURIComponent(this.channelName) : '') +
                 '&uploadNameType=' + uploadNameType + 
-                '&autoRetry=' + autoRetry + 
                 '&uploadFolder=' + encodeURIComponent(targetUploadFolder) + this.extraUploadParams(file),
             method: 'post',
             data: formData,
@@ -1350,7 +1415,7 @@ methods: {
         fileItem.uploadKey = uploadKey
         
         const needServerCompress = fileItem.serverCompress
-        const autoRetry = this.effParams.autoRetry && uploadChannel !== 'external'
+        // v2.8.9：不再覆盖后端「自动切换」策略 —— 传 autoSwitch 会使后台配置失效，统一交由后台决定
         const uploadNameType = uploadChannel === 'external' ? 'default' : this.effParams.uploadNameType
         const targetUploadFolder = this.getFileUploadFolder(file)
 
@@ -1369,7 +1434,6 @@ methods: {
                     '&uploadChannel=' + uploadChannel + 
                     (this.channelName ? '&channelName=' + encodeURIComponent(this.channelName) : '') +
                     '&uploadNameType=' + uploadNameType + 
-                    '&autoRetry=' + autoRetry + 
                     '&uploadFolder=' + encodeURIComponent(targetUploadFolder) + this.extraUploadParams(file) +
                     '&initChunked=true',
                 method: 'post',
@@ -1463,7 +1527,6 @@ methods: {
                                 '&uploadChannel=' + uploadChannel + 
                                 (this.channelName ? '&channelName=' + encodeURIComponent(this.channelName) : '') +
                                 '&uploadNameType=' + uploadNameType + 
-                                '&autoRetry=' + autoRetry + 
                                 '&uploadFolder=' + encodeURIComponent(targetUploadFolder) + this.extraUploadParams(file) +
                                 '&chunked=true',
                             method: 'post',
@@ -1561,7 +1624,6 @@ methods: {
                     '&uploadChannel=' + uploadChannel + 
                     (this.channelName ? '&channelName=' + encodeURIComponent(this.channelName) : '') +
                     '&uploadNameType=' + uploadNameType + 
-                    '&autoRetry=' + autoRetry + 
                     '&uploadFolder=' + encodeURIComponent(targetUploadFolder) + this.extraUploadParams(file) +
                     '&chunked=true&merge=true',
                 method: 'post',
@@ -1906,7 +1968,15 @@ methods: {
     handleError(err, file) {
         const fileItem = this.fileList.find(item => item.uid === file.uid)
         if (!fileItem) return // 文件已被删除
-        
+
+        /*
+         * v2.8.9：记下失败原因（详情页「处理事件」用）。
+         * 后端异常一般是 { message: string | string[] }，网络异常只有 err.message。
+         */
+        const data = err && err.response && err.response.data
+        const rawReason = (data && (data.message || data.error)) || (err && err.message) || '未知错误'
+        fileItem.failReason = Array.isArray(rawReason) ? rawReason.join('；') : String(rawReason)
+
         this.$message.error(this.$t('uploadForm.uploadFailed', { name: this.truncateFilename(file.name) }))
         fileItem.status = 'exception'
 
@@ -2099,14 +2169,32 @@ methods: {
             !file.type.includes('gif') &&
             !file.type.includes('svg')
         if (canConvertToWebp) {
+            /*
+             * v2.8.9：WebP 转换失败或超过 300 秒 → 自动放弃本次转换，仍用原文件上传；
+             * 放弃原因记到条目上，随上传请求带给后端写进「处理事件」，详情页可见。
+             */
+            let webpTimer = null
             try {
-                const convertedFile = await this.convertImageToWebp(file)
+                const convertedFile = await Promise.race([
+                    this.convertImageToWebp(file),
+                    new Promise((_, reject) => {
+                        webpTimer = setTimeout(
+                            () => reject(new Error(this.$t('uploadForm.webpTimeout'))),
+                            300000
+                        )
+                    })
+                ])
                 if (convertedFile) {
                     processed = convertedFile
                     convertedToWebp = true
+                } else {
+                    this.markWebpSkip(file, this.$t('uploadForm.webpUnsupported'))
                 }
             } catch (err) {
-                console.warn('WebP转换失败，使用原文件:', err)
+                console.warn('WebP转换失败，放弃转换并使用原文件:', err)
+                this.markWebpSkip(file, (err && err.message) || this.$t('uploadForm.webpFailed'))
+            } finally {
+                if (webpTimer) clearTimeout(webpTimer)
             }
         }
 
@@ -2158,6 +2246,12 @@ methods: {
         return { file: processed, serverCompress }
     },
 
+    /** v2.8.9：记录「未转换为 WebP」的原因，随上传请求带给后端（详情页「处理事件」展示） */
+    markWebpSkip(file, reason) {
+        const uid = file?.uid
+        const item = this.fileList.find(i => i.uid === uid)
+        if (item) item.webpSkip = reason
+    },
     handleProgress(event) {
         const fileItem = this.fileList.find(item => item.uid === event.file.uid)
         if (fileItem) {
@@ -4088,6 +4182,15 @@ html.dark .el-upload__text :deep(em) {
     color: var(--upload-action-copy-color);
 }
 .modern-action-btn-compress.is-active {
+    color: var(--el-color-primary, #409eff);
+    background: var(--el-color-primary-light-9, #ecf5ff);
+}
+
+/* v2.8.9：「转为WebP」开关按钮 —— 开启时图标蓝色高亮，关闭时跟随默认灰色 */
+.modern-action-btn-webp {
+    color: var(--upload-action-copy-color);
+}
+.modern-action-btn-webp.is-active {
     color: var(--el-color-primary, #409eff);
     background: var(--el-color-primary-light-9, #ecf5ff);
 }

@@ -74,8 +74,13 @@ export interface PostProcessOptions {
   percent: number;
   /** 是否允许「兼容转码」这一步 */
   transcode: boolean;
-  /** 单步时间上限（秒）；缺省用 MEDIA_MAX_SECONDS */
-  maxSeconds?: number;
+  /**
+   * v2.8.9：压缩 / 转码各有独立的时间上限（后台「压缩文件上限时长」「视频转码上限时长」）。
+   * 0 = 不限制（用 MEDIA_MAX_SECONDS 兜底为「实际执行超时保护」）；
+   * 缺省 = MEDIA_MAX_SECONDS。
+   */
+  compressMaxSeconds?: number;
+  transcodeMaxSeconds?: number;
 }
 
 export interface PostProcessResult extends FileCompressResult {
@@ -131,7 +136,16 @@ export async function postProcessMediaFile(
   if (!original) return skip('无法读取文件大小');
   if (!ffmpegAvailable()) return skip('未安装 ffmpeg，跳过压缩与转码');
 
-  const maxSeconds = Math.max(30, Number(opts.maxSeconds) || MEDIA_MAX_SECONDS);
+  /*
+   * 0 表示「不限制」——但执行时仍需要一个硬超时兜底，否则 ffmpeg 卡死会永久占用队列，
+   * 所以 0 时退化成 MEDIA_MAX_SECONDS 的执行保护（只影响执行阶段，不做预估拦截）。
+   */
+  const rawCompressMax = Number(opts.compressMaxSeconds);
+  const rawTranscodeMax = Number(opts.transcodeMaxSeconds);
+  const compressUnlimited = rawCompressMax === 0;
+  const transcodeUnlimited = rawTranscodeMax === 0;
+  const compressMax = Math.max(30, Number.isFinite(rawCompressMax) && rawCompressMax > 0 ? rawCompressMax : MEDIA_MAX_SECONDS);
+  const transcodeMax = Math.max(30, Number.isFinite(rawTranscodeMax) && rawTranscodeMax > 0 ? rawTranscodeMax : MEDIA_MAX_SECONDS);
   const guard = mediaResourceGuard();
   if (!guard.ok) return skip(guard.reason || '系统资源不足，跳过压缩与转码');
 
@@ -145,12 +159,12 @@ export async function postProcessMediaFile(
   let estimated = 0;
   if (opts.compress) {
     estimated = estimateFfmpegSeconds({ sizeBytes: original, durationSec, kind });
-    if (estimated > maxSeconds) {
-      skipReason = `预计耗时约 ${Math.round(estimated)} 秒，超过 ${maxSeconds} 秒上限，放弃压缩`;
+    if (!compressUnlimited && estimated > compressMax) {
+      skipReason = `预计耗时约 ${Math.round(estimated)} 秒，超过 ${compressMax} 秒上限，放弃压缩`;
     } else {
       const r = isVideo
-        ? await compressVideoFile(srcPath, e, opts.percent, original, maxSeconds)
-        : await compressAudioFile(srcPath, e, opts.percent, original, maxSeconds);
+        ? await compressVideoFile(srcPath, e, opts.percent, original, compressUnlimited ? MEDIA_MAX_SECONDS : compressMax)
+        : await compressAudioFile(srcPath, e, opts.percent, original, compressUnlimited ? MEDIA_MAX_SECONDS : compressMax);
       if (r.compressed) {
         cur = r;
         stage = 'compress';
@@ -175,11 +189,11 @@ export async function postProcessMediaFile(
       if (codec) skipReason = `${skipReason ? skipReason + '；' : ''}视频编码 ${codec} 浏览器可播，无需转码`;
     } else {
       const est = estimateFfmpegSeconds({ sizeBytes: cur.size, durationSec, kind: 'video' });
-      if (est > maxSeconds) {
-        skipReason = `${skipReason ? skipReason + '；' : ''}兼容转码预计耗时约 ${Math.round(est)} 秒，超过 ${maxSeconds} 秒上限，放弃转码`;
+      if (!transcodeUnlimited && est > transcodeMax) {
+        skipReason = `${skipReason ? skipReason + '；' : ''}兼容转码预计耗时约 ${Math.round(est)} 秒，超过 ${transcodeMax} 秒上限，放弃转码`;
       } else {
         estimated = Math.max(estimated, est);
-        const r = await transcodeVideoFile(cur.path, cur.size, maxSeconds);
+        const r = await transcodeVideoFile(cur.path, cur.size, transcodeUnlimited ? MEDIA_MAX_SECONDS : transcodeMax);
         if (r.compressed) {
           cur = r;
           stage = 'transcode';
@@ -200,44 +214,86 @@ export async function postProcessMediaFile(
   };
 }
 
-/* ---------------- 进程级单通道队列 ---------------- */
+/* ---------------- 进程级队列（v2.8.9：压缩 / 转码双通道，各自可配并发） ---------------- */
+
+export type MediaLane = 'compress' | 'transcode';
 
 type Job = { label: string; run: () => Promise<void> };
 
-let queueRunning = false;
-let currentLabel = '';
-const pendingJobs: Job[] = [];
-
-/** 当前队列状态（系统状态页 / 日志用） */
-export function mediaQueueStats(): { running: boolean; current: string; pending: number } {
-  return { running: queueRunning, current: currentLabel, pending: pendingJobs.length };
+interface LaneState {
+  /** 当前并发上限（后台可配；0 = 不限制，这里折算成「足够大」） */
+  limit: number;
+  running: number;
+  current: string[];
+  queue: Job[];
 }
 
-async function pump(): Promise<void> {
-  if (queueRunning) return;
-  queueRunning = true;
-  try {
-    while (pendingJobs.length) {
-      const job = pendingJobs.shift() as Job;
-      currentLabel = job.label;
+const lanes: Record<MediaLane, LaneState> = {
+  compress: { limit: 1, running: 0, current: [], queue: [] },
+  transcode: { limit: 1, running: 0, current: [], queue: [] },
+};
+
+function effectiveLimit(limit: number): number {
+  const n = Number(limit);
+  if (!Number.isFinite(n)) return 1;
+  if (n <= 0) return 64; // 0 = 不限制（给一个安全上限，避免把进程数打爆）
+  return Math.min(64, Math.max(1, Math.floor(n)));
+}
+
+function pumpLane(lane: MediaLane): void {
+  const st = lanes[lane];
+  while (st.queue.length && st.running < st.limit) {
+    const job = st.queue.shift() as Job;
+    st.running += 1;
+    st.current.push(job.label);
+    void (async () => {
       try {
         await job.run();
       } catch (err) {
         // 单个任务失败绝不影响队列继续跑
         console.warn('[media-post] 任务异常:', job.label, (err as Error)?.message || err);
+      } finally {
+        st.running = Math.max(0, st.running - 1);
+        const idx = st.current.indexOf(job.label);
+        if (idx !== -1) st.current.splice(idx, 1);
+        pumpLane(lane);
       }
-    }
-  } finally {
-    currentLabel = '';
-    queueRunning = false;
+    })();
   }
+}
+
+/** 队列状态（系统状态页 / 日志用） */
+export function mediaQueueStats(): {
+  running: number;
+  current: string;
+  pending: number;
+  compress: { running: number; pending: number; limit: number };
+  transcode: { running: number; pending: number; limit: number };
+} {
+  const c = lanes.compress;
+  const t = lanes.transcode;
+  const current = [...c.current, ...t.current].join('、');
+  return {
+    running: c.running + t.running,
+    current,
+    pending: c.queue.length + t.queue.length,
+    compress: { running: c.running, pending: c.queue.length, limit: c.limit },
+    transcode: { running: t.running, pending: t.queue.length, limit: t.limit },
+  };
 }
 
 /**
  * 投递一个后置处理任务。
- * 全局串行：同一时刻只有一个任务在跑，即「全局只允许 1 路 ffmpeg」。
+ * lane = compress / transcode 两条独立通道，各自按后台配置的并发上限执行（默认各 1 路）。
  */
-export function enqueueMediaJob(label: string, run: () => Promise<void>): void {
-  pendingJobs.push({ label, run });
-  void pump();
+export function enqueueMediaJob(
+  label: string,
+  run: () => Promise<void>,
+  lane: MediaLane = 'compress',
+  limit = 1,
+): void {
+  const st = lanes[lane];
+  st.limit = effectiveLimit(limit);
+  st.queue.push({ label, run });
+  pumpLane(lane);
 }

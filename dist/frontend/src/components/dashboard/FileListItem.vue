@@ -487,6 +487,8 @@ export default {
     display: block;
 }
 /* 渠道简称徽标（沿用列表视图原来的品牌配色语义：备份渠道橙色调） */
+/* v2.8.9：渠道简称（存储 / 备份）改为与「预览小眼睛」同一套配色 ——
+   文字用 --upload-text-color + 0.7 透明度，去掉绿/橙底色，只留同色系细边框 */
 .channel-short {
     display: inline-flex;
     align-items: center;
@@ -497,14 +499,16 @@ export default {
     font-weight: 500;
     line-height: 1;
     white-space: nowrap;
-    background: color-mix(in srgb, var(--el-color-success) 14%, transparent);
-    color: var(--el-color-success);
-    border: 1px solid color-mix(in srgb, var(--el-color-success) 35%, transparent);
+    background: transparent;
+    color: var(--upload-text-color);
+    border: 1px solid color-mix(in srgb, var(--upload-text-color) 32%, transparent);
+    opacity: 0.7;
 }
 .channel-short.is-backup {
-    background: color-mix(in srgb, var(--el-color-warning) 12%, transparent);
-    color: var(--el-color-warning);
-    border-color: color-mix(in srgb, var(--el-color-warning) 40%, transparent);
+    background: transparent;
+    color: var(--upload-text-color);
+    border-color: color-mix(in srgb, var(--upload-text-color) 32%, transparent);
+    opacity: 0.7;
 }
 
 /* v2.8.7：渠道行内文件大小 —— 只在移动端显示（PC 端右侧第三列已有大小列） */

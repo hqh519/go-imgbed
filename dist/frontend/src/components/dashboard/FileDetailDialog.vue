@@ -278,6 +278,13 @@
                 </a>
                 <span v-else style="color: var(--el-text-color-secondary);">{{ $t('dashboard.filterRedirectNo') }}</span>
             </el-descriptions-item>
+            <!--
+                v2.8.9：文件处理记录 —— 紧跟「重定向」之后单独占一行，
+                内容由后端 metas.ProcessEvent 提供（失败/重试/渠道切换/压缩/转码/WebP）。
+            -->
+            <el-descriptions-item v-if="processEventLine" :label="$t('fileDetail.processEvent')" :span="descColumn">
+                <span class="process-event-line" :title="processEventLine">{{ processEventLine }}</span>
+            </el-descriptions-item>
         </el-descriptions>
         <!-- 限时状态：有效期中 / 已过期 / 永久有效 -->
         <div class="detail-expiry-line">
@@ -338,12 +345,23 @@
                     </div>
                 </div>
                 <el-form-item :label="$t('fileDetail.renameLabel')" :error="renameValidation.error">
-                    <el-input
-                        v-model="renameForm.newFileId"
-                        :placeholder="$t('fileDetail.renamePlaceholder')"
-                        @input="validateRenameInput"
-                        clearable
-                    ></el-input>
+                    <div class="rename-input-row">
+                        <el-input
+                            v-model="renameForm.newFileId"
+                            :placeholder="$t('fileDetail.renamePlaceholder')"
+                            @input="validateRenameInput"
+                            clearable
+                        ></el-input>
+                        <!-- v2.8.9：按系统命名规则生成新名（仅预填输入框，不写库；确认重命名后才落库） -->
+                        <el-button
+                            type="primary"
+                            plain
+                            size="small"
+                            class="rename-generate-btn"
+                            :loading="renameGenerating"
+                            @click="generateRenameName"
+                        >{{ $t('fileDetail.renameGenerate') }}</el-button>
+                    </div>
                 </el-form-item>
             </el-form>
             <template #footer>
@@ -495,6 +513,8 @@ export default {
                 error: ''
             },
             renameSaving: false,
+            // v2.8.9：「生成名称」请求中
+            renameGenerating: false,
             // 二维码：直接替换「文件加载区域」里的文件（v2.3.0；v2.4.0 移除自定义长按菜单）
             showQr: false,
             // 重定向
@@ -704,6 +724,31 @@ export default {
             if (label === 'adult') return 'danger';
             return 'success';
         },
+        /**
+         * v2.8.9：把 metas.ProcessEvent 压成一行简短中文（详情页「处理记录」）。
+         * 没有处理事件时返回空串 —— 整行不渲染。
+         */
+        processEventLine() {
+            const ev = this.file?.metadata?.ProcessEvent;
+            if (!ev || typeof ev !== 'object') return '';
+            const parts = [];
+            const push = (key, params) => parts.push(this.$t(key, params));
+            if (Number(ev.retries) > 0) push('fileDetail.processRetries', { n: Number(ev.retries) });
+            if (ev.failReason) push('fileDetail.processFailReason', { reason: ev.failReason });
+            if (ev.switchedTo) push('fileDetail.processSwitched', { name: ev.switchedTo });
+            const step = (obj, doneKey, skipKey, failKey) => {
+                if (!obj || !obj.status) return;
+                if (obj.status === 'done') push(doneKey, { ms: this.formatProcessMs(obj.ms) });
+                else if (obj.status === 'failed') push(failKey, { reason: obj.reason || '-' });
+                else push(skipKey, { reason: obj.reason || '-' });
+            };
+            step(ev.compress, 'fileDetail.processCompressDone', 'fileDetail.processCompressSkipped', 'fileDetail.processCompressFailed');
+            step(ev.transcode, 'fileDetail.processTranscodeDone', 'fileDetail.processTranscodeSkipped', 'fileDetail.processTranscodeFailed');
+            if (ev.webp && ev.webp.status && ev.webp.status !== 'done') {
+                push('fileDetail.processWebpSkipped', { reason: ev.webp.reason || '-' });
+            }
+            return parts.join(' · ');
+        },
         imageDimensions() {
             const width = this.file?.metadata?.Width;
             const height = this.file?.metadata?.Height;
@@ -760,6 +805,12 @@ export default {
          *   WebDAV / API-Web / API-S3 = 对外通道
          * 未知值原样返回，避免历史数据被吞掉。
          */
+        /** v2.8.9：处理耗时格式化 —— 小于 1 秒用 ms，其余用 s（保留一位小数） */
+        formatProcessMs(ms) {
+            const n = Number(ms);
+            if (!Number.isFinite(n) || n <= 0) return '-';
+            return n < 1000 ? `${Math.round(n)}ms` : `${(n / 1000).toFixed(1)}s`;
+        },
         uploadSourceLabel(raw) {
             const key = String(raw || 'Default');
             const map = {
@@ -768,7 +819,9 @@ export default {
                 Fetch: 'filter.uploadSourceFetch',
                 WebDAV: 'filter.uploadSourceWebdav',
                 'API-Web': 'filter.uploadSourceApiWeb',
-                'API-S3': 'filter.uploadSourceApiS3'
+                'API-S3': 'filter.uploadSourceApiS3',
+                // v2.8.9：登记文件（只登记外链、不搬文件）
+                Record: 'filter.uploadSourceRecord'
             };
             return map[key] ? this.$t(map[key]) : key;
         },
@@ -1093,6 +1146,32 @@ export default {
             this.renameForm.newFileId = String(name);
             this.validateRenameInput();
         },
+        /**
+         * v2.8.9：「生成名称」—— 调后端按系统命名规则生成一个新 File_ID
+         * （保留扩展名与目录前缀），仅预填输入框；点「确认重命名」才写库。
+         */
+        async generateRenameName() {
+            if (this.renameGenerating) return;
+            this.renameGenerating = true;
+            try {
+                const current = this.renameForm.newFileId || this.file?.name || '';
+                const response = await fetchWithAuth(
+                    `/api/manage/rename/generate?name=${encodeURIComponent(current)}`,
+                    { method: 'GET' }
+                );
+                const data = await response.json().catch(() => ({}));
+                if (response.ok && data.success && data.name) {
+                    this.renameForm.newFileId = data.name;
+                    this.validateRenameInput();
+                } else {
+                    throw new Error(data.message || this.$t('common.failed'));
+                }
+            } catch (error) {
+                ElMessage.error(error.message || this.$t('common.failed'));
+            } finally {
+                this.renameGenerating = false;
+            }
+        },
         /** 打开重定向弹窗，回显当前重定向地址 */
         openRedirectDialog() {
             this.redirectForm.url = this.file?.metadata?.RedirectUrl || '';
@@ -1186,6 +1265,31 @@ export default {
 </script>
 
 <style scoped>
+/* v2.8.9：重命名输入框 + 「生成名称」按钮同行 */
+.rename-input-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+}
+.rename-input-row .el-input {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+.rename-generate-btn {
+    flex: 0 0 auto;
+}
+
+/* v2.8.9：处理记录 —— 单行展示，超出省略，悬停看全文 */
+.process-event-line {
+    display: block;
+    max-width: 100%;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    font-size: 12px;
+    color: var(--el-text-color-regular);
+}
 /* v2.6.0 #301：换行格式（ip␤归属地）按多行展示 */
 .ip-display-multiline {
     white-space: pre-line;

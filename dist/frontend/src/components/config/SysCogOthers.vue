@@ -101,7 +101,11 @@
                 </el-tooltip>
             </h3>
             <el-form :model="pageSettings" label-width="150px" :disabled="saving">
-                <el-form-item v-for="setting in uploadDefaultItems" :key="setting.id">
+                <el-form-item
+                    v-for="setting in uploadDefaultItems"
+                    :key="setting.id"
+                    :class="{ 'has-hint': !!setting.hint }"
+                >
                     <template #label>
                         {{ localized(setting, 'label') }}
                         <el-tooltip v-if="setting.tooltip" :content="localized(setting, 'tooltip')" placement="top" raw-content>
@@ -133,6 +137,8 @@
                         :disabled="setting.fixed"
                         :placeholder="localized(setting, 'placeholder')"
                     ></el-input>
+                    <!-- v2.8.9：配置项下方的补充提示（如「可在用户编辑中对用户单独开启」） -->
+                    <div v-if="setting.hint" class="setting-hint">{{ localized(setting, 'hint') }}</div>
                 </el-form-item>
             </el-form>
         </div>
@@ -194,9 +200,32 @@ computed: {
          *   · 「WebP转换」关闭 → 没有下游子项，仅前台按钮不加载。
          * 注意只影响展示，不改值：重新打开开关后原来的阈值 / 期望还在。
          */
+        /*
+         * v2.8.9 级联（同样只影响展示，不改值）：
+         *   · 「失败自动重试」关闭 → 「失败重试次数」与「自动切换存储库」都无意义，
+         *     一并隐藏（自动切换建立在重试之上，重试关闭时后端也不执行切换）；
+         *   · 「视频兼容转码」关闭 → 「上限时长 / 同时处理任务数」隐藏；
+         *   · 「文件压缩」关闭 → 阈值 / 期望 / 上限时长 / 同时处理任务数全部隐藏。
+         */
+        const retryOn = this.configBool(items, 'defaultAutoRetry', true);
+        if (!retryOn) {
+            items = items.filter(item => item.id !== 'defaultRetryTimes' && item.id !== 'defaultAutoSwitch');
+        }
+        const transcodeOn = this.configBool(items, 'videoTranscodeIncompatible', true);
+        if (!transcodeOn) {
+            items = items.filter(
+                item => item.id !== 'videoTranscodeMaxSeconds' && item.id !== 'videoTranscodeConcurrency'
+            );
+        }
         const compressOn = this.configBool(items, 'defaultCustomerCompress', true);
         if (!compressOn) {
-            items = items.filter(item => item.id !== 'defaultCompressBar' && item.id !== 'defaultCompressQuality');
+            items = items.filter(
+                item =>
+                    item.id !== 'defaultCompressBar' &&
+                    item.id !== 'defaultCompressQuality' &&
+                    item.id !== 'compressMaxSeconds' &&
+                    item.id !== 'compressConcurrency'
+            );
         }
         return items;
     },
@@ -345,6 +374,17 @@ mounted() {
 </script>
 
 <style scoped>
+/* v2.8.9：配置项下方的补充提示（占满一行，跟在控件下面） */
+.setting-hint {
+    flex: 0 0 100%;
+    margin-top: 2px;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--el-text-color-secondary);
+}
+:deep(.el-form-item.has-hint .el-form-item__content) {
+    flex-wrap: wrap;
+}
 .others-settings {
     min-height: 500px;
 }

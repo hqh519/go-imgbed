@@ -254,6 +254,14 @@ export class HttpPostAdapter implements StorageAdapter {
   buildDirectUrl(copy: CopyInfo, channel: ChannelInfo, preferInternal?: boolean): string | null {
     const cfg = channel.config;
     let url = copy.remoteUrl;
+    /*
+     * v2.8.9：登记文件（uploadSource=Record）命中渠道域名时只存了路径（remoteKey），
+     * remoteUrl 为空 —— 之前直接返回 null 导致文件加载不到。这里回退用 remoteKey 拼：
+     *   normalizeUrl 会按「(preferInternal && 内网通信域名) → 公开访问域名 → 上传接口地址源」
+     *   的顺序补全域名，相对路径（web/my-file/xxx.png）也能正确解析。
+     * 普通上传的 remoteUrl 恒为完整 URL，不受此回退影响。
+     */
+    if (!url && copy.remoteKey) url = copy.remoteKey.replace(/^\/+/, '');
     if (!url) return null;
     // v2.8.7：preferInternal 时域名替换优先用「内网通信域名」
     url = normalizeUrl(url, (preferInternal && cfg.internalDomain) || cfg.publicDomain, cfg.apiUrl);

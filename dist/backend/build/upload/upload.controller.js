@@ -134,6 +134,7 @@ let UploadController = class UploadController {
         const result = await this.svc.registerFile({
             sourceUrl: String(body.sourceUrl || ''),
             originalName: String(body.originalName || ''),
+            extension: String(body.extension || ''),
             channelId: String(body.channelId || ''),
             folder: String(body.folder || ''),
             note: String(body.note || ''),
@@ -186,7 +187,12 @@ let UploadController = class UploadController {
             videoTranscode: q.videoTranscode === undefined ? undefined : q.videoTranscode === 'true' || q.videoTranscode === '1',
             backup: backupOff ? false : q.backup !== 'false' && q.backup !== '0',
             backupChannelId,
-            autoRetry: q.autoRetry === 'true' || q.autoRetry === '1',
+            autoRetry: q.autoSwitch === undefined && q.autoRetry === undefined
+                ? undefined
+                : (q.autoSwitch ?? q.autoRetry) === 'true' || (q.autoSwitch ?? q.autoRetry) === '1',
+            retryRound: Math.max(0, Number(q.retryRound) || 0),
+            failReason: String(q.failReason || '').slice(0, 300),
+            webpSkip: String(q.webpSkip || '').slice(0, 120),
             skipFileLimits: !enforceLimits,
             uploadSource,
             uploadStartedAt: new Date(arrivedAt),

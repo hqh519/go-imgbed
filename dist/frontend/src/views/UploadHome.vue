@@ -42,7 +42,9 @@
                 </el-dropdown-menu>
             </template>
         </el-dropdown>
+        <!-- v2.8.9：后台关闭「上传目录选项」时，右上角目录输入框整体隐藏 -->
         <div
+            v-if="showDirectorySuggestions"
             class="upload-folder-container"
             :class="{ 'no-announcement': !announcementAvailable, 'is-active': isFolderInputActive }"
         >
@@ -124,7 +126,9 @@
                         </el-button>
                     </el-tooltip>
                     <!-- v2.8.0：「选择目录」从右上角迁入快捷栏（文件管理下方、链接格式上方） -->
+                    <!-- v2.8.9：后台关闭「上传目录选项」时，右下角「目录选择」一并隐藏 -->
                     <DirectoryTreePicker
+                        v-if="showDirectorySuggestions"
                         :current-directory="uploadFolder"
                         source="upload"
                         @select="handleDirectorySelect"
@@ -204,6 +208,7 @@
                 <span>{{ $t('upload.linkTab') }}</span>
             </button>
         </div>
+        <!-- v2.8.9：convertToWebp 改用 v-model —— 原先只传 prop 未监听 update 事件，顶栏「转为WebP」开关点不动 -->
         <UploadForm
             :selectedUrlForm="selectedUrlForm"
             v-model:customerCompress="customerCompress"
@@ -218,7 +223,7 @@
             :urlPrefix="urlPrefix"
             :uploadMethod="uploadMethod"
             :uploadFolder="uploadFolder"
-            :convertToWebp="convertToWebp"
+            v-model:convertToWebp="convertToWebp"
             :autoUpload="autoUpload"
             @update:autoUpload="autoUpload = $event"
             :backupChannel="backupChannel"
@@ -227,6 +232,9 @@
             :compressEnabled="compressEnabled"
             :webpEnabled="webpEnabled"
             :transcodeChoice="transcodeChoice"
+            :retryTimes="retryTimes"
+            :localAutoRetry="localAutoRetry"
+            @update:localAutoRetry="localAutoRetry = $event"
             class="upload"
         />
         </div>
@@ -296,6 +304,8 @@
             :transcodePolicy="transcodePolicy"
             v-model:transcodeChoice="transcodeChoice"
             :transcodeGlobal="transcodeGlobal"
+            :autoRetryEnabled="autoRetryEnabled"
+            v-model:localAutoRetry="localAutoRetry"
         />
         <!-- v2.8.8：登记文件弹窗（与「上传设置」同尺寸同风格） -->
         <RecordFileDialog
@@ -354,6 +364,7 @@ export default {
             customUrlPrefix: '', //自定义链接前缀
             useCustomUrl: 'false', //是否启用自定义链接格式
             autoRetry: true, //失败自动切换（v2.8.8：值来自后台「上传相关配置 → 自动重试」）
+            localAutoRetry: true, // v2.8.9：前台「失败自动重试」开关（上传设置 → 其他，只管上传/转存）
             compressPercent: 80, //压缩期望百分比（压到原体积的 x%）
             limitCompressExts: '', // 允许压缩格式覆盖（仅本次页面生效，刷新清空）
             transcodeChoice: '', // 视频兼容转码（'' 跟随全局 / 'on' / 'off'），仅「用户决定」策略下可见
@@ -379,6 +390,10 @@ export default {
         },
         customerCompress(val) {
             this.updateCompressConfig('customerCompress', val)
+        },
+        // v2.8.9：前台「失败自动重试」开关记忆到本地配置
+        localAutoRetry(val) {
+            this.updateCompressConfig('localAutoRetry', val)
         },
         compressBar(val) {
             // 确保值在有效范围内
@@ -498,6 +513,17 @@ export default {
         /** v2.8.8：后台全局「视频兼容转码」当前值（给「跟随全局」展示实际效果） */
         transcodeGlobal() {
             return this.userConfig?.transcodeGlobal !== false
+        },
+        /** v2.8.9：后台「失败自动重试」总开关 —— 关闭时前台「其他」模块与自动重试一起关掉 */
+        autoRetryEnabled() {
+            return this.userConfig?.autoRetry !== false
+        },
+        /** v2.8.9：失败重试次数上限（后台配置；0 = 不限制；空 = 3） */
+        retryTimes() {
+            const raw = this.userConfig?.retryTimes
+            if (raw === undefined || raw === null || raw === '') return 3
+            const n = Number(raw)
+            return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 3
         }
     },
     mounted() {
@@ -527,6 +553,8 @@ export default {
         this.backupChannel = ''
         // 失败自动切换（v2.8.8：跟随后台「上传相关配置 → 自动重试」，前台不再有开关）
         this.autoRetry = this.userConfig?.autoRetry !== false
+        // v2.8.9：前台「失败自动重试」开关（上传设置 → 其他），只管前台上传 / 链接转存
+        this.localAutoRetry = this.compressConfig.localAutoRetry ?? true
         // 读取用户选择的上传文件命名方式
         this.uploadNameType = this.storeUploadNameType || this.userConfig?.defaultUploadNameType || 'default'
         // 读取用户自定义链接格式

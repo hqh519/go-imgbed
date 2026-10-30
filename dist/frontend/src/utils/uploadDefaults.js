@@ -12,12 +12,18 @@ export const UPLOAD_DEFAULT_CONFIG_IDS = [
   'defaultUploadFolder', // 默认上传目录
   'defaultUploadNameType', // 默认命名方式
   'defaultUrlForm', // 默认外链格式
-  'defaultAutoRetry', // 自动重试（v2.8.8 由前台「上传设置」迁入，紧跟视频兼容转码上一行）
+  'defaultAutoRetry', // 失败自动重试（v2.8.8 迁入；v2.8.9 改名并新增重试次数）
+  'defaultRetryTimes', // 失败重试次数（v2.8.9）
+  'defaultAutoSwitch', // 自动切换（v2.8.9：与「失败自动重试」拆开，本项只管渠道切换）
   'videoTranscodeIncompatible', // 视频兼容转码（v2.8.5 由网页设置迁入）
-  'defaultConvertToWebp', // 默认转换 WebP
-  'defaultCustomerCompress', // 默认开启压缩
+  'videoTranscodeMaxSeconds', // 视频转码上限时长（v2.8.9）
+  'videoTranscodeConcurrency', // 转码同时处理任务数（v2.8.9）
+  'defaultConvertToWebp', // WebP 转换（总开关）
+  'defaultCustomerCompress', // 文件压缩（总开关）
   'defaultCompressBar', // 最小压缩阈值
   'defaultCompressQuality', // 默认压缩期望
+  'compressMaxSeconds', // 压缩文件上限时长（v2.8.9）
+  'compressConcurrency', // 压缩同时处理任务数（v2.8.9）
   'allowedExtensions', // 允许的上传格式
   'maxUploadSizeMB', // 单文件大小上限
 ];

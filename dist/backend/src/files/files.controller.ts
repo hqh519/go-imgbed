@@ -37,6 +37,7 @@ import { appLog } from '../common/app-log';
 import { frontendAppDir } from '../common/project-paths';
 import { qqwryStatus, saveQqwry } from '../common/qqwry';
 import { ipDisplayBatch, ipDisplayOf } from '../common/ip-query';
+import { renderFileName } from '../common/path-template';
 
 /** 逗号分隔参数 → 数组 */
 function splitCsv(v?: string): string[] {
@@ -901,6 +902,58 @@ export class ManageController {
     const toMs = dateTo ? dayStartMs(dateTo) + 86_400_000 - 1 : 0;
     const sizeMin = Math.max(0, Number(q.sizeMin) || 0);
     const sizeMax = Math.max(0, Number(q.sizeMax) || 0);
+    /*
+     * v2.8.9 新增筛选：
+     *   validity    —— 有效期：limited（已限时未过期）/ expired（已过期）/ permanent（永久有效）
+     *   nameChanged —— 名称状态：changed（已改名，prevName 非空）/ unchanged（未改名）
+     *   sizeMode    —— 大小口径：actual（当前大小，默认）/ original（压缩前大小）
+     *   dimPreset   —— 尺寸快捷：landscape/portrait/square/ratio-4-3/ratio-16-9/360p…8k
+     *   widthMin/Max、heightMin/Max —— 自定义宽高范围（像素）
+     */
+    const fValidity = splitCsv(q.validity).map((v) => v.toLowerCase());
+    const fNameChanged = splitCsv(q.nameChanged).map((v) => v.toLowerCase());
+    const sizeMode = String(q.sizeMode || 'actual').toLowerCase() === 'original' ? 'original' : 'actual';
+    const fDimPreset = splitCsv(q.dimPreset).map((v) => v.toLowerCase());
+    const widthMin = Math.max(0, Number(q.widthMin) || 0);
+    const widthMax = Math.max(0, Number(q.widthMax) || 0);
+    const heightMin = Math.max(0, Number(q.heightMin) || 0);
+    const heightMax = Math.max(0, Number(q.heightMax) || 0);
+
+    /** 尺寸快捷选项匹配：宽高不分横竖（横屏/竖屏都能命中），分辨率档位按「短边」分桶 */
+    const matchDimPreset = (w: number, h: number, preset: string): boolean => {
+      if (!w || !h) return false;
+      const short = Math.min(w, h);
+      const long = Math.max(w, h);
+      const ratio = long / Math.max(1, short);
+      switch (preset) {
+        case 'landscape':
+          return w > h;
+        case 'portrait':
+          return h > w;
+        case 'square':
+          return Math.abs(w - h) <= Math.max(2, Math.round(long * 0.01));
+        case 'ratio-4-3':
+          return Math.abs(ratio - 4 / 3) <= 0.06;
+        case 'ratio-16-9':
+          return Math.abs(ratio - 16 / 9) <= 0.08;
+        case '360p':
+          return short >= 300 && short < 420;
+        case '480p':
+          return short >= 420 && short < 600;
+        case '720p':
+          return short >= 600 && short < 840;
+        case '1080p':
+          return short >= 840 && short < 1300;
+        case '2k':
+          return short >= 1300 && short < 1800;
+        case '4k':
+          return short >= 1800 && short < 2600;
+        case '8k':
+          return short >= 4000;
+        default:
+          return false;
+      }
+    };
 
     const rows = await prisma.fileRecord.findMany({
       where: { status: 'active', ...(ownerFilter ? { uploader: ownerFilter } : {}) },
@@ -1007,9 +1060,44 @@ export class ManageController {
         if (fromMs && t < fromMs) return false;
         if (toMs && t > toMs) return false;
       }
-      // v2.8.7：大小范围（按文件当前大小 size，字节；0 = 不限）
-      if (sizeMin > 0 && (r.size || 0) < sizeMin) return false;
-      if (sizeMax > 0 && (r.size || 0) > sizeMax) return false;
+      // v2.8.7：大小范围（字节；0 = 不限）。v2.8.9 支持「原始大小 / 实际大小」两种口径
+      const cmpSize =
+        sizeMode === 'original'
+          ? Number((r as unknown as { originalSize?: number }).originalSize) || r.size || 0
+          : r.size || 0;
+      if (sizeMin > 0 && cmpSize < sizeMin) return false;
+      if (sizeMax > 0 && cmpSize > sizeMax) return false;
+
+      // v2.8.9：有效期筛选（限时未过期 / 已过期 / 永久有效）
+      if (fValidity.length) {
+        const exp = (r as unknown as { linkExpiresAt?: Date | null }).linkExpiresAt;
+        const expMs = exp ? new Date(exp).getTime() : 0;
+        const now = Date.now();
+        const ok =
+          (fValidity.includes('limited') && expMs > now) ||
+          (fValidity.includes('expired') && expMs > 0 && expMs <= now) ||
+          (fValidity.includes('permanent') && !expMs);
+        if (!ok) return false;
+      }
+
+      // v2.8.9：名称状态（prevName 非空 = 改过名，firstName 只在从未改名时等于 name）
+      if (fNameChanged.length) {
+        const renamed = !!String((r as unknown as { prevName?: string }).prevName || '');
+        const ok = (fNameChanged.includes('changed') && renamed) || (fNameChanged.includes('unchanged') && !renamed);
+        if (!ok) return false;
+      }
+
+      // v2.8.9：尺寸筛选（快捷档位 + 宽高范围；没有尺寸记录的文件不参与尺寸条件）
+      if (fDimPreset.length || widthMin || widthMax || heightMin || heightMax) {
+        const w = Number((metas.Width as number) || 0);
+        const h = Number((metas.Height as number) || 0);
+        if (!w || !h) return false;
+        if (widthMin && w < widthMin) return false;
+        if (widthMax && w > widthMax) return false;
+        if (heightMin && h < heightMin) return false;
+        if (heightMax && h > heightMax) return false;
+        if (fDimPreset.length && !fDimPreset.some((p) => matchDimPreset(w, h, p))) return false;
+      }
       return true;
     });
 
@@ -1597,6 +1685,29 @@ export class ManageController {
     return this.doRename(wildcardParam(req), body, req);
   }
 
+  /**
+   * v2.8.9：「生成名称」—— 按系统默认命名规则（与上传一致的 renderFileName）
+   * 生成一个新 File_ID 供重命名弹窗预填，只生成不写库。
+   * 保留当前文件的扩展名；带目录的 File_ID 只生成文件名段（目录保留）。
+   */
+  @Get('rename/generate')
+  async generateRenameName(@Req() req: Request) {
+    if (!(await this.userPerm(req, 'edit'))) throw new ForbiddenException('没有编辑权限');
+    const raw = String(req.query.name || '').trim();
+    const dot = raw.lastIndexOf('.');
+    const ext = dot > 0 ? raw.slice(dot + 1).toLowerCase() : '';
+    const stem = dot > 0 ? raw.slice(0, dot) : raw;
+    const dir = stem.includes('/') ? `${stem.split('/').slice(0, -1).join('/')}/` : '';
+    const generated = renderFileName('', {
+      originalName: raw,
+      stem: stem.split('/').pop() || stem,
+      ext,
+      md5: '',
+      timestamp: Date.now(),
+    });
+    return { success: true, name: `${dir}${generated}${ext ? `.${ext}` : ''}` };
+  }
+
   @Patch('rename/*')
   rename(@Req() req: Request, @Body() body: RenameBody) {
     return this.doRename(wildcardParam(req), body, req);
@@ -1623,6 +1734,13 @@ export class ManageController {
     const conflict = await prisma.fileRecord.findFirst({ where: { name: newId, NOT: { id: rec.id } } });
     if (conflict) throw new ConflictException('目标文件名已存在');
 
+    /*
+     * v2.8.9：重定向地址里嵌着旧 File_ID（如 /file/oldname）时同步替换 ——
+     * 不替换的话重命名后 /file/:newName 命中 redirectUrl 仍跳旧名 → 404，文件加载不出来。
+     */
+    const oldRedirect = String((rec as unknown as { redirectUrl?: string }).redirectUrl || '');
+    const newRedirect = oldRedirect && oldRedirect.includes(rec.name) ? oldRedirect.split(rec.name).join(newId) : oldRedirect;
+
     // File_ID 里的目录层级同步到 folder（后台列表按目录归类）
     const dir = newId.includes('/') ? newId.split('/').slice(0, -1).join('/') : '';
     const updated = await prisma.fileRecord.update({
@@ -1630,6 +1748,7 @@ export class ManageController {
       data: {
         name: newId,
         folder: dir,
+        ...(newRedirect !== oldRedirect ? { redirectUrl: newRedirect } : {}),
         // 重命名历史（v2.3.0）：把「改之前叫什么」记到 prevName，
         // firstName 只在第一次重命名时补写（老数据可能为空）。
         // 这样改名改花了也能一键回到初始名 / 上一次的名字。
@@ -2301,6 +2420,15 @@ export class UserConfigController {
    * 用户侧配置 —— 直接返回配置对象（前端 `commit('setUserConfig', response.data)`）。
    * 字段名严格对齐原系统，取自页面设置（page）分区的 config 项。
    */
+  /** 失败重试次数：留空 → 3；0 = 不限制；其余按正整数处理，上限 999 */
+  private parseRetryTimes(raw: unknown): number {
+    const n = Number(String(raw ?? '').trim());
+    if (String(raw ?? '').trim() === '') return 3;
+    if (!Number.isFinite(n) || n < 0) return 3;
+    if (n === 0) return 0;
+    return Math.min(999, Math.floor(n));
+  }
+
   @Get('userConfig')
   async userConfig(@Req() req: Request) {
     const s = this.settings;
@@ -2318,6 +2446,15 @@ export class UserConfigController {
     const pv = (id: string, d: any = '') => {
       const item = (page?.config || []).find((x: any) => x.id === id);
       return item && item.value !== undefined && item.value !== null && item.value !== '' ? item.value : d;
+    };
+    /** v2.8.9：布尔配置读取 —— 兼容真布尔与 'true'/'false' 字符串（存库后可能是任一形态） */
+    const pb = (id: string, d = true): boolean => {
+      const v = pv(id, d);
+      if (typeof v === 'boolean') return v;
+      const t = String(v).trim().toLowerCase();
+      if (t === 'false' || t === '0' || t === 'off' || t === 'no') return false;
+      if (t === 'true' || t === '1' || t === 'on' || t === 'yes') return true;
+      return d;
     };
     /**
      * 背景图配置解析 —— 页面设置里保存的是原始字符串（如 `["url1","url2"]`、
@@ -2403,8 +2540,16 @@ export class UserConfigController {
        */
       transcodePolicy: await this.uploadSvc.videoTranscodePolicy(uploader),
       transcodeGlobal: await this.uploadSvc.globalTranscodeEnabled(),
-      /** 自动重试（失败自动切换渠道）—— v2.8.8 起由后台统一配置，前台不再提供开关 */
-      autoRetry: pv('defaultAutoRetry', true) !== false,
+      /*
+       * v2.8.9：把原来被合并的两个开关拆开 ——
+       *   autoRetry   —— 「失败自动重试」总开关（决定前台上传设置里「其他 → 失败自动重试」是否显示，
+       *                   以及所有入口是否允许重试）；
+       *   retryTimes  —— 失败重试次数（留空 3，0 = 不限制）；
+       *   autoSwitch  —— 「自动切换」：上传失败时是否换下一个渠道（与重试相互独立）。
+       */
+      autoRetry: pb('defaultAutoRetry', true),
+      retryTimes: this.parseRetryTimes(pv('defaultRetryTimes', '3')),
+      autoSwitch: pb('defaultAutoSwitch', true),
       defaultCompressBar: pv('defaultCompressBar', '0.8'),
       // 压缩期望：已改为「压缩百分比」（如 80 = 压到原体积 80%）
       defaultCompressQuality: pv('defaultCompressQuality', '80'),

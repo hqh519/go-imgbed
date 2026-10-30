@@ -204,6 +204,8 @@ export class UploadController {
     body: {
       sourceUrl?: string;
       originalName?: string;
+      /** v2.8.9：源地址没有扩展名时的补充（如 immich 的 /api/assets/{id}/original） */
+      extension?: string;
       channelId?: string;
       folder?: string;
       note?: string;
@@ -218,6 +220,7 @@ export class UploadController {
     const result = await this.svc.registerFile({
       sourceUrl: String(body.sourceUrl || ''),
       originalName: String(body.originalName || ''),
+      extension: String(body.extension || ''),
       channelId: String(body.channelId || ''),
       folder: String(body.folder || ''),
       note: String(body.note || ''),
@@ -252,7 +255,16 @@ export class UploadController {
       channelName?: string;
       uploadNameType?: string;
       serverCompress?: string;
+      /** 兼容旧参数名：等价于 autoSwitch */
       autoRetry?: string;
+      /** v2.8.9：「自动切换」——上传失败时是否换下一个渠道；缺省时由后台配置决定 */
+      autoSwitch?: string;
+      /** v2.8.9：前端累计的重试轮次（写进文件处理事件，详情页展示） */
+      retryRound?: string;
+      /** v2.8.9：上一次失败的原因（截断后写进处理事件） */
+      failReason?: string;
+      /** v2.8.9：WebP 未转换原因（前端本地转换时判定，如格式不支持 / 超时 / 转换失败） */
+      webpSkip?: string;
       uploadFolder?: string;
       /** 初始（压缩前）大小 —— 前端本地压缩后仍把原始字节数带上来，供详情页展示「初始 / 当前」 */
       originalSize?: string;
@@ -379,8 +391,18 @@ export class UploadController {
        */
       backup: backupOff ? false : q.backup !== 'false' && q.backup !== '0',
       backupChannelId,
-      // 主渠道失败时按渠道 ID 顺序自动切换下一个渠道
-      autoRetry: q.autoRetry === 'true' || q.autoRetry === '1',
+      /*
+       * v2.8.9：把「自动切换」与「失败自动重试」彻底拆开。
+       *   autoRetry（本参数）只表示「失败后换下一个渠道」，缺省 = 由后台配置决定；
+       *   重试轮次次数由前端按后台「失败重试次数」控制，这里只记录轮次供详情页展示。
+       */
+      autoRetry:
+        q.autoSwitch === undefined && q.autoRetry === undefined
+          ? undefined
+          : (q.autoSwitch ?? q.autoRetry) === 'true' || (q.autoSwitch ?? q.autoRetry) === '1',
+      retryRound: Math.max(0, Number(q.retryRound) || 0),
+      failReason: String(q.failReason || '').slice(0, 300),
+      webpSkip: String(q.webpSkip || '').slice(0, 120),
       // 账户关闭了「类型和大小限制」→ 跳过白名单与大小上限
       skipFileLimits: !enforceLimits,
       // 上传渠道：前端「文件」模式 = Upload，「链接」模式转存 = Fetch，其它入口 = Default

@@ -48,6 +48,24 @@
                         class="setting-input"
                     />
                 </div>
+                <!--
+                    v2.8.9：扩展名 —— 源地址不带扩展名时（Immich 这类 /api/assets/xxx）用它补类型；
+                    源地址本身带扩展名时以后者为准（后端 upload.service.registerFile 已按此优先级处理）。
+                -->
+                <div class="setting-item">
+                    <span class="setting-label">
+                        {{ $t('recordFile.extension') }}
+                        <el-tooltip :content="$t('recordFile.extensionTooltip')" placement="top" raw-content>
+                            <font-awesome-icon icon="question-circle" class="inline-help-icon"/>
+                        </el-tooltip>
+                    </span>
+                    <el-input
+                        v-model.trim="form.extension"
+                        :placeholder="$t('recordFile.extensionPlaceholder')"
+                        clearable
+                        class="setting-input"
+                    />
+                </div>
                 <div class="setting-item">
                     <span class="setting-label">
                         {{ $t('recordFile.channel') }}
@@ -134,7 +152,7 @@ export default {
     emits: ['update:modelValue', 'registered'],
     data() {
         return {
-            form: { sourceUrl: '', originalName: '', channelId: '', folder: '', note: '' },
+            form: { sourceUrl: '', originalName: '', extension: '', channelId: '', folder: '', note: '' },
             channels: [],
             channelsLoading: false,
             submitting: false
@@ -200,7 +218,11 @@ export default {
                 const res = await fetchWithAuth('/api/record', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ ...this.form })
+                    // v2.8.9：扩展名去点、转小写后再提交（后端也会兜底清洗）
+                    body: JSON.stringify({
+                        ...this.form,
+                        extension: String(this.form.extension || '').replace(/^\.+/, '').toLowerCase()
+                    })
                 })
                 const data = await res.json().catch(() => ({}))
                 if (!res.ok || !data.success) {
@@ -215,7 +237,7 @@ export default {
                     })
                 )
                 this.$emit('registered', data.data || {})
-                this.form = { sourceUrl: '', originalName: '', channelId: this.form.channelId, folder: '', note: '' }
+                this.form = { sourceUrl: '', originalName: '', extension: '', channelId: this.form.channelId, folder: '', note: '' }
                 this.visible = false
             } catch (e) {
                 this.$message.error(this.$t('recordFile.failed'))

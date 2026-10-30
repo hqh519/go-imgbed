@@ -28,6 +28,8 @@ export default createStore({
       compressPercent: undefined,
       serverCompress: undefined,
       convertToWebp: undefined,
+      // v2.8.9：前台「失败自动重试」开关（上传设置 → 其他，只管上传 / 转存）
+      localAutoRetry: undefined,
     },
     storeUploadChannel: '',
     storeChannelName: null, // 指定的渠道名称，null表示从未选择，''表示用户主动清空

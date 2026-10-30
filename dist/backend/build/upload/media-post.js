@@ -66,7 +66,12 @@ async function postProcessMediaFile(srcPath, mime, ext, opts) {
         return skip('无法读取文件大小');
     if (!(0, compress_1.ffmpegAvailable)())
         return skip('未安装 ffmpeg，跳过压缩与转码');
-    const maxSeconds = Math.max(30, Number(opts.maxSeconds) || exports.MEDIA_MAX_SECONDS);
+    const rawCompressMax = Number(opts.compressMaxSeconds);
+    const rawTranscodeMax = Number(opts.transcodeMaxSeconds);
+    const compressUnlimited = rawCompressMax === 0;
+    const transcodeUnlimited = rawTranscodeMax === 0;
+    const compressMax = Math.max(30, Number.isFinite(rawCompressMax) && rawCompressMax > 0 ? rawCompressMax : exports.MEDIA_MAX_SECONDS);
+    const transcodeMax = Math.max(30, Number.isFinite(rawTranscodeMax) && rawTranscodeMax > 0 ? rawTranscodeMax : exports.MEDIA_MAX_SECONDS);
     const guard = mediaResourceGuard();
     if (!guard.ok)
         return skip(guard.reason || '系统资源不足，跳过压缩与转码');
@@ -78,13 +83,13 @@ async function postProcessMediaFile(srcPath, mime, ext, opts) {
     let estimated = 0;
     if (opts.compress) {
         estimated = estimateFfmpegSeconds({ sizeBytes: original, durationSec, kind });
-        if (estimated > maxSeconds) {
-            skipReason = `预计耗时约 ${Math.round(estimated)} 秒，超过 ${maxSeconds} 秒上限，放弃压缩`;
+        if (!compressUnlimited && estimated > compressMax) {
+            skipReason = `预计耗时约 ${Math.round(estimated)} 秒，超过 ${compressMax} 秒上限，放弃压缩`;
         }
         else {
             const r = isVideo
-                ? await (0, compress_1.compressVideoFile)(srcPath, e, opts.percent, original, maxSeconds)
-                : await (0, compress_1.compressAudioFile)(srcPath, e, opts.percent, original, maxSeconds);
+                ? await (0, compress_1.compressVideoFile)(srcPath, e, opts.percent, original, compressUnlimited ? exports.MEDIA_MAX_SECONDS : compressMax)
+                : await (0, compress_1.compressAudioFile)(srcPath, e, opts.percent, original, compressUnlimited ? exports.MEDIA_MAX_SECONDS : compressMax);
             if (r.compressed) {
                 cur = r;
                 stage = 'compress';
@@ -111,12 +116,12 @@ async function postProcessMediaFile(srcPath, mime, ext, opts) {
         }
         else {
             const est = estimateFfmpegSeconds({ sizeBytes: cur.size, durationSec, kind: 'video' });
-            if (est > maxSeconds) {
-                skipReason = `${skipReason ? skipReason + '；' : ''}兼容转码预计耗时约 ${Math.round(est)} 秒，超过 ${maxSeconds} 秒上限，放弃转码`;
+            if (!transcodeUnlimited && est > transcodeMax) {
+                skipReason = `${skipReason ? skipReason + '；' : ''}兼容转码预计耗时约 ${Math.round(est)} 秒，超过 ${transcodeMax} 秒上限，放弃转码`;
             }
             else {
                 estimated = Math.max(estimated, est);
-                const r = await (0, compress_1.transcodeVideoFile)(cur.path, cur.size, maxSeconds);
+                const r = await (0, compress_1.transcodeVideoFile)(cur.path, cur.size, transcodeUnlimited ? exports.MEDIA_MAX_SECONDS : transcodeMax);
                 if (r.compressed) {
                     cur = r;
                     stage = 'transcode';
@@ -136,34 +141,56 @@ async function postProcessMediaFile(srcPath, mime, ext, opts) {
         elapsedMs: Date.now() - startedAt,
     };
 }
-let queueRunning = false;
-let currentLabel = '';
-const pendingJobs = [];
-function mediaQueueStats() {
-    return { running: queueRunning, current: currentLabel, pending: pendingJobs.length };
+const lanes = {
+    compress: { limit: 1, running: 0, current: [], queue: [] },
+    transcode: { limit: 1, running: 0, current: [], queue: [] },
+};
+function effectiveLimit(limit) {
+    const n = Number(limit);
+    if (!Number.isFinite(n))
+        return 1;
+    if (n <= 0)
+        return 64;
+    return Math.min(64, Math.max(1, Math.floor(n)));
 }
-async function pump() {
-    if (queueRunning)
-        return;
-    queueRunning = true;
-    try {
-        while (pendingJobs.length) {
-            const job = pendingJobs.shift();
-            currentLabel = job.label;
+function pumpLane(lane) {
+    const st = lanes[lane];
+    while (st.queue.length && st.running < st.limit) {
+        const job = st.queue.shift();
+        st.running += 1;
+        st.current.push(job.label);
+        void (async () => {
             try {
                 await job.run();
             }
             catch (err) {
                 console.warn('[media-post] 任务异常:', job.label, err?.message || err);
             }
-        }
-    }
-    finally {
-        currentLabel = '';
-        queueRunning = false;
+            finally {
+                st.running = Math.max(0, st.running - 1);
+                const idx = st.current.indexOf(job.label);
+                if (idx !== -1)
+                    st.current.splice(idx, 1);
+                pumpLane(lane);
+            }
+        })();
     }
 }
-function enqueueMediaJob(label, run) {
-    pendingJobs.push({ label, run });
-    void pump();
+function mediaQueueStats() {
+    const c = lanes.compress;
+    const t = lanes.transcode;
+    const current = [...c.current, ...t.current].join('、');
+    return {
+        running: c.running + t.running,
+        current,
+        pending: c.queue.length + t.queue.length,
+        compress: { running: c.running, pending: c.queue.length, limit: c.limit },
+        transcode: { running: t.running, pending: t.queue.length, limit: t.limit },
+    };
+}
+function enqueueMediaJob(label, run, lane = 'compress', limit = 1) {
+    const st = lanes[lane];
+    st.limit = effectiveLimit(limit);
+    st.queue.push({ label, run });
+    pumpLane(lane);
 }

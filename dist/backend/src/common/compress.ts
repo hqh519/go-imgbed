@@ -106,6 +106,27 @@ export async function probeMediaDurationFile(srcPath: string): Promise<number> {
   }
 }
 
+/**
+ * 视频尺寸探测（v2.8.9）：`ffmpeg -i` 的 stderr 里带着
+ * `Video: h264 ..., 1920x1080 [SAR 1:1 DAR 16:9], ...`，不解码、几百毫秒返回。
+ * 没有 ffmpeg 或解析不到时返回空对象（详情页留空，不影响上传）。
+ */
+export async function probeVideoSizeFile(srcPath: string): Promise<{ width?: number; height?: number }> {
+  if (!ffmpegAvailable()) return {};
+  try {
+    await run(ffmpegPath, ['-hide_banner', '-i', srcPath], { timeout: 15000, maxBuffer: 4 * 1024 * 1024 });
+    return {};
+  } catch (err) {
+    const stderr = String((err as { stderr?: string }).stderr || '');
+    const m = stderr.match(/(\d{2,5})x(\d{2,5})[\s,\[]/);
+    if (!m) return {};
+    const width = Number(m[1]);
+    const height = Number(m[2]);
+    if (!width || !height) return {};
+    return { width, height };
+  }
+}
+
 /* ---------------- 图片 ---------------- */
 function clampQuality(percent: number): number {
   const p = Number.isFinite(percent) && percent > 0 ? percent : 80;
@@ -273,7 +294,10 @@ export async function readDimensions(
   ext: string,
 ): Promise<{ width?: number; height?: number; duration?: number }> {
   try {
-    if ((mime || '').startsWith('image/') && !SKIP.has(ext)) {
+    const e = String(ext || '').toLowerCase().replace(/^\./, '');
+    // v2.8.9：svg 也读一次（sharp 读矢量头部，代价很小）；gif 仍然跳过（避免整份解码）
+    const readable = ((mime || '').startsWith('image/') && !SKIP.has(e)) || e === 'svg';
+    if (readable) {
       const sharp = (await import('sharp')).default;
       const meta = await sharp(buffer, { limitInputPixels: 100_000_000 }).metadata();
       if (meta.width && meta.height) return { width: meta.width, height: meta.height };
@@ -682,14 +706,25 @@ export async function readDimensionsFile(
   mime: string,
   ext: string,
 ): Promise<{ width?: number; height?: number; duration?: number }> {
+  const e = String(ext || '').toLowerCase().replace(/^\./, '');
   try {
-    if ((mime || '').startsWith('image/') && !SKIP.has(ext)) {
+    const readable = ((mime || '').startsWith('image/') && !SKIP.has(e)) || e === 'svg';
+    if (readable) {
       const sharp = (await import('sharp')).default;
       const meta = await sharp(path, { limitInputPixels: 100_000_000 }).metadata();
       if (meta.width && meta.height) return { width: meta.width, height: meta.height };
     }
   } catch {
     /* 尺寸读不到不影响上传 */
+  }
+  // v2.8.9：视频从容器元信息里读宽高（含手机竖拍视频，读到的就是真实像素尺寸）
+  try {
+    if ((mime || '').startsWith('video/') || VIDEO_OK.has(e)) {
+      const d = await probeVideoSizeFile(path);
+      if (d.width && d.height) return d;
+    }
+  } catch {
+    /* 同上 */
   }
   return {};
 }

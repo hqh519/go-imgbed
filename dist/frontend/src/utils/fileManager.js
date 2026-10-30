@@ -261,6 +261,21 @@ class FileManager {
         // v2.8.7：大小范围筛选（字节）
         if ((Number(filters.sizeMin) || 0) > 0) params += `&sizeMin=${Number(filters.sizeMin)}`;
         if ((Number(filters.sizeMax) || 0) > 0) params += `&sizeMax=${Number(filters.sizeMax)}`;
+        // v2.8.9：大小口径（actual 默认不传；original = 按压缩前的原始体积比较）
+        if (filters.sizeMode === 'original') params += '&sizeMode=original';
+        // v2.8.9：有效期 / 名称状态
+        if (filters.validity && filters.validity.length > 0) {
+            params += `&validity=${encodeURIComponent(filters.validity.join(','))}`;
+        }
+        if (filters.nameChanged && filters.nameChanged.length > 0) {
+            params += `&nameChanged=${encodeURIComponent(filters.nameChanged.join(','))}`;
+        }
+        // v2.8.9：尺寸筛选（快捷预设 + 自定义宽高）
+        if (filters.dimPreset) params += `&dimPreset=${encodeURIComponent(filters.dimPreset)}`;
+        if ((Number(filters.widthMin) || 0) > 0) params += `&widthMin=${Number(filters.widthMin)}`;
+        if ((Number(filters.widthMax) || 0) > 0) params += `&widthMax=${Number(filters.widthMax)}`;
+        if ((Number(filters.heightMin) || 0) > 0) params += `&heightMin=${Number(filters.heightMin)}`;
+        if ((Number(filters.heightMax) || 0) > 0) params += `&heightMax=${Number(filters.heightMax)}`;
         return params;
     }
 

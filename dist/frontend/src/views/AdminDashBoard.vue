@@ -4,8 +4,21 @@
             <!-- 「链接格式」是面向管理员的默认外链格式设置，普通用户隐藏该入口 -->
             <AdminHeader active-tab="dashboard" :show-link-format="isAdminRole" @link-format="showUrlDialog = true">
                 <template #search>
-                    <div class="search-area">
-                        <div class="search-card" :class="{ 'is-settings-open': searchSettingsOpen }">
+                    <div class="search-area" :class="{ 'mobile-search-open': mobileSearchOpen }">
+                        <!-- v2.8.9：移动端搜索按钮（样式同筛选），点一下展开/收起搜索框；刷新页面回到隐藏 -->
+                    <span
+                        class="el-dropdown-link filter-trigger mobile-search-trigger"
+                        role="button"
+                        tabindex="0"
+                        :title="$t('dashboard.searchPlaceholder')"
+                        :aria-label="$t('dashboard.searchPlaceholder')"
+                        :aria-expanded="mobileSearchOpen"
+                        @click="toggleMobileSearch"
+                        @keydown.enter="toggleMobileSearch"
+                    >
+                        <font-awesome-icon icon="search" class="header-icon"/>
+                    </span>
+                    <div class="search-card" :class="{ 'is-settings-open': searchSettingsOpen }">
                             <el-input ref="searchInput" v-model="tempSearch" size="small" :placeholder="$t('dashboard.searchPlaceholder')" @keyup.enter="handleSearch">
                                 <template #prefix>
                                     <!-- 搜索范围：直接嵌在搜索框起始位置，与输入框合成一个整体 -->
@@ -747,6 +760,8 @@ data() {
         isSearchMode: false,
         searchResultDisplay: getStoredOption('searchResultDisplay', SEARCH_RESULT_DISPLAYS, 'expanded'),
         searchSettingsOpen: false,
+        // v2.8.9：移动端搜索框是否展开（不持久化 —— 刷新页面默认收起）
+        mobileSearchOpen: false,
         searchIconPressTimer: null,
         searchIconPressStart: null,
         searchIconLongPressed: false,
@@ -804,6 +819,15 @@ data() {
             ,sizeMin: 0        // 最小大小（字节，0 = 不限）
             ,sizeMax: 0        // 最大大小（字节，0 = 不限）
             ,sizeUnit: 'MB'    // 自定义大小输入单位
+            // v2.8.9：大小口径 / 有效期 / 名称状态 / 尺寸
+            ,sizeMode: 'actual'  // 'actual'（实际大小）| 'original'（原始大小）
+            ,validity: []        // 有效期: 'limited' | 'expired' | 'permanent'
+            ,nameChanged: []     // 名称状态: 'changed'（已改名） | 'unchanged'（未改名）
+            ,dimPreset: ''       // 尺寸快捷: landscape|portrait|square|ratio-4-3|ratio-16-9|360p…8k
+            ,widthMin: 0         // 宽最小（px，0 = 不限）
+            ,widthMax: 0         // 宽最大
+            ,heightMin: 0        // 高最小
+            ,heightMax: 0        // 高最大
         },
         // v2.8.7：筛选弹窗显隐
         showFilterDialog: false,
@@ -894,6 +918,13 @@ computed: {
         let count = Object.values(this.filters).reduce((acc, v) => acc + (Array.isArray(v) ? v.length : 0), 0);
         if (this.filters.dateFrom || this.filters.dateTo) count += 1;
         if ((Number(this.filters.sizeMin) || 0) > 0 || (Number(this.filters.sizeMax) || 0) > 0) count += 1;
+        // v2.8.9：原始大小口径、尺寸条件同样计入角标
+        if (this.filters.sizeMode === 'original') count += 1;
+        if (
+            this.filters.dimPreset ||
+            (Number(this.filters.widthMin) || 0) > 0 || (Number(this.filters.widthMax) || 0) > 0 ||
+            (Number(this.filters.heightMin) || 0) > 0 || (Number(this.filters.heightMax) || 0) > 0
+        ) count += 1;
         return count;
     },
     // 判断是否处于搜索或筛选模式
@@ -1397,7 +1428,16 @@ methods: {
             sizePreset: '',
             sizeMin: 0,
             sizeMax: 0,
-            sizeUnit: 'MB'
+            sizeUnit: 'MB',
+            // v2.8.9
+            sizeMode: 'actual',
+            validity: [],
+            nameChanged: [],
+            dimPreset: '',
+            widthMin: 0,
+            widthMax: 0,
+            heightMin: 0,
+            heightMax: 0
         };
         this.currentPage = 1;
         this.refreshFileList();
@@ -2507,6 +2547,15 @@ methods: {
         // v20261027：阈值 768 → 1024 —— 平板也按触屏处理（悬浮提示改点击、启用触屏手势）
         return window.innerWidth <= 1024;
     },
+    /** v2.8.9：移动端展开 / 收起搜索框（展开后自动聚焦输入框） */
+    toggleMobileSearch() {
+        this.mobileSearchOpen = !this.mobileSearchOpen;
+        if (!this.mobileSearchOpen) return;
+        this.$nextTick(() => {
+            const input = this.$refs.searchInput;
+            if (input && typeof input.focus === 'function') input.focus();
+        });
+    },
     updateResponsivePageSize() {
         // v2.8.2：全终端统一每页 24（含文件夹一起计数），不再按视口降为 18/16
         const nextPageSize = 24;
@@ -3110,6 +3159,41 @@ beforeUnmount() {
 .refresh-files-btn {
     margin-left: 2px;
     padding: 6px 7px;
+}
+/* v2.8.9：PC 端三个按钮左右外边距各 +4px（移动端紧凑布局保持原样） */
+@media (min-width: 1025px) {
+    .refresh-files-btn {
+        margin-left: 6px;
+        margin-right: 4px;
+    }
+}
+/* v2.8.9：移动端搜索按钮 —— 样式与筛选按钮一致的图标触发器；PC 端不显示 */
+.search-area .mobile-search-trigger {
+    display: none;
+}
+@media (max-width: 1023px) {
+    .search-area .mobile-search-trigger {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 6px 10px;
+        flex: 0 0 auto;
+    }
+    /* 搜索框默认收起，点「搜索」按钮才展开 */
+    .search-area .search-card {
+        display: none;
+    }
+    .search-area.mobile-search-open .search-card {
+        display: flex;
+        flex: 1 1 auto;
+        min-width: 0;
+    }
+}
+/* v2.8.9：移动端 / 平板（≤1024）声音切换已收进「更多菜单」，顶栏按钮隐藏 */
+@media (max-width: 1024px) {
+    .mute-toggle-btn {
+        display: none;
+    }
 }
 /* 回收站模式提示条（v2.8.6：底色加深，暗色/亮色下都足够醒目） */
 .trash-banner {

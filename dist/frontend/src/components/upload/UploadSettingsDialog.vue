@@ -153,6 +153,33 @@
         </div>
 
         <!--
+            v2.8.9：「其他」模块 —— 仅在后台「失败自动重试」总开关开启时出现；
+            这里的开关只作用于前台上传 / 链接转存，不影响 WebDAV / API。
+        -->
+        <div class="dialog-section" v-if="autoRetryEnabled">
+            <div class="section-header">
+                <span class="section-title">{{ $t('uploadSettings.other') }}</span>
+                <el-tooltip :content="$t('uploadSettings.otherTooltip')" placement="top" raw-content>
+                    <font-awesome-icon icon="question-circle" class="section-help-icon"/>
+                </el-tooltip>
+            </div>
+            <div class="section-content">
+                <div class="setting-item">
+                    <span class="setting-label">
+                        {{ $t('uploadSettings.autoRetry') }}
+                        <el-tooltip :content="$t('uploadSettings.autoRetryTooltip')" placement="top" raw-content>
+                            <font-awesome-icon icon="question-circle" class="inline-help-icon"/>
+                        </el-tooltip>
+                    </span>
+                    <el-switch
+                        :model-value="localAutoRetry"
+                        @update:model-value="$emit('update:localAutoRetry', $event)"
+                    />
+                </div>
+            </div>
+        </div>
+
+        <!--
             v2.8.8：
               · 「上传限制」（允许格式 / 单文件大小上限）整体移除，改由后台「上传相关配置」
                 与「用户管理 → 单文件大小限制」统一控制；
@@ -200,7 +227,11 @@ export default {
         /** v2.8.8：用户自己选的转码档位（'' = 跟随全局 / 'off' / 'on'），仅 user 策略下有效 */
         transcodeChoice: { type: String, default: '' },
         /** v2.8.8：后台全局「视频兼容转码」当前值（展示「跟随全局」的实际效果） */
-        transcodeGlobal: { type: Boolean, default: true }
+        transcodeGlobal: { type: Boolean, default: true },
+        /** v2.8.9：后台「失败自动重试」总开关 —— 关闭时「其他」模块整体不显示 */
+        autoRetryEnabled: { type: Boolean, default: true },
+        /** v2.8.9：前台「失败自动重试」开关（只管前台上传 / 链接转存） */
+        localAutoRetry: { type: Boolean, default: true }
     },
     emits: [
         'update:modelValue',
@@ -212,7 +243,8 @@ export default {
         'update:compressPercent',
         'update:serverCompress',
         'update:limitCompressExts',
-        'update:transcodeChoice'
+        'update:transcodeChoice',
+        'update:localAutoRetry'
     ],
     data() {
         return {

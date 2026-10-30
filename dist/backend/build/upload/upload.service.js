@@ -413,6 +413,8 @@ let UploadService = class UploadService {
                 (0, file_view_1.channelShort)(info.channelType),
                 (0, file_view_1.normalizeUploadSource)(info.uploadSource),
                 String(new Date().getFullYear()),
+                info.width ? String(info.width) : '',
+                info.height ? String(info.height) : '',
             ]
                 .map((v) => String(v || '').trim())
                 .filter(Boolean)));
@@ -564,6 +566,52 @@ let UploadService = class UploadService {
         const d = new Date();
         return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, '0')}`;
     }
+    async pageValue(id, fallback = '') {
+        try {
+            const page = await this.sysConfig.get('page');
+            const hit = (page?.config || []).find((x) => x.id === id);
+            if (hit && hit.value !== undefined && hit.value !== null)
+                return String(hit.value);
+        }
+        catch {
+        }
+        return fallback;
+    }
+    async mediaSettings() {
+        const num = (raw, fallback) => {
+            const t = String(raw ?? '').trim();
+            if (t === '')
+                return fallback;
+            const n = Number(t);
+            if (!Number.isFinite(n) || n < 0)
+                return fallback;
+            return n === 0 ? 0 : Math.floor(n);
+        };
+        const bool = (raw, fallback) => {
+            const t = String(raw ?? '').trim().toLowerCase();
+            if (t === '')
+                return fallback;
+            return t === 'true' || t === '1';
+        };
+        const [cMax, tMax, cConc, tConc, retry, times, autoSwitch] = await Promise.all([
+            this.pageValue('compressMaxSeconds', '600'),
+            this.pageValue('videoTranscodeMaxSeconds', '600'),
+            this.pageValue('compressConcurrency', '1'),
+            this.pageValue('videoTranscodeConcurrency', '1'),
+            this.pageValue('defaultAutoRetry', 'true'),
+            this.pageValue('defaultRetryTimes', '3'),
+            this.pageValue('defaultAutoSwitch', 'true'),
+        ]);
+        return {
+            compressMax: num(cMax, 600),
+            transcodeMax: num(tMax, 600),
+            compressConcurrency: num(cConc, 1),
+            transcodeConcurrency: num(tConc, 1),
+            retryEnabled: bool(retry, true),
+            retryTimes: num(times, 3),
+            autoSwitch: bool(autoSwitch, true),
+        };
+    }
     async defaultCompressPercent() {
         try {
             const page = await this.sysConfig.get('page');
@@ -595,8 +643,12 @@ let UploadService = class UploadService {
                 app_log_1.appLog.warn('compress', `后置压缩/转码任务创建失败（文件已上传成功，跳过处理）`, `${err.message} ｜ ${job.originalName}`, job.ip);
                 return;
             }
-            (0, media_post_1.enqueueMediaJob)(`${job.fileId}（${job.originalName}）`, () => this.runMediaPostProcess({ ...job, srcPath: path, buffer: Buffer.alloc(0), tempOwned }));
-            app_log_1.appLog.info('compress', `已排入后置处理队列：${job.originalName}`, `压缩=${job.compress ? `${job.percent}%` : '关'} ｜ 兼容转码=${job.transcode ? '开' : '关'} ｜ 队列=${(0, media_post_1.mediaQueueStats)().pending} 等待 | 执行中=${(0, media_post_1.mediaQueueStats)().current || '无'}`, job.ip);
+            const ms = await this.mediaSettings();
+            const lane = job.compress ? 'compress' : 'transcode';
+            const limit = job.compress ? ms.compressConcurrency : ms.transcodeConcurrency;
+            (0, media_post_1.enqueueMediaJob)(`${job.fileId}（${job.originalName}）`, () => this.runMediaPostProcess({ ...job, srcPath: path, buffer: Buffer.alloc(0), tempOwned }), lane, limit);
+            const stats = (0, media_post_1.mediaQueueStats)();
+            app_log_1.appLog.info('compress', `已排入后置处理队列：${job.originalName}`, `压缩=${job.compress ? `${job.percent}%` : '关'} ｜ 兼容转码=${job.transcode ? '开' : '关'} ｜ 通道=${lane}(${limit === 0 ? '不限' : `${limit} 路`}) ｜ 队列=${stats.pending} 等待 | 执行中=${stats.current || '无'}`, job.ip);
         })();
     }
     async runMediaPostProcess(job) {
@@ -615,14 +667,42 @@ let UploadService = class UploadService {
                 app_log_1.appLog.warn('compress', `后置处理跳过：目标渠道已不存在`, job.fileId, job.ip);
                 return;
             }
+            const ms = await this.mediaSettings();
             const r = await (0, media_post_1.postProcessMediaFile)(job.srcPath, job.mime, job.ext, {
                 compress: job.compress,
                 percent: job.percent,
                 transcode: job.transcode,
+                compressMaxSeconds: ms.compressMax,
+                transcodeMaxSeconds: ms.transcodeMax,
             });
             if (r.skipReason) {
                 app_log_1.appLog.info('compress', `后置处理未改变文件：${rec.originalName}`, `${r.skipReason} ｜ 耗时 ${r.elapsedMs ?? 0}ms${r.codec ? ` ｜ 编码=${r.codec}` : ''}`, job.ip);
             }
+            const skipped = r.skipReason || '';
+            const ev = {};
+            if (job.compress) {
+                ev.compress =
+                    r.stage === 'compress'
+                        ? { status: 'done', ms: r.elapsedMs, size: r.size }
+                        : { status: 'skipped', ms: r.elapsedMs, reason: skipped || '压缩未生效' };
+            }
+            else {
+                ev.compress = { status: 'skipped', reason: '压缩开关未开启' };
+            }
+            if (job.transcode) {
+                ev.transcode =
+                    r.stage === 'transcode'
+                        ? { status: 'done', ms: r.elapsedMs, codec: r.codec }
+                        : r.stage === 'compress'
+                            ? { status: 'skipped', reason: '压缩产物已是 H.264，无需转码' }
+                            : {
+                                status: (r.codec && !r.compressed) ? 'skipped' : 'failed',
+                                ms: r.elapsedMs,
+                                reason: skipped || '无需转码或转码未生效',
+                                codec: r.codec,
+                            };
+            }
+            await this.writeProcessEvent(job.recordId, ev);
             if (!r.compressed || r.stage === 'none')
                 return;
             const info = this.toChannelInfo(ch);
@@ -661,6 +741,26 @@ let UploadService = class UploadService {
             for (const suffix of ['.cmp.mp4', '.cmp.webm', '.cmp.m4a', '.cmp.mp3', '.h264.mp4']) {
                 await fs_1.promises.unlink(`${job.srcPath}${suffix}`).catch(() => undefined);
             }
+        }
+    }
+    async writeProcessEvent(recordId, patch) {
+        try {
+            const cur = await prisma_1.prisma.fileRecord.findUnique({ where: { id: recordId }, select: { metas: true } });
+            if (!cur)
+                return;
+            let metas = {};
+            try {
+                metas = JSON.parse(cur.metas || '{}');
+            }
+            catch {
+                metas = {};
+            }
+            const prev = (metas.ProcessEvent && typeof metas.ProcessEvent === 'object' ? metas.ProcessEvent : {});
+            metas.ProcessEvent = { ...prev, ...patch, updatedAt: new Date().toISOString() };
+            await prisma_1.prisma.fileRecord.update({ where: { id: recordId }, data: { metas: JSON.stringify(metas) } });
+        }
+        catch (err) {
+            app_log_1.appLog.warn('compress', `处理事件写入失败（不影响文件）`, err?.message || String(err));
         }
     }
     mediaQueue() {
@@ -925,12 +1025,18 @@ let UploadService = class UploadService {
         const wantTranscode = isVideo ? await this.transcodeDecision(opts.uploader, opts.videoTranscode) : false;
         const srcExt = originalName.includes('.') ? String(originalName.split('.').pop() || '') : '';
         const compressPercent = opts.compressPercent && opts.compressPercent > 0 ? opts.compressPercent : await this.defaultCompressPercent();
+        let imageCompress;
         if (wantCompress && isImage) {
+            const c0 = Date.now();
             if (size > COMPRESS_MAX_BYTES) {
+                imageCompress = { status: 'skipped', reason: `超过压缩上限（${(COMPRESS_MAX_BYTES / 1024 / 1024).toFixed(0)}MB）` };
                 console.log(`[upload] 跳过压缩：文件 ${(size / 1024 / 1024).toFixed(1)}MB 超过压缩上限`);
             }
             else if (srcPath) {
                 const r = await (0, compress_1.compressFile)(srcPath, mime, srcExt, compressPercent);
+                imageCompress = r.compressed
+                    ? { status: 'done', ms: Date.now() - c0 }
+                    : { status: 'skipped', ms: Date.now() - c0, reason: r.reason || '压缩未生效' };
                 if (r.compressed) {
                     srcPath = r.path;
                     size = r.size;
@@ -945,6 +1051,9 @@ let UploadService = class UploadService {
             }
             else {
                 const r = await (0, compress_1.compressMedia)(buffer, mime, srcExt, compressPercent);
+                imageCompress = r.compressed
+                    ? { status: 'done', ms: Date.now() - c0 }
+                    : { status: 'skipped', ms: Date.now() - c0, reason: r.reason || '压缩未生效' };
                 if (r.compressed) {
                     const before = buffer.length;
                     buffer = r.buffer;
@@ -965,8 +1074,11 @@ let UploadService = class UploadService {
             : await (0, compress_1.readDimensions)(buffer, mime, mime.split('/')[1] || '');
         const folder = await this.resolveFolder(opts.uploadFolder);
         const key = this.makeKeyFor(main, originalName, opts.uploadNameType, md5);
+        const ms = await this.mediaSettings();
+        const retryEnabled = opts.autoRetry === undefined ? ms.retryEnabled : opts.autoRetry;
+        const allowSwitch = retryEnabled && ms.autoSwitch;
         const chain = [main];
-        if (opts.autoRetry) {
+        if (allowSwitch) {
             const pool = await prisma_1.prisma.channel.findMany({
                 where: { enabled: true, backupPool: true, NOT: { id: main.id } },
                 orderBy: { code: 'asc' },
@@ -1007,13 +1119,13 @@ let UploadService = class UploadService {
             }
             catch (err) {
                 lastErr = err.message || String(err);
-                app_log_1.appLog.warn('upload', `渠道上传失败：${ch.name}（${ch.type}）${opts.autoRetry ? '，尝试自动切换下一个渠道' : ''}`, `${lastErr} ｜ key=${key} ｜ 大小=${size}B ｜ 文件=${originalName}`, uploadIp);
+                app_log_1.appLog.warn('upload', `渠道上传失败：${ch.name}（${ch.type}）${allowSwitch ? '，尝试自动切换下一个渠道' : ''}`, `${lastErr} ｜ key=${key} ｜ 大小=${size}B ｜ 文件=${originalName}`, uploadIp);
             }
         }
         if (!result) {
             return {
                 id: '',
-                error: opts.autoRetry
+                error: allowSwitch
                     ? `所有可用渠道均上传失败（最后错误：${lastErr}）`
                     : `存储渠道「${main.name}」上传失败：${lastErr}`,
             };
@@ -1022,6 +1134,20 @@ let UploadService = class UploadService {
             app_log_1.appLog.info('upload', `自动切换成功：${main.name} → ${usedChannel.name}（${usedChannel.type}）`, `key=${key}`, uploadIp);
         }
         app_log_1.appLog.info('upload', `上传成功：${usedChannel.name}（${usedChannel.type}）`, `${key} ｜ ${size}B ｜ 耗时 ${Date.now() - startedAt}ms ｜ 文件=${originalName}`, uploadIp);
+        const processEvent = {};
+        const retryRound = Math.max(0, Number(opts.retryRound) || 0);
+        if (retryRound) {
+            processEvent.retries = retryRound;
+            processEvent.failCount = retryRound;
+        }
+        if (opts.failReason)
+            processEvent.failReason = opts.failReason;
+        if (usedChannel.id !== main.id)
+            processEvent.switchedTo = usedChannel.name;
+        if (imageCompress)
+            processEvent.compress = imageCompress;
+        if (opts.webpSkip)
+            processEvent.webp = { status: 'skipped', reason: opts.webpSkip };
         const fileId = opts.presetFileId
             ? await this.uniqueFileId(this.sanitizeFileId(opts.presetFileId))
             : this.makeFileId();
@@ -1044,6 +1170,7 @@ let UploadService = class UploadService {
                 metas: JSON.stringify({
                     UploadAddress: uploadAddress,
                     ...(dims.width && dims.height ? { Width: dims.width, Height: dims.height } : {}),
+                    ...(Object.keys(processEvent).length ? { ProcessEvent: processEvent } : {}),
                 }),
                 copies: {
                     create: {
@@ -1102,6 +1229,8 @@ let UploadService = class UploadService {
             mime,
             channelType: usedChannel.type,
             uploadSource: opts.uploadSource,
+            width: dims.width,
+            height: dims.height,
         }));
         if (opts.backup !== false) {
             const payload = { buffer, path: srcPath, size, mime, originalName };
@@ -1184,7 +1313,14 @@ let UploadService = class UploadService {
             originalName = last || `file-${Date.now()}`;
         }
         originalName = originalName.replace(/[\\/]/g, '_').slice(0, 200);
-        let ext = originalName.includes('.') ? String(originalName.split('.').pop() || '').toLowerCase() : '';
+        const urlBase = decodeURIComponent(url.pathname.split('/').filter(Boolean).pop() || '');
+        const urlExt = /\.([A-Za-z0-9]{1,10})$/.test(urlBase) ? String(urlBase.split('.').pop() || '').toLowerCase() : '';
+        const givenExt = String(input.extension || '')
+            .trim()
+            .replace(/^\.+/, '')
+            .toLowerCase();
+        const validGivenExt = /^[a-z0-9]{1,10}$/.test(givenExt) ? givenExt : '';
+        let ext = urlExt || validGivenExt;
         const MIME_EXT = {
             'image/jpeg': 'jpg',
             'image/png': 'png',
@@ -1202,12 +1338,14 @@ let UploadService = class UploadService {
         };
         if (!ext) {
             ext = MIME_EXT[mimeClean] || 'bin';
-            originalName = `${originalName}.${ext}`;
         }
+        if (!/\.[A-Za-z0-9]{1,10}$/.test(originalName))
+            originalName = `${originalName}.${ext}`;
         const mime = mimeClean || UploadService_1.EXT_MIME[ext] || 'application/octet-stream';
         const md5Cap = Math.max(1, Number(process.env.RECORD_MD5_MAX_MB || 256)) * 1024 * 1024;
         let md5 = '';
         let size = contentLength;
+        let sampleBuffer;
         const canHash = contentLength > 0 ? contentLength <= md5Cap : true;
         if (canHash) {
             try {
@@ -1216,6 +1354,9 @@ let UploadService = class UploadService {
                     const hash = (0, crypto_1.createHash)('md5');
                     let total = 0;
                     let over = false;
+                    const sampleLimit = 8 * 1024 * 1024;
+                    const chunks = [];
+                    let sampled = 0;
                     for await (const chunk of res.body) {
                         total += chunk.length;
                         if (total > md5Cap) {
@@ -1223,6 +1364,10 @@ let UploadService = class UploadService {
                             break;
                         }
                         hash.update(chunk);
+                        if (sampled <= sampleLimit) {
+                            chunks.push(Buffer.from(chunk));
+                            sampled += chunk.length;
+                        }
                     }
                     if (over) {
                         md5 = '';
@@ -1233,6 +1378,8 @@ let UploadService = class UploadService {
                         md5 = hash.digest('hex');
                         if (!size)
                             size = total;
+                        if (sampled > 0 && sampled <= sampleLimit)
+                            sampleBuffer = Buffer.concat(chunks);
                     }
                 }
             }
@@ -1247,6 +1394,12 @@ let UploadService = class UploadService {
         const folder = await this.resolveFolder(input.folder);
         const fileId = await this.uniqueFileId(this.makeFileId());
         const now = new Date();
+        const hostMatch = this.matchChannelUrlField(ch, url);
+        const sameHost = !!hostMatch && !url.search;
+        const objectKey = decodeURIComponent(url.pathname.replace(/^\/+/, ''));
+        const dims = sampleBuffer
+            ? await (0, compress_1.readDimensions)(sampleBuffer, mime, ext)
+            : { width: undefined, height: undefined };
         const record = await prisma_1.prisma.fileRecord.create({
             data: {
                 name: fileId,
@@ -1264,22 +1417,72 @@ let UploadService = class UploadService {
                 note: String(input.note || '').slice(0, 2000),
                 uploadStartedAt: now,
                 uploadFinishedAt: now,
-                metas: JSON.stringify({ UploadAddress: uploadAddress, Registered: true, SourceUrl: rawUrl }),
+                metas: JSON.stringify({
+                    UploadAddress: uploadAddress,
+                    Registered: true,
+                    SourceUrl: rawUrl,
+                    SourceOnChannel: sameHost,
+                    ...(hostMatch ? { SourceHostField: hostMatch.field } : {}),
+                    ...(sameHost ? {} : { SourceOrigin: url.origin }),
+                    ...(dims.width && dims.height ? { Width: dims.width, Height: dims.height } : {}),
+                }),
                 copies: {
                     create: {
                         channelId: ch.id,
-                        remoteKey: decodeURIComponent(url.pathname.replace(/^\//, '')),
-                        remoteUrl: rawUrl,
+                        remoteKey: objectKey,
+                        remoteUrl: sameHost ? '' : rawUrl,
                         status: 'active',
                         isPrimary: true,
                     },
                 },
             },
         });
-        this.enqueueBackground(() => this.autoTag(record.id, { originalName, mime, channelType: ch.type, uploadSource: 'Record' }));
+        this.enqueueBackground(() => this.autoTag(record.id, {
+            originalName,
+            mime,
+            channelType: ch.type,
+            uploadSource: 'Record',
+            width: dims.width,
+            height: dims.height,
+        }));
         this.enqueueBackground(() => this.touchIp(uploadIp, uploadAddress));
-        app_log_1.appLog.info('record', `登记文件成功：${originalName}`, `渠道=${ch.name} ｜ ${size}B ｜ mime=${mime} ｜ md5=${md5 || '未获取'} ｜ 源=${rawUrl}`, uploadIp);
+        app_log_1.appLog.info('record', `登记文件成功：${originalName}`, `渠道=${ch.name} ｜ ${size}B ｜ mime=${mime} ｜ md5=${md5 || '未获取'} ｜ ${sameHost ? '渠道内文件（外链随渠道域名）' : '外部文件（保留绝对地址）'} ｜ 源=${rawUrl}`, uploadIp);
         return { id: fileId, info: { name: originalName, size, mime, md5, channel: ch.name } };
+    }
+    matchChannelUrlField(ch, url) {
+        let cfg = {};
+        try {
+            cfg = (this.channels.decryptConfig(ch.type, ch.config) || {});
+        }
+        catch {
+            return null;
+        }
+        const hostOf = (raw) => {
+            const v = String(raw || '').trim();
+            if (!/^https?:\/\//i.test(v))
+                return '';
+            try {
+                return new URL(v).host.toLowerCase();
+            }
+            catch {
+                return '';
+            }
+        };
+        const target = url.host.toLowerCase();
+        const priority = ['internalDomain', 'publicDomain', 'apiUrl'];
+        for (const field of priority) {
+            const host = hostOf(cfg[field]);
+            if (host && host === target)
+                return { field, host };
+        }
+        for (const [field, value] of Object.entries(cfg)) {
+            if (priority.includes(field) || typeof value !== 'string')
+                continue;
+            const host = hostOf(value);
+            if (host && host === target)
+                return { field, host };
+        }
+        return null;
     }
     async backupUpload(fileId, file, key, backup, owner) {
         await prisma_1.prisma.fileCopy.upsert({

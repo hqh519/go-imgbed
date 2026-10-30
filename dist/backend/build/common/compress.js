@@ -36,6 +36,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.VIDEO_CODEC_INCOMPATIBLE = exports.MEDIA_POST_MAX_SECONDS = void 0;
 exports.ffmpegAvailable = ffmpegAvailable;
 exports.probeMediaDurationFile = probeMediaDurationFile;
+exports.probeVideoSizeFile = probeVideoSizeFile;
 exports.compressMedia = compressMedia;
 exports.readDimensions = readDimensions;
 exports.compressFile = compressFile;
@@ -101,6 +102,25 @@ async function probeMediaDurationFile(srcPath) {
         if (!m)
             return 0;
         return Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]);
+    }
+}
+async function probeVideoSizeFile(srcPath) {
+    if (!ffmpegAvailable())
+        return {};
+    try {
+        await run(ffmpegPath, ['-hide_banner', '-i', srcPath], { timeout: 15000, maxBuffer: 4 * 1024 * 1024 });
+        return {};
+    }
+    catch (err) {
+        const stderr = String(err.stderr || '');
+        const m = stderr.match(/(\d{2,5})x(\d{2,5})[\s,\[]/);
+        if (!m)
+            return {};
+        const width = Number(m[1]);
+        const height = Number(m[2]);
+        if (!width || !height)
+            return {};
+        return { width, height };
     }
 }
 function clampQuality(percent) {
@@ -240,7 +260,9 @@ async function compressMedia(buffer, mime, ext, percent, opts) {
 }
 async function readDimensions(buffer, mime, ext) {
     try {
-        if ((mime || '').startsWith('image/') && !SKIP.has(ext)) {
+        const e = String(ext || '').toLowerCase().replace(/^\./, '');
+        const readable = ((mime || '').startsWith('image/') && !SKIP.has(e)) || e === 'svg';
+        if (readable) {
             const sharp = (await Promise.resolve().then(() => __importStar(require('sharp')))).default;
             const meta = await sharp(buffer, { limitInputPixels: 100_000_000 }).metadata();
             if (meta.width && meta.height)
@@ -582,12 +604,23 @@ async function processVideoBuffer(buffer, e, percent, opts) {
     return compressVideo(buffer, e, percent);
 }
 async function readDimensionsFile(path, mime, ext) {
+    const e = String(ext || '').toLowerCase().replace(/^\./, '');
     try {
-        if ((mime || '').startsWith('image/') && !SKIP.has(ext)) {
+        const readable = ((mime || '').startsWith('image/') && !SKIP.has(e)) || e === 'svg';
+        if (readable) {
             const sharp = (await Promise.resolve().then(() => __importStar(require('sharp')))).default;
             const meta = await sharp(path, { limitInputPixels: 100_000_000 }).metadata();
             if (meta.width && meta.height)
                 return { width: meta.width, height: meta.height };
+        }
+    }
+    catch {
+    }
+    try {
+        if ((mime || '').startsWith('video/') || VIDEO_OK.has(e)) {
+            const d = await probeVideoSizeFile(path);
+            if (d.width && d.height)
+                return d;
         }
     }
     catch {

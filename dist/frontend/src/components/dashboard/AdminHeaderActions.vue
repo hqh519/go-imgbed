@@ -12,6 +12,11 @@
                             <font-awesome-icon :icon="themeIcon" class="admin-more-menu-ico" />
                             <span>{{ themeText }}</span>
                         </button>
+                        <!-- v2.8.9：移动端把「声音切换」收进更多菜单，放在语言切换上方 -->
+                        <button type="button" class="el-dropdown-menu__item" @click="handleMoreCommand('sound')">
+                            <font-awesome-icon :icon="globalVideoMuted ? 'volume-mute' : 'volume-up'" class="admin-more-menu-ico" />
+                            <span>{{ globalVideoMuted ? $t('dashboard.soundEnable') : $t('dashboard.soundDisable') }}</span>
+                        </button>
                         <button type="button" class="el-dropdown-menu__item" @click="handleMoreCommand('lang')">
                             <font-awesome-icon icon="globe" class="admin-more-menu-ico" />
                             <span>{{ langText }}</span>
@@ -82,6 +87,10 @@ export default {
         },
         langText() {
             return this.$i18n.locale === 'zh-CN' ? 'English' : '中文';
+        },
+        /** v2.8.9：全局视频静音状态（移动端更多菜单里显示「开启声音 / 关闭声音」） */
+        globalVideoMuted() {
+            return this.$store.state.globalVideoMuted;
         }
     },
     methods: {
@@ -100,6 +109,11 @@ export default {
                     this.$store.commit('setCusDarkMode', false);
                     writeThemeCookie('auto');
                 }
+                return;
+            }
+            if (cmd === 'sound') {
+                // v2.8.9：移动端更多菜单里的声音切换（与顶栏按钮同一份状态）
+                this.$store.commit('setGlobalVideoMuted', !this.globalVideoMuted);
                 return;
             }
             if (cmd === 'lang') {

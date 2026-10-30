@@ -191,6 +191,8 @@ class HttpPostAdapter {
     buildDirectUrl(copy, channel, preferInternal) {
         const cfg = channel.config;
         let url = copy.remoteUrl;
+        if (!url && copy.remoteKey)
+            url = copy.remoteKey.replace(/^\/+/, '');
         if (!url)
             return null;
         url = normalizeUrl(url, (preferInternal && cfg.internalDomain) || cfg.publicDomain, cfg.apiUrl);

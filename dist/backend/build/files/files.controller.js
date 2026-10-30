@@ -35,6 +35,7 @@ const app_log_1 = require("../common/app-log");
 const project_paths_1 = require("../common/project-paths");
 const qqwry_1 = require("../common/qqwry");
 const ip_query_1 = require("../common/ip-query");
+const path_template_1 = require("../common/path-template");
 function splitCsv(v) {
     return v ? v.split(',').map((s) => s.trim()).filter(Boolean) : [];
 }
@@ -682,6 +683,49 @@ let ManageController = class ManageController {
         const toMs = dateTo ? dayStartMs(dateTo) + 86_400_000 - 1 : 0;
         const sizeMin = Math.max(0, Number(q.sizeMin) || 0);
         const sizeMax = Math.max(0, Number(q.sizeMax) || 0);
+        const fValidity = splitCsv(q.validity).map((v) => v.toLowerCase());
+        const fNameChanged = splitCsv(q.nameChanged).map((v) => v.toLowerCase());
+        const sizeMode = String(q.sizeMode || 'actual').toLowerCase() === 'original' ? 'original' : 'actual';
+        const fDimPreset = splitCsv(q.dimPreset).map((v) => v.toLowerCase());
+        const widthMin = Math.max(0, Number(q.widthMin) || 0);
+        const widthMax = Math.max(0, Number(q.widthMax) || 0);
+        const heightMin = Math.max(0, Number(q.heightMin) || 0);
+        const heightMax = Math.max(0, Number(q.heightMax) || 0);
+        const matchDimPreset = (w, h, preset) => {
+            if (!w || !h)
+                return false;
+            const short = Math.min(w, h);
+            const long = Math.max(w, h);
+            const ratio = long / Math.max(1, short);
+            switch (preset) {
+                case 'landscape':
+                    return w > h;
+                case 'portrait':
+                    return h > w;
+                case 'square':
+                    return Math.abs(w - h) <= Math.max(2, Math.round(long * 0.01));
+                case 'ratio-4-3':
+                    return Math.abs(ratio - 4 / 3) <= 0.06;
+                case 'ratio-16-9':
+                    return Math.abs(ratio - 16 / 9) <= 0.08;
+                case '360p':
+                    return short >= 300 && short < 420;
+                case '480p':
+                    return short >= 420 && short < 600;
+                case '720p':
+                    return short >= 600 && short < 840;
+                case '1080p':
+                    return short >= 840 && short < 1300;
+                case '2k':
+                    return short >= 1300 && short < 1800;
+                case '4k':
+                    return short >= 1800 && short < 2600;
+                case '8k':
+                    return short >= 4000;
+                default:
+                    return false;
+            }
+        };
         const rows = await prisma_1.prisma.fileRecord.findMany({
             where: { status: 'active', ...(ownerFilter ? { uploader: ownerFilter } : {}) },
             include: {
@@ -787,10 +831,45 @@ let ManageController = class ManageController {
                 if (toMs && t > toMs)
                     return false;
             }
-            if (sizeMin > 0 && (r.size || 0) < sizeMin)
+            const cmpSize = sizeMode === 'original'
+                ? Number(r.originalSize) || r.size || 0
+                : r.size || 0;
+            if (sizeMin > 0 && cmpSize < sizeMin)
                 return false;
-            if (sizeMax > 0 && (r.size || 0) > sizeMax)
+            if (sizeMax > 0 && cmpSize > sizeMax)
                 return false;
+            if (fValidity.length) {
+                const exp = r.linkExpiresAt;
+                const expMs = exp ? new Date(exp).getTime() : 0;
+                const now = Date.now();
+                const ok = (fValidity.includes('limited') && expMs > now) ||
+                    (fValidity.includes('expired') && expMs > 0 && expMs <= now) ||
+                    (fValidity.includes('permanent') && !expMs);
+                if (!ok)
+                    return false;
+            }
+            if (fNameChanged.length) {
+                const renamed = !!String(r.prevName || '');
+                const ok = (fNameChanged.includes('changed') && renamed) || (fNameChanged.includes('unchanged') && !renamed);
+                if (!ok)
+                    return false;
+            }
+            if (fDimPreset.length || widthMin || widthMax || heightMin || heightMax) {
+                const w = Number(metas.Width || 0);
+                const h = Number(metas.Height || 0);
+                if (!w || !h)
+                    return false;
+                if (widthMin && w < widthMin)
+                    return false;
+                if (widthMax && w > widthMax)
+                    return false;
+                if (heightMin && h < heightMin)
+                    return false;
+                if (heightMax && h > heightMax)
+                    return false;
+                if (fDimPreset.length && !fDimPreset.some((p) => matchDimPreset(w, h, p)))
+                    return false;
+            }
             return true;
         });
         const dirBare = dir.replace(/\/+$/, '');
@@ -1293,6 +1372,23 @@ let ManageController = class ManageController {
     renamePost(req, body) {
         return this.doRename(wildcardParam(req), body, req);
     }
+    async generateRenameName(req) {
+        if (!(await this.userPerm(req, 'edit')))
+            throw new common_1.ForbiddenException('没有编辑权限');
+        const raw = String(req.query.name || '').trim();
+        const dot = raw.lastIndexOf('.');
+        const ext = dot > 0 ? raw.slice(dot + 1).toLowerCase() : '';
+        const stem = dot > 0 ? raw.slice(0, dot) : raw;
+        const dir = stem.includes('/') ? `${stem.split('/').slice(0, -1).join('/')}/` : '';
+        const generated = (0, path_template_1.renderFileName)('', {
+            originalName: raw,
+            stem: stem.split('/').pop() || stem,
+            ext,
+            md5: '',
+            timestamp: Date.now(),
+        });
+        return { success: true, name: `${dir}${generated}${ext ? `.${ext}` : ''}` };
+    }
     rename(req, body) {
         return this.doRename(wildcardParam(req), body, req);
     }
@@ -1318,12 +1414,15 @@ let ManageController = class ManageController {
         const conflict = await prisma_1.prisma.fileRecord.findFirst({ where: { name: newId, NOT: { id: rec.id } } });
         if (conflict)
             throw new common_1.ConflictException('目标文件名已存在');
+        const oldRedirect = String(rec.redirectUrl || '');
+        const newRedirect = oldRedirect && oldRedirect.includes(rec.name) ? oldRedirect.split(rec.name).join(newId) : oldRedirect;
         const dir = newId.includes('/') ? newId.split('/').slice(0, -1).join('/') : '';
         const updated = await prisma_1.prisma.fileRecord.update({
             where: { id: rec.id },
             data: {
                 name: newId,
                 folder: dir,
+                ...(newRedirect !== oldRedirect ? { redirectUrl: newRedirect } : {}),
                 prevName: rec.name,
                 firstName: rec.firstName || rec.name,
             },
@@ -1860,6 +1959,13 @@ __decorate([
     __metadata("design:returntype", void 0)
 ], ManageController.prototype, "renamePost", null);
 __decorate([
+    (0, common_1.Get)('rename/generate'),
+    __param(0, (0, common_1.Req)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object]),
+    __metadata("design:returntype", Promise)
+], ManageController.prototype, "generateRenameName", null);
+__decorate([
     (0, common_1.Patch)('rename/*'),
     __param(0, (0, common_1.Req)()),
     __param(1, (0, common_1.Body)()),
@@ -2132,6 +2238,16 @@ let UserConfigController = class UserConfigController {
     channelBrief(c) {
         return c ? { id: c.id, code: c.code, name: c.name, type: c.type } : null;
     }
+    parseRetryTimes(raw) {
+        const n = Number(String(raw ?? '').trim());
+        if (String(raw ?? '').trim() === '')
+            return 3;
+        if (!Number.isFinite(n) || n < 0)
+            return 3;
+        if (n === 0)
+            return 0;
+        return Math.min(999, Math.floor(n));
+    }
     async userConfig(req) {
         const s = this.settings;
         const uploader = (0, auth_guard_1.currentSession)(req)?.user || '';
@@ -2146,6 +2262,17 @@ let UserConfigController = class UserConfigController {
         const pv = (id, d = '') => {
             const item = (page?.config || []).find((x) => x.id === id);
             return item && item.value !== undefined && item.value !== null && item.value !== '' ? item.value : d;
+        };
+        const pb = (id, d = true) => {
+            const v = pv(id, d);
+            if (typeof v === 'boolean')
+                return v;
+            const t = String(v).trim().toLowerCase();
+            if (t === 'false' || t === '0' || t === 'off' || t === 'no')
+                return false;
+            if (t === 'true' || t === '1' || t === 'on' || t === 'yes')
+                return true;
+            return d;
         };
         const asBk = (v) => {
             if (Array.isArray(v))
@@ -2195,7 +2322,9 @@ let UserConfigController = class UserConfigController {
             compressEnabled: pv('defaultCustomerCompress', true) === true,
             transcodePolicy: await this.uploadSvc.videoTranscodePolicy(uploader),
             transcodeGlobal: await this.uploadSvc.globalTranscodeEnabled(),
-            autoRetry: pv('defaultAutoRetry', true) !== false,
+            autoRetry: pb('defaultAutoRetry', true),
+            retryTimes: this.parseRetryTimes(pv('defaultRetryTimes', '3')),
+            autoSwitch: pb('defaultAutoSwitch', true),
             defaultCompressBar: pv('defaultCompressBar', '0.8'),
             defaultCompressQuality: pv('defaultCompressQuality', '80'),
             defaultUrlForm: pv('defaultUrlForm', 'url'),

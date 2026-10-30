@@ -110,7 +110,14 @@ interface UploadOptions {
    */
   skipFileLimits?: boolean;
   /** 主渠道失败时按渠道 ID 顺序自动切换下一个渠道 */
+  /** 是否允许「失败后换下一个渠道」；缺省 = 读后台「自动切换」配置（v2.8.9） */
   autoRetry?: boolean;
+  /** 前端累计的重试轮次（写进文件处理事件，v2.8.9） */
+  retryRound?: number;
+  /** 上一次失败原因（写进文件处理事件，v2.8.9） */
+  failReason?: string;
+  /** WebP 未转换原因（前端本地转换，v2.8.9） */
+  webpSkip?: string;
 }
 
 interface UploadInput {
@@ -621,12 +628,21 @@ export class UploadService {
    *   存储渠道类型简称（COS / ALI / EI / LS / IM / MI / R2 / S3 / WD / DIY）
    *   上传渠道（Default / WebDAV / API-Web / API-S3）
    *   当前年份（如 2026）
+   *   文件宽度 / 文件高度（v2.8.9：各算一个独立标签，读到才打）
    * 开关：settings.autoTagEnabled（缺省开启，设成 false 可关闭）。
    * 全程 try/catch —— 打标签失败绝不能影响已经成功的上传。
    */
   private async autoTag(
     fileId: string,
-    info: { originalName: string; mime: string; channelType: string; uploadSource?: string },
+    info: {
+      originalName: string;
+      mime: string;
+      channelType: string;
+      uploadSource?: string;
+      /** v2.8.9：文件尺寸也各算一个独立标签（宽、高分别打） */
+      width?: number;
+      height?: number;
+    },
   ): Promise<void> {
     try {
       if ((await this.settings.get('autoTagEnabled', 'true')) === 'false') return;
@@ -639,6 +655,8 @@ export class UploadService {
             channelShort(info.channelType),
             normalizeUploadSource(info.uploadSource),
             String(new Date().getFullYear()),
+            info.width ? String(info.width) : '',
+            info.height ? String(info.height) : '',
           ]
             .map((v) => String(v || '').trim())
             .filter(Boolean),
@@ -865,6 +883,63 @@ export class UploadService {
     return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, '0')}`;
   }
 
+  /** 读取 page 分区某个配置项的值（统一 string，缺失返回 fallback） */
+  private async pageValue(id: string, fallback = ''): Promise<string> {
+    try {
+      const page: any = await this.sysConfig.get('page');
+      const hit = (page?.config || []).find((x: any) => x.id === id);
+      if (hit && hit.value !== undefined && hit.value !== null) return String(hit.value);
+    } catch {
+      /* 配置读取失败 → 用默认值 */
+    }
+    return fallback;
+  }
+
+  /**
+   * 后台「上传相关配置」里的媒体处理参数（v2.8.9）。
+   * 空值 → 默认值；0 → 不限制；其它按正整数。
+   */
+  private async mediaSettings(): Promise<{
+    compressMax: number;
+    transcodeMax: number;
+    compressConcurrency: number;
+    transcodeConcurrency: number;
+    retryEnabled: boolean;
+    retryTimes: number;
+    autoSwitch: boolean;
+  }> {
+    const num = (raw: string, fallback: number): number => {
+      const t = String(raw ?? '').trim();
+      if (t === '') return fallback;
+      const n = Number(t);
+      if (!Number.isFinite(n) || n < 0) return fallback;
+      return n === 0 ? 0 : Math.floor(n);
+    };
+    const bool = (raw: string, fallback: boolean): boolean => {
+      const t = String(raw ?? '').trim().toLowerCase();
+      if (t === '') return fallback;
+      return t === 'true' || t === '1';
+    };
+    const [cMax, tMax, cConc, tConc, retry, times, autoSwitch] = await Promise.all([
+      this.pageValue('compressMaxSeconds', '600'),
+      this.pageValue('videoTranscodeMaxSeconds', '600'),
+      this.pageValue('compressConcurrency', '1'),
+      this.pageValue('videoTranscodeConcurrency', '1'),
+      this.pageValue('defaultAutoRetry', 'true'),
+      this.pageValue('defaultRetryTimes', '3'),
+      this.pageValue('defaultAutoSwitch', 'true'),
+    ]);
+    return {
+      compressMax: num(cMax, 600),
+      transcodeMax: num(tMax, 600),
+      compressConcurrency: num(cConc, 1),
+      transcodeConcurrency: num(tConc, 1),
+      retryEnabled: bool(retry, true),
+      retryTimes: num(times, 3),
+      autoSwitch: bool(autoSwitch, true),
+    };
+  }
+
   /** 后台默认压缩期望（百分比），非法时回退 80 */
   private async defaultCompressPercent(): Promise<number> {
     try {
@@ -908,13 +983,21 @@ export class UploadService {
         );
         return;
       }
-      enqueueMediaJob(`${job.fileId}（${job.originalName}）`, () =>
-        this.runMediaPostProcess({ ...job, srcPath: path, buffer: Buffer.alloc(0), tempOwned }),
+      // v2.8.9：压缩与转码各走一条通道，并发数由后台「同时处理任务数」决定（默认各 1 路）
+      const ms = await this.mediaSettings();
+      const lane = job.compress ? 'compress' : 'transcode';
+      const limit = job.compress ? ms.compressConcurrency : ms.transcodeConcurrency;
+      enqueueMediaJob(
+        `${job.fileId}（${job.originalName}）`,
+        () => this.runMediaPostProcess({ ...job, srcPath: path, buffer: Buffer.alloc(0), tempOwned }),
+        lane,
+        limit,
       );
+      const stats = mediaQueueStats();
       appLog.info(
         'compress',
         `已排入后置处理队列：${job.originalName}`,
-        `压缩=${job.compress ? `${job.percent}%` : '关'} ｜ 兼容转码=${job.transcode ? '开' : '关'} ｜ 队列=${mediaQueueStats().pending} 等待 | 执行中=${mediaQueueStats().current || '无'}`,
+        `压缩=${job.compress ? `${job.percent}%` : '关'} ｜ 兼容转码=${job.transcode ? '开' : '关'} ｜ 通道=${lane}(${limit === 0 ? '不限' : `${limit} 路`}) ｜ 队列=${stats.pending} 等待 | 执行中=${stats.current || '无'}`,
         job.ip,
       );
     })();
@@ -943,10 +1026,13 @@ export class UploadService {
         return;
       }
 
+      const ms = await this.mediaSettings();
       const r = await postProcessMediaFile(job.srcPath, job.mime, job.ext, {
         compress: job.compress,
         percent: job.percent,
         transcode: job.transcode,
+        compressMaxSeconds: ms.compressMax,
+        transcodeMaxSeconds: ms.transcodeMax,
       });
       if (r.skipReason) {
         appLog.info(
@@ -956,6 +1042,32 @@ export class UploadService {
           job.ip,
         );
       }
+      // v2.8.9：把压缩 / 转码结果写进文件处理事件（详情页「处理记录」一行）
+      const skipped = r.skipReason || '';
+      const ev: Record<string, unknown> = {};
+      if (job.compress) {
+        ev.compress =
+          r.stage === 'compress'
+            ? { status: 'done', ms: r.elapsedMs, size: r.size }
+            : { status: 'skipped', ms: r.elapsedMs, reason: skipped || '压缩未生效' };
+      } else {
+        ev.compress = { status: 'skipped', reason: '压缩开关未开启' };
+      }
+      if (job.transcode) {
+        ev.transcode =
+          r.stage === 'transcode'
+            ? { status: 'done', ms: r.elapsedMs, codec: r.codec }
+            : r.stage === 'compress'
+              ? { status: 'skipped', reason: '压缩产物已是 H.264，无需转码' }
+              : {
+                  status: (r.codec && !r.compressed) ? 'skipped' : 'failed',
+                  ms: r.elapsedMs,
+                  reason: skipped || '无需转码或转码未生效',
+                  codec: r.codec,
+                };
+      }
+      await this.writeProcessEvent(job.recordId, ev);
+
       if (!r.compressed || r.stage === 'none') return;
 
       const info = this.toChannelInfo(ch);
@@ -1015,6 +1127,28 @@ export class UploadService {
       for (const suffix of ['.cmp.mp4', '.cmp.webm', '.cmp.m4a', '.cmp.mp3', '.h264.mp4']) {
         await fsp.unlink(`${job.srcPath}${suffix}`).catch(() => undefined);
       }
+    }
+  }
+
+  /**
+   * 合并写入「文件处理事件」（v2.8.9）。
+   * 存在 metas.ProcessEvent 里，只覆盖传入的字段，不动其它处理结果与归属地等字段。
+   */
+  private async writeProcessEvent(recordId: string, patch: Record<string, unknown>): Promise<void> {
+    try {
+      const cur = await prisma.fileRecord.findUnique({ where: { id: recordId }, select: { metas: true } });
+      if (!cur) return;
+      let metas: Record<string, any> = {};
+      try {
+        metas = JSON.parse(cur.metas || '{}');
+      } catch {
+        metas = {};
+      }
+      const prev = (metas.ProcessEvent && typeof metas.ProcessEvent === 'object' ? metas.ProcessEvent : {}) as Record<string, unknown>;
+      metas.ProcessEvent = { ...prev, ...patch, updatedAt: new Date().toISOString() };
+      await prisma.fileRecord.update({ where: { id: recordId }, data: { metas: JSON.stringify(metas) } });
+    } catch (err) {
+      appLog.warn('compress', `处理事件写入失败（不影响文件）`, (err as Error)?.message || String(err));
     }
   }
 
@@ -1428,11 +1562,18 @@ export class UploadService {
     const compressPercent =
       opts.compressPercent && opts.compressPercent > 0 ? opts.compressPercent : await this.defaultCompressPercent();
 
+    /** v2.8.9：图片是同步压缩的，这里把结果留下，稍后写进「文件处理事件」 */
+    let imageCompress: { status: 'done' | 'skipped'; ms?: number; reason?: string } | undefined;
     if (wantCompress && isImage) {
+      const c0 = Date.now();
       if (size > COMPRESS_MAX_BYTES) {
+        imageCompress = { status: 'skipped', reason: `超过压缩上限（${(COMPRESS_MAX_BYTES / 1024 / 1024).toFixed(0)}MB）` };
         console.log(`[upload] 跳过压缩：文件 ${(size / 1024 / 1024).toFixed(1)}MB 超过压缩上限`);
       } else if (srcPath) {
         const r = await compressFile(srcPath, mime, srcExt, compressPercent);
+        imageCompress = r.compressed
+          ? { status: 'done', ms: Date.now() - c0 }
+          : { status: 'skipped', ms: Date.now() - c0, reason: r.reason || '压缩未生效' };
         if (r.compressed) {
           srcPath = r.path;
           size = r.size;
@@ -1449,6 +1590,9 @@ export class UploadService {
         }
       } else {
         const r = await compressMedia(buffer, mime, srcExt, compressPercent);
+        imageCompress = r.compressed
+          ? { status: 'done', ms: Date.now() - c0 }
+          : { status: 'skipped', ms: Date.now() - c0, reason: r.reason || '压缩未生效' };
         if (r.compressed) {
           const before = buffer.length;
           buffer = r.buffer;
@@ -1486,8 +1630,15 @@ export class UploadService {
      *   2) 池为空且调用方允许自动切换时，退回历史行为（全部启用渠道按 code 升序）。
      * 备份渠道（isBackup）不参与切换：备份失败只记日志，绝不反复重传。
      */
+    // v2.8.9：「自动切换存储库」建立在「失败自动重试」之上——
+    //   · 入口未传 autoRetry（WebDAV / API 等）→ 全局 retryEnabled && autoSwitch 决定；
+    //   · 入口明确传 autoRetry=false（重试关闭）→ 不重试也不切换；
+    //   · 全局切换开关关闭、重试开启 → 重试仍执行，只是不换渠道。
+    const ms = await this.mediaSettings();
+    const retryEnabled = opts.autoRetry === undefined ? ms.retryEnabled : opts.autoRetry;
+    const allowSwitch = retryEnabled && ms.autoSwitch;
     const chain: StorageChannelInfo[] = [main];
-    if (opts.autoRetry) {
+    if (allowSwitch) {
       const pool = await prisma.channel.findMany({
         where: { enabled: true, backupPool: true, NOT: { id: main.id } },
         orderBy: { code: 'asc' },
@@ -1530,7 +1681,7 @@ export class UploadService {
         // 同时写一条结构化日志，便于在后台「系统日志」里排查。
         appLog.warn(
           'upload',
-          `渠道上传失败：${ch.name}（${ch.type}）${opts.autoRetry ? '，尝试自动切换下一个渠道' : ''}`,
+          `渠道上传失败：${ch.name}（${ch.type}）${allowSwitch ? '，尝试自动切换下一个渠道' : ''}`,
           `${lastErr} ｜ key=${key} ｜ 大小=${size}B ｜ 文件=${originalName}`,
           uploadIp,
         );
@@ -1539,7 +1690,7 @@ export class UploadService {
     if (!result) {
       return {
         id: '',
-        error: opts.autoRetry
+        error: allowSwitch
           ? `所有可用渠道均上传失败（最后错误：${lastErr}）`
           : `存储渠道「${main.name}」上传失败：${lastErr}`,
       };
@@ -1557,6 +1708,22 @@ export class UploadService {
     // 文件对外标识（/file/<name>）：
     //   默认用系统生成的随机 ID；S3 协议场景用客户端上传时的 Object Key，
     //   这样客户端用「自定义域名 + key」自行拼出的地址恰好就是本站的签发链接。
+    /*
+     * v2.8.9：组装「文件处理事件」—— 详情页在「重定向」下方单列一行展示。
+     * 这里能确定的：失败次数 / 重试轮次 / 失败原因 / 自动切换到的渠道 / WebP 未转换原因 /
+     * 图片的同步压缩结果。视频与音频的压缩、转码结果在后台队列完成后补写（writeProcessEvent）。
+     */
+    const processEvent: Record<string, unknown> = {};
+    const retryRound = Math.max(0, Number(opts.retryRound) || 0);
+    if (retryRound) {
+      processEvent.retries = retryRound;
+      processEvent.failCount = retryRound;
+    }
+    if (opts.failReason) processEvent.failReason = opts.failReason;
+    if (usedChannel.id !== main.id) processEvent.switchedTo = usedChannel.name;
+    if (imageCompress) processEvent.compress = imageCompress;
+    if (opts.webpSkip) processEvent.webp = { status: 'skipped', reason: opts.webpSkip };
+
     const fileId = opts.presetFileId
       ? await this.uniqueFileId(this.sanitizeFileId(opts.presetFileId))
       : this.makeFileId();
@@ -1583,6 +1750,7 @@ export class UploadService {
         metas: JSON.stringify({
           UploadAddress: uploadAddress,
           ...(dims.width && dims.height ? { Width: dims.width, Height: dims.height } : {}),
+          ...(Object.keys(processEvent).length ? { ProcessEvent: processEvent } : {}),
         }),
         // 主渠道副本与文件记录一次写入（嵌套 create = 同一事务），少一次往返
         // isPrimary 补记（v1.8.0：此前只靠「第一条副本即主副本」的隐式约定，字段一直是 false）
@@ -1657,6 +1825,8 @@ export class UploadService {
         mime,
         channelType: usedChannel.type,
         uploadSource: opts.uploadSource,
+        width: dims.width,
+        height: dims.height,
       }),
     );
 
@@ -1701,6 +1871,8 @@ export class UploadService {
   async registerFile(input: {
     sourceUrl: string;
     originalName?: string;
+    /** v2.8.9：源地址没有扩展名时的补充（可带点/不带点） */
+    extension?: string;
     channelId: string;
     folder?: string;
     note?: string;
@@ -1774,7 +1946,21 @@ export class UploadService {
     // 名称里不能带路径分隔符，避免污染存储 key
     originalName = originalName.replace(/[\\/]/g, '_').slice(0, 200);
 
-    let ext = originalName.includes('.') ? String(originalName.split('.').pop() || '').toLowerCase() : '';
+    /*
+     * v2.8.9：扩展名解析优先级
+     *   1) 源地址最后一段自带扩展名（如 immich 之外的常规图床）；
+     *   2) 源地址没有扩展名时，用「扩展名」输入框补的值（可带点可不带点）；
+     *   3) 都没有 → 按响应头 MIME 推断；再不行用 bin。
+     * 注意：immich 这类 /api/assets/{id}/original 链接没有扩展名，必须靠第 2 步。
+     */
+    const urlBase = decodeURIComponent(url.pathname.split('/').filter(Boolean).pop() || '');
+    const urlExt = /\.([A-Za-z0-9]{1,10})$/.test(urlBase) ? String(urlBase.split('.').pop() || '').toLowerCase() : '';
+    const givenExt = String(input.extension || '')
+      .trim()
+      .replace(/^\.+/, '')
+      .toLowerCase();
+    const validGivenExt = /^[a-z0-9]{1,10}$/.test(givenExt) ? givenExt : '';
+    let ext = urlExt || validGivenExt;
     const MIME_EXT: Record<string, string> = {
       'image/jpeg': 'jpg',
       'image/png': 'png',
@@ -1792,14 +1978,16 @@ export class UploadService {
     };
     if (!ext) {
       ext = MIME_EXT[mimeClean] || 'bin';
-      originalName = `${originalName}.${ext}`;
     }
+    // 名称没有扩展名（immich 链接常见）→ 用解析出的扩展名补全，否则 /file 无法判断类型
+    if (!/\.[A-Za-z0-9]{1,10}$/.test(originalName)) originalName = `${originalName}.${ext}`;
     const mime = mimeClean || UploadService.EXT_MIME[ext] || 'application/octet-stream';
 
     // ---- 2) MD5（可选，失败留空）----
     const md5Cap = Math.max(1, Number(process.env.RECORD_MD5_MAX_MB || 256)) * 1024 * 1024;
     let md5 = '';
     let size = contentLength;
+    let sampleBuffer: Buffer | undefined;
     const canHash = contentLength > 0 ? contentLength <= md5Cap : true;
     if (canHash) {
       try {
@@ -1808,6 +1996,10 @@ export class UploadService {
           const hash = createHash('md5');
           let total = 0;
           let over = false;
+          // v2.8.9：顺手留一份 ≤8MB 的样本，用来读图片/视频尺寸（大文件跳过，不额外下载）
+          const sampleLimit = 8 * 1024 * 1024;
+          const chunks: Buffer[] = [];
+          let sampled = 0;
           for await (const chunk of res.body as unknown as AsyncIterable<Uint8Array>) {
             total += chunk.length;
             if (total > md5Cap) {
@@ -1815,6 +2007,10 @@ export class UploadService {
               break;
             }
             hash.update(chunk);
+            if (sampled <= sampleLimit) {
+              chunks.push(Buffer.from(chunk));
+              sampled += chunk.length;
+            }
           }
           if (over) {
             md5 = '';
@@ -1822,6 +2018,7 @@ export class UploadService {
           } else {
             md5 = hash.digest('hex');
             if (!size) size = total;
+            if (sampled > 0 && sampled <= sampleLimit) sampleBuffer = Buffer.concat(chunks);
           }
         }
       } catch {
@@ -1836,6 +2033,22 @@ export class UploadService {
     const folder = await this.resolveFolder(input.folder);
     const fileId = await this.uniqueFileId(this.makeFileId());
     const now = new Date();
+    /*
+     * v2.8.9：外链签发与普通上传保持一致 —— 不把源站域名写死进副本。
+     *   · 源地址就落在该渠道的域名上（按 内网通信域名 → 公网访问域名 → 上传接口地址
+     *     的优先级逐个匹配 host，命中哪个字段就把命中字段记进 metas.SourceHostField）：
+     *       只存 object key（remoteKey），remoteUrl 留空；读取时由适配器按渠道当前配置
+     *       以同样优先级重拼直链，以后渠道换域名，登记文件的外链自动跟着变。
+     *   · 源地址是别处的文件（immich、第三方图床）：没有渠道内 key 可用，
+     *       只能保留完整地址（同时也留一份 SourceUrl 便于追溯），这类文件与渠道域名本就无关。
+     *   · 带查询串（签名链接）时按绝对地址保留，避免丢掉鉴权参数。
+     */
+    const hostMatch = this.matchChannelUrlField(ch, url);
+    const sameHost = !!hostMatch && !url.search;
+    const objectKey = decodeURIComponent(url.pathname.replace(/^\/+/, ''));
+    const dims = sampleBuffer
+      ? await readDimensions(sampleBuffer, mime, ext)
+      : { width: undefined, height: undefined };
     const record = await prisma.fileRecord.create({
       data: {
         name: fileId,
@@ -1853,7 +2066,15 @@ export class UploadService {
         note: String(input.note || '').slice(0, 2000),
         uploadStartedAt: now,
         uploadFinishedAt: now,
-        metas: JSON.stringify({ UploadAddress: uploadAddress, Registered: true, SourceUrl: rawUrl }),
+        metas: JSON.stringify({
+          UploadAddress: uploadAddress,
+          Registered: true,
+          SourceUrl: rawUrl,
+          SourceOnChannel: sameHost,
+          ...(hostMatch ? { SourceHostField: hostMatch.field } : {}),
+          ...(sameHost ? {} : { SourceOrigin: url.origin }),
+          ...(dims.width && dims.height ? { Width: dims.width, Height: dims.height } : {}),
+        }),
         /*
          * 副本只作「记录归属」。remoteUrl 存完整源地址（/file 会优先把它当绝对地址代理），
          * remoteKey 存 URL 路径，便于在渠道视角里看出文件位置。
@@ -1862,8 +2083,8 @@ export class UploadService {
         copies: {
           create: {
             channelId: ch.id,
-            remoteKey: decodeURIComponent(url.pathname.replace(/^\//, '')),
-            remoteUrl: rawUrl,
+            remoteKey: objectKey,
+            remoteUrl: sameHost ? '' : rawUrl,
             status: 'active',
             isPrimary: true,
           },
@@ -1871,17 +2092,64 @@ export class UploadService {
       },
     });
     this.enqueueBackground(() =>
-      this.autoTag(record.id, { originalName, mime, channelType: ch.type, uploadSource: 'Record' }),
+      this.autoTag(record.id, {
+        originalName,
+        mime,
+        channelType: ch.type,
+        uploadSource: 'Record',
+        width: dims.width,
+        height: dims.height,
+      }),
     );
     this.enqueueBackground(() => this.touchIp(uploadIp, uploadAddress));
 
     appLog.info(
       'record',
       `登记文件成功：${originalName}`,
-      `渠道=${ch.name} ｜ ${size}B ｜ mime=${mime} ｜ md5=${md5 || '未获取'} ｜ 源=${rawUrl}`,
+      `渠道=${ch.name} ｜ ${size}B ｜ mime=${mime} ｜ md5=${md5 || '未获取'} ｜ ${sameHost ? '渠道内文件（外链随渠道域名）' : '外部文件（保留绝对地址）'} ｜ 源=${rawUrl}`,
       uploadIp,
     );
     return { id: fileId, info: { name: originalName, size, mime, md5, channel: ch.name } };
+  }
+
+  /**
+   * v2.8.9：按优先级把源地址 host 与渠道配置的域名逐一匹配：
+   *   内网通信域名（internalDomain）→ 公开访问域名（publicDomain）→ 上传接口地址（apiUrl）。
+   * 命中哪个字段就返回哪个（登记文件按该域名的 path 提取存储，签发时也按同样优先级重拼）。
+   * 非 http-post 渠道的域名字段名不同（serverUrl / endpoint / domain…），前三个都未命中时
+   * 再按任意形如 http(s):// 的字符串字段兜底匹配，保持旧行为不漏判。
+   */
+  private matchChannelUrlField(
+    ch: { type: string; config: string },
+    url: URL,
+  ): { field: string; host: string } | null {
+    let cfg: Record<string, unknown> = {};
+    try {
+      cfg = (this.channels.decryptConfig(ch.type, ch.config) || {}) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+    const hostOf = (raw: unknown): string => {
+      const v = String(raw || '').trim();
+      if (!/^https?:\/\//i.test(v)) return '';
+      try {
+        return new URL(v).host.toLowerCase();
+      } catch {
+        return '';
+      }
+    };
+    const target = url.host.toLowerCase();
+    const priority = ['internalDomain', 'publicDomain', 'apiUrl'];
+    for (const field of priority) {
+      const host = hostOf(cfg[field]);
+      if (host && host === target) return { field, host };
+    }
+    for (const [field, value] of Object.entries(cfg)) {
+      if (priority.includes(field) || typeof value !== 'string') continue;
+      const host = hostOf(value);
+      if (host && host === target) return { field, host };
+    }
+    return null;
   }
 
   private async backupUpload(
