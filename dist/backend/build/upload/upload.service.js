@@ -14,6 +14,8 @@ exports.UploadService = void 0;
 const common_1 = require("@nestjs/common");
 const crypto_1 = require("crypto");
 const fs_1 = require("fs");
+const os_1 = require("os");
+const path_1 = require("path");
 const prisma_1 = require("../common/prisma");
 const crypto_service_1 = require("../common/crypto.service");
 const settings_service_1 = require("../settings/settings.service");
@@ -27,6 +29,7 @@ const file_view_1 = require("../common/file-view");
 const app_log_1 = require("../common/app-log");
 const path_template_1 = require("../common/path-template");
 const compress_1 = require("../common/compress");
+const media_post_1 = require("./media-post");
 const COMPRESS_MAX_BYTES = Math.max(512, Number(process.env.COMPRESS_MAX_MB || 4096)) * 1024 * 1024;
 const STREAM_REQUIRED_BYTES = 256 * 1024 * 1024;
 let UploadService = class UploadService {
@@ -195,10 +198,15 @@ let UploadService = class UploadService {
             return cm;
         return 'application/octet-stream';
     }
-    async validate(input, override) {
+    async validate(input, override, uploader) {
         const base = await this.limits();
         const exts = override?.exts && override.exts.length ? override.exts : base.exts;
-        const maxMB = override?.maxMB && override.maxMB > 0 ? override.maxMB : base.maxMB;
+        const userMaxMB = await this.userMaxFileSizeMB(uploader);
+        const maxMB = override?.maxMB && override.maxMB > 0
+            ? override.maxMB
+            : userMaxMB > 0
+                ? userMaxMB
+                : base.maxMB;
         const ext = (input.originalName.split('.').pop() || '').toLowerCase();
         if (!ext || ext === input.originalName.toLowerCase()) {
             return '无法识别文件类型（缺少扩展名）';
@@ -208,7 +216,10 @@ let UploadService = class UploadService {
         }
         const size = Number(input.size || 0) || (input.path ? (await fs_1.promises.stat(input.path)).size : input.buffer.length);
         if (size > maxMB * 1024 * 1024) {
-            return `文件超过 ${maxMB}MB 上限（当前 ${(size / 1024 / 1024).toFixed(1)}MB），请到「其他设置 → 上传相关配置」调大单文件大小上限`;
+            const scope = userMaxMB > 0 && !(override?.maxMB && override.maxMB > 0)
+                ? `该账户的单文件大小限制为 ${maxMB}MB`
+                : `单文件大小上限 ${maxMB}MB（可在「其他设置 → 上传相关配置」调整）`;
+            return `文件超过${scope}（当前 ${(size / 1024 / 1024).toFixed(1)}MB）`;
         }
         const head = input.buffer.length ? input.buffer.subarray(0, 64) : await this.readHead(input.path || '', 64);
         if (this.signatureOk(head, ext) === false) {
@@ -567,6 +578,97 @@ let UploadService = class UploadService {
     makeFileId() {
         return crypto_service_1.CryptoService.fileId(48);
     }
+    deferMediaPostProcess(job) {
+        void (async () => {
+            let path = job.srcPath;
+            let tempOwned = false;
+            try {
+                if (!path) {
+                    const dir = (0, path_1.join)((0, os_1.tmpdir)(), 'goimgbed-post');
+                    await fs_1.promises.mkdir(dir, { recursive: true });
+                    path = (0, path_1.join)(dir, `${job.fileId.replace(/[\\/:*?"<>|]/g, '_')}.${job.ext || 'bin'}`);
+                    await fs_1.promises.writeFile(path, job.buffer);
+                    tempOwned = true;
+                }
+            }
+            catch (err) {
+                app_log_1.appLog.warn('compress', `后置压缩/转码任务创建失败（文件已上传成功，跳过处理）`, `${err.message} ｜ ${job.originalName}`, job.ip);
+                return;
+            }
+            (0, media_post_1.enqueueMediaJob)(`${job.fileId}（${job.originalName}）`, () => this.runMediaPostProcess({ ...job, srcPath: path, buffer: Buffer.alloc(0), tempOwned }));
+            app_log_1.appLog.info('compress', `已排入后置处理队列：${job.originalName}`, `压缩=${job.compress ? `${job.percent}%` : '关'} ｜ 兼容转码=${job.transcode ? '开' : '关'} ｜ 队列=${(0, media_post_1.mediaQueueStats)().pending} 等待 | 执行中=${(0, media_post_1.mediaQueueStats)().current || '无'}`, job.ip);
+        })();
+    }
+    async runMediaPostProcess(job) {
+        const t0 = Date.now();
+        try {
+            const rec = await prisma_1.prisma.fileRecord.findUnique({
+                where: { id: job.recordId },
+                select: { status: true, originalName: true, size: true, md5: true },
+            });
+            if (!rec || rec.status !== 'active') {
+                app_log_1.appLog.info('compress', `后置处理跳过：文件已删除或不在正常状态`, job.fileId, job.ip);
+                return;
+            }
+            const ch = await prisma_1.prisma.channel.findUnique({ where: { id: job.channelId } });
+            if (!ch) {
+                app_log_1.appLog.warn('compress', `后置处理跳过：目标渠道已不存在`, job.fileId, job.ip);
+                return;
+            }
+            const r = await (0, media_post_1.postProcessMediaFile)(job.srcPath, job.mime, job.ext, {
+                compress: job.compress,
+                percent: job.percent,
+                transcode: job.transcode,
+            });
+            if (r.skipReason) {
+                app_log_1.appLog.info('compress', `后置处理未改变文件：${rec.originalName}`, `${r.skipReason} ｜ 耗时 ${r.elapsedMs ?? 0}ms${r.codec ? ` ｜ 编码=${r.codec}` : ''}`, job.ip);
+            }
+            if (!r.compressed || r.stage === 'none')
+                return;
+            const info = this.toChannelInfo(ch);
+            const newName = r.ext ? rec.originalName.replace(/\.[^.]+$/, '') + r.ext : rec.originalName;
+            const key = this.makeKeyFor({ id: ch.id, code: ch.code, name: ch.name, type: ch.type, config: ch.config }, newName, job.nameType, rec.md5 || '');
+            const adapter = (0, adapter_factory_1.createAdapter)(info);
+            const up = await this.uploadToAdapter(adapter, { buffer: Buffer.alloc(0), path: r.path, size: r.size, mime: r.mime || job.mime, originalName: newName }, key, info, job.uploader);
+            const copy = await prisma_1.prisma.fileCopy.findFirst({
+                where: { fileId: job.recordId, channelId: ch.id },
+                select: { id: true, remoteKey: true, remoteUrl: true },
+            });
+            await prisma_1.prisma.fileCopy.update({
+                where: { fileId_channelId: { fileId: job.recordId, channelId: ch.id } },
+                data: { remoteKey: up.remoteKey, remoteUrl: up.remoteUrl || '', status: 'active' },
+            });
+            await prisma_1.prisma.fileRecord.update({
+                where: { id: job.recordId },
+                data: { size: r.size, mime: r.mime || job.mime, originalName: newName },
+            });
+            if (copy && (copy.remoteKey || copy.remoteUrl)) {
+                try {
+                    await adapter.delete((0, adapter_factory_1.toCopyInfo)(copy), info);
+                }
+                catch (err) {
+                    app_log_1.appLog.warn('compress', `旧对象删除失败（不影响新外链）`, `${err.message} ｜ ${copy.remoteKey}`, job.ip);
+                }
+            }
+            app_log_1.appLog.info('compress', `后置${r.stage === 'transcode' ? '兼容转码' : '压缩'}完成：${rec.originalName} → ${newName}`, `${rec.size}B → ${r.size}B ｜ 耗时 ${Date.now() - t0}ms（估算 ${r.estimatedSeconds ?? '-'}s）｜ 渠道=${ch.name}`, job.ip);
+        }
+        catch (err) {
+            app_log_1.appLog.warn('compress', `后置处理失败（渠道与原记录均保持不变）：${job.originalName}`, `${err.message} ｜ 耗时 ${Date.now() - t0}ms`, job.ip);
+        }
+        finally {
+            if (job.tempOwned && job.srcPath)
+                await fs_1.promises.unlink(job.srcPath).catch(() => undefined);
+            for (const suffix of ['.cmp.mp4', '.cmp.webm', '.cmp.m4a', '.cmp.mp3', '.h264.mp4']) {
+                await fs_1.promises.unlink(`${job.srcPath}${suffix}`).catch(() => undefined);
+            }
+        }
+    }
+    mediaQueue() {
+        return (0, media_post_1.mediaQueueStats)();
+    }
+    mediaMaxSeconds() {
+        return media_post_1.MEDIA_MAX_SECONDS;
+    }
     sanitizeFileId(raw) {
         let s = String(raw || '').trim();
         s = s.replace(/^https?:\/\/[^/]+/i, '');
@@ -654,7 +756,7 @@ let UploadService = class UploadService {
             return true;
         }
     }
-    async videoTranscodeEnabled() {
+    async globalTranscodeEnabled() {
         try {
             const page = await this.sysConfig.get('page');
             const item = (page?.config || []).find((x) => x.id === 'videoTranscodeIncompatible');
@@ -666,6 +768,72 @@ let UploadService = class UploadService {
         }
         catch {
             return true;
+        }
+    }
+    async videoTranscodePolicy(username) {
+        const name = String(username || '').trim();
+        if (!name)
+            return 'inherit';
+        const normalize = (v) => v === 'off' || v === 'on' || v === 'user' ? v : 'inherit';
+        try {
+            const row = await prisma_1.prisma.user.findUnique({
+                where: { username: name },
+                select: { transcodePolicy: true },
+            });
+            if (row)
+                return normalize(row.transcodePolicy);
+            const prof = await this.adminProfileIfAdmin(name);
+            if (prof)
+                return normalize(prof.transcodePolicy);
+            return 'inherit';
+        }
+        catch {
+            return 'inherit';
+        }
+    }
+    async adminProfileIfAdmin(username) {
+        try {
+            const security = await this.sysConfig.get('security');
+            const adminName = String(security?.auth?.admin?.adminUsername || '').trim() ||
+                (process.env.ADMIN_USER || '').trim() ||
+                'admin';
+            if (username !== adminName)
+                return null;
+            const prof = await this.sysConfig.get('adminProfile');
+            return prof && typeof prof === 'object' ? prof : null;
+        }
+        catch {
+            return null;
+        }
+    }
+    async transcodeDecision(uploader, explicit) {
+        const policy = await this.videoTranscodePolicy(uploader);
+        if (policy === 'on')
+            return true;
+        if (policy === 'off')
+            return false;
+        if (policy === 'user' && typeof explicit === 'boolean')
+            return explicit;
+        return this.globalTranscodeEnabled();
+    }
+    async userMaxFileSizeMB(username) {
+        const name = String(username || '').trim();
+        if (!name)
+            return 0;
+        try {
+            const row = await prisma_1.prisma.user.findUnique({
+                where: { username: name },
+                select: { maxFileSizeMB: true },
+            });
+            if (row)
+                return Math.max(0, Number(row.maxFileSizeMB) || 0);
+            const prof = await this.adminProfileIfAdmin(name);
+            if (prof)
+                return Math.max(0, Number(prof.maxFileSizeMB) || 0);
+            return 0;
+        }
+        catch {
+            return 0;
         }
     }
     async upload(input, opts) {
@@ -685,7 +853,7 @@ let UploadService = class UploadService {
             size = srcPath ? (await fs_1.promises.stat(srcPath)).size : buffer.length;
         }
         if (!opts.skipFileLimits) {
-            const invalid = await this.validate(input, opts.limitsOverride);
+            const invalid = await this.validate(input, opts.limitsOverride, opts.uploader);
             if (invalid)
                 return { id: '', error: invalid };
         }
@@ -751,30 +919,32 @@ let UploadService = class UploadService {
         }
         const uploadAddress = await this.cachedAddress(uploadIp);
         const wantCompress = opts.serverCompress ?? (await this.defaultServerCompress());
-        const wantTranscode = await this.videoTranscodeEnabled();
         const isVideo = (mime || '').startsWith('video/');
-        if (wantCompress || (wantTranscode && isVideo)) {
-            const srcExt = originalName.includes('.') ? String(originalName.split('.').pop() || '') : '';
-            const pct = opts.compressPercent && opts.compressPercent > 0 ? opts.compressPercent : await this.defaultCompressPercent();
+        const isAudio = (mime || '').startsWith('audio/');
+        const isImage = (mime || '').startsWith('image/');
+        const wantTranscode = isVideo ? await this.transcodeDecision(opts.uploader, opts.videoTranscode) : false;
+        const srcExt = originalName.includes('.') ? String(originalName.split('.').pop() || '') : '';
+        const compressPercent = opts.compressPercent && opts.compressPercent > 0 ? opts.compressPercent : await this.defaultCompressPercent();
+        if (wantCompress && isImage) {
             if (size > COMPRESS_MAX_BYTES) {
                 console.log(`[upload] 跳过压缩：文件 ${(size / 1024 / 1024).toFixed(1)}MB 超过压缩上限`);
             }
             else if (srcPath) {
-                const r = await (0, compress_1.compressFile)(srcPath, mime, srcExt, pct, { videoTranscode: wantTranscode, videoCompress: wantCompress === true });
+                const r = await (0, compress_1.compressFile)(srcPath, mime, srcExt, compressPercent);
                 if (r.compressed) {
                     srcPath = r.path;
                     size = r.size;
                     mime = r.mime || mime;
                     if (r.ext)
                         originalName = originalName.replace(/\.[^.]+$/, '') + r.ext;
-                    app_log_1.appLog.info('upload', `已压缩（流式）：${originalSize}B → ${size}B（${Math.round((1 - size / Math.max(1, originalSize)) * 100)}%）`, `${originalName} ｜ 期望 ${pct}%`, uploadIp);
+                    app_log_1.appLog.info('upload', `已压缩（流式）：${originalSize}B → ${size}B（${Math.round((1 - size / Math.max(1, originalSize)) * 100)}%）`, `${originalName} ｜ 期望 ${compressPercent}%`, uploadIp);
                 }
                 else if (r.reason) {
                     app_log_1.appLog.info('upload', `跳过压缩：${r.reason}`, originalName, uploadIp);
                 }
             }
             else {
-                const r = await (0, compress_1.compressMedia)(buffer, mime, srcExt, pct, { videoTranscode: wantTranscode, videoCompress: wantCompress === true });
+                const r = await (0, compress_1.compressMedia)(buffer, mime, srcExt, compressPercent);
                 if (r.compressed) {
                     const before = buffer.length;
                     buffer = r.buffer;
@@ -782,13 +952,14 @@ let UploadService = class UploadService {
                     mime = r.mime || mime;
                     if (r.ext)
                         originalName = originalName.replace(/\.[^.]+$/, '') + r.ext;
-                    app_log_1.appLog.info('upload', `已压缩：${before}B → ${buffer.length}B（${Math.round((1 - buffer.length / before) * 100)}%）`, `${originalName} ｜ 期望 ${pct}%`, uploadIp);
+                    app_log_1.appLog.info('upload', `已压缩：${before}B → ${buffer.length}B（${Math.round((1 - buffer.length / before) * 100)}%）`, `${originalName} ｜ 期望 ${compressPercent}%`, uploadIp);
                 }
                 else if (r.reason) {
                     app_log_1.appLog.info('upload', `跳过压缩：${r.reason}`, originalName, uploadIp);
                 }
             }
         }
+        const mediaDeferred = (isVideo || isAudio) && (wantCompress || wantTranscode);
         const dims = srcPath
             ? await (0, compress_1.readDimensionsFile)(srcPath, mime, mime.split('/')[1] || '')
             : await (0, compress_1.readDimensions)(buffer, mime, mime.split('/')[1] || '');
@@ -885,6 +1056,24 @@ let UploadService = class UploadService {
                 },
             },
         });
+        if (mediaDeferred) {
+            this.deferMediaPostProcess({
+                recordId: record.id,
+                fileId,
+                channelId: usedChannel.id,
+                srcPath,
+                buffer,
+                mime,
+                ext: srcExt,
+                originalName,
+                nameType: opts.uploadNameType,
+                compress: wantCompress === true,
+                percent: compressPercent,
+                transcode: wantTranscode,
+                uploader: opts.uploader || '',
+                ip: uploadIp,
+            });
+        }
         this.enqueueBackground(() => this.touchIp(uploadIp, uploadAddress));
         if (uploadIp && !uploadAddress) {
             this.enqueueBackground(async () => {
@@ -932,6 +1121,165 @@ let UploadService = class UploadService {
             });
         }
         return { id: fileId, finalName: originalName };
+    }
+    async registerFile(input) {
+        const rawUrl = String(input.sourceUrl || '').trim();
+        let url;
+        try {
+            url = new URL(rawUrl);
+        }
+        catch {
+            return { error: '文件源地址格式不正确（需以 http:// 或 https:// 开头）' };
+        }
+        if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+            return { error: '文件源地址只支持 http / https 协议' };
+        }
+        const channelKey = String(input.channelId || '');
+        if (!channelKey)
+            return { error: '请选择存储渠道' };
+        const ch = await prisma_1.prisma.channel.findFirst({
+            where: { OR: [{ id: channelKey }, { code: channelKey }] },
+        });
+        if (!ch)
+            return { error: '所选存储渠道不存在' };
+        if (!ch.enabled)
+            return { error: `存储渠道「${ch.name}」已停用，请先启用或换一个渠道` };
+        let contentType = '';
+        let contentLength = 0;
+        let reachable = false;
+        const timeout = () => AbortSignal.timeout(20000);
+        try {
+            const head = await fetch(url, { method: 'HEAD', redirect: 'follow', signal: timeout() });
+            if (head.ok) {
+                reachable = true;
+                contentType = head.headers.get('content-type') || '';
+                contentLength = Number(head.headers.get('content-length') || 0) || 0;
+            }
+        }
+        catch {
+        }
+        if (!contentLength || !contentType) {
+            try {
+                const probe = await fetch(url, { headers: { Range: 'bytes=0-0' }, redirect: 'follow', signal: timeout() });
+                if (probe.ok || probe.status === 206) {
+                    reachable = true;
+                    contentType = contentType || probe.headers.get('content-type') || '';
+                    const range = probe.headers.get('content-range') || '';
+                    const total = Number(range.split('/')[1]) || 0;
+                    if (!contentLength)
+                        contentLength = total || 0;
+                }
+                await probe.body?.cancel().catch(() => undefined);
+            }
+            catch {
+            }
+        }
+        if (!reachable) {
+            return { error: '无法访问该文件源地址（超时或被拒绝），请确认地址可公开访问' };
+        }
+        const mimeClean = (contentType || '').split(';')[0].trim().toLowerCase();
+        let originalName = String(input.originalName || '').trim();
+        if (!originalName) {
+            const last = decodeURIComponent(url.pathname.split('/').filter(Boolean).pop() || '');
+            originalName = last || `file-${Date.now()}`;
+        }
+        originalName = originalName.replace(/[\\/]/g, '_').slice(0, 200);
+        let ext = originalName.includes('.') ? String(originalName.split('.').pop() || '').toLowerCase() : '';
+        const MIME_EXT = {
+            'image/jpeg': 'jpg',
+            'image/png': 'png',
+            'image/gif': 'gif',
+            'image/webp': 'webp',
+            'image/bmp': 'bmp',
+            'image/avif': 'avif',
+            'video/mp4': 'mp4',
+            'video/webm': 'webm',
+            'video/quicktime': 'mov',
+            'audio/mpeg': 'mp3',
+            'audio/mp4': 'm4a',
+            'audio/aac': 'aac',
+            'audio/ogg': 'ogg',
+        };
+        if (!ext) {
+            ext = MIME_EXT[mimeClean] || 'bin';
+            originalName = `${originalName}.${ext}`;
+        }
+        const mime = mimeClean || UploadService_1.EXT_MIME[ext] || 'application/octet-stream';
+        const md5Cap = Math.max(1, Number(process.env.RECORD_MD5_MAX_MB || 256)) * 1024 * 1024;
+        let md5 = '';
+        let size = contentLength;
+        const canHash = contentLength > 0 ? contentLength <= md5Cap : true;
+        if (canHash) {
+            try {
+                const res = await fetch(url, { redirect: 'follow', signal: AbortSignal.timeout(60000) });
+                if (res.ok && res.body) {
+                    const hash = (0, crypto_1.createHash)('md5');
+                    let total = 0;
+                    let over = false;
+                    for await (const chunk of res.body) {
+                        total += chunk.length;
+                        if (total > md5Cap) {
+                            over = true;
+                            break;
+                        }
+                        hash.update(chunk);
+                    }
+                    if (over) {
+                        md5 = '';
+                        if (!size)
+                            size = 0;
+                    }
+                    else {
+                        md5 = hash.digest('hex');
+                        if (!size)
+                            size = total;
+                    }
+                }
+            }
+            catch {
+                md5 = '';
+            }
+        }
+        if (!size)
+            size = 0;
+        const uploadIp = String(input.ip || '');
+        const uploadAddress = await this.cachedAddress(uploadIp);
+        const folder = await this.resolveFolder(input.folder);
+        const fileId = await this.uniqueFileId(this.makeFileId());
+        const now = new Date();
+        const record = await prisma_1.prisma.fileRecord.create({
+            data: {
+                name: fileId,
+                firstName: fileId,
+                prevName: '',
+                originalName,
+                size,
+                originalSize: size,
+                mime,
+                md5,
+                folder,
+                uploader: String(input.uploader || ''),
+                uploadSource: 'Record',
+                ip: uploadIp,
+                note: String(input.note || '').slice(0, 2000),
+                uploadStartedAt: now,
+                uploadFinishedAt: now,
+                metas: JSON.stringify({ UploadAddress: uploadAddress, Registered: true, SourceUrl: rawUrl }),
+                copies: {
+                    create: {
+                        channelId: ch.id,
+                        remoteKey: decodeURIComponent(url.pathname.replace(/^\//, '')),
+                        remoteUrl: rawUrl,
+                        status: 'active',
+                        isPrimary: true,
+                    },
+                },
+            },
+        });
+        this.enqueueBackground(() => this.autoTag(record.id, { originalName, mime, channelType: ch.type, uploadSource: 'Record' }));
+        this.enqueueBackground(() => this.touchIp(uploadIp, uploadAddress));
+        app_log_1.appLog.info('record', `登记文件成功：${originalName}`, `渠道=${ch.name} ｜ ${size}B ｜ mime=${mime} ｜ md5=${md5 || '未获取'} ｜ 源=${rawUrl}`, uploadIp);
+        return { id: fileId, info: { name: originalName, size, mime, md5, channel: ch.name } };
     }
     async backupUpload(fileId, file, key, backup, owner) {
         await prisma_1.prisma.fileCopy.upsert({
@@ -1018,8 +1366,17 @@ let UploadService = class UploadService {
         app_log_1.appLog.info('upload', `从回收站恢复：${name || id}`);
     }
     async removeFile(id, name = '') {
+        const rec = await prisma_1.prisma.fileRecord.findUnique({
+            where: { id },
+            select: { uploadSource: true, originalName: true },
+        });
+        const registered = (0, file_view_1.normalizeUploadSource)(rec?.uploadSource) === 'Record';
         const copies = await prisma_1.prisma.fileCopy.findMany({ where: { fileId: id } });
         for (const copy of copies) {
+            if (registered)
+                continue;
+            if (!copy.remoteKey && !copy.remoteUrl)
+                continue;
             const ch = await prisma_1.prisma.channel.findUnique({ where: { id: copy.channelId } });
             if (!ch)
                 continue;
@@ -1038,7 +1395,7 @@ let UploadService = class UploadService {
             }
         }
         await prisma_1.prisma.fileRecord.delete({ where: { id } });
-        app_log_1.appLog.info('upload', `删除文件：${name || id}`, `远端副本 ${copies.length} 个`);
+        app_log_1.appLog.info('upload', `删除文件：${name || id}`, registered ? '登记文件：只删库记录，不动源站对象' : `远端副本 ${copies.length} 个`);
     }
     backupAllJob = null;
     startBackupAll() {

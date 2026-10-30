@@ -173,8 +173,9 @@
                                     v2.7.0：「文件压缩」改为与自动重试同款的下拉开关 ——
                                     点图标展开「压缩文件 + 开关」，点开关切换（customerCompress，
                                     与「上传设置」弹窗里的开关双向同步不变）。
+                                    v2.8.8：后台「文件压缩」总开关关闭时整个按钮不渲染。
                                 -->
-                                <el-tooltip :disabled="disableTooltip" :content="$t('upload.fileCompress')" placement="top" :show-after="1000">
+                                <el-tooltip v-if="compressEnabled" :disabled="disableTooltip" :content="$t('upload.fileCompress')" placement="top" :show-after="1000">
                                     <el-dropdown>
                                         <button
                                             type="button"
@@ -233,22 +234,30 @@
                                         </template>
                                     </el-dropdown>
                                 </el-tooltip>
+                                <!--
+                                    v2.8.8：「自动重试」开关已迁到后台（其他设置 → 上传相关配置），
+                                    这里只保留「重试失败」按钮本体。
+                                -->
                                 <el-tooltip :disabled="disableTooltip" :content="$t('upload.retryFailed')" placement="top" :show-after="1000">
-                                    <el-dropdown>
-                                        <button class="modern-action-btn modern-action-btn-retry" @click="retryError">
-                                            <font-awesome-icon icon="redo" />
-                                        </button>
-                                        <template #dropdown>
-                                            <el-dropdown-menu class="modern-dropdown-menu">
-                                                <el-dropdown-item>
-                                                    <div class="modern-dropdown-item-content">
-                                                        <span>{{ $t('uploadForm.autoRetry') }}</span>
-                                                        <el-switch v-model="autoReUpload" @change="handleAutoRetryChange" size="small" />
-                                                    </div>
-                                                </el-dropdown-item>
-                                            </el-dropdown-menu>
-                                        </template>
-                                    </el-dropdown>
+                                    <button class="modern-action-btn modern-action-btn-retry" @click="retryError">
+                                        <font-awesome-icon icon="redo" />
+                                    </button>
+                                </el-tooltip>
+                                <!--
+                                    v2.8.8：「转换为WebP」从上传设置弹窗搬到列表顶栏（原自动重试所在位置），
+                                    紧挨「清空」按钮左侧；后台「WebP转换」总开关关闭时整颗按钮不加载。
+                                -->
+                                <el-tooltip v-if="webpEnabled" :disabled="disableTooltip" :content="$t('upload.convertToWebp')" placement="top" :show-after="1000">
+                                    <button
+                                        type="button"
+                                        class="modern-action-btn modern-action-btn-webp"
+                                        :class="{ 'is-active': convertToWebp }"
+                                        :aria-pressed="convertToWebp"
+                                        :aria-label="$t('upload.convertToWebp')"
+                                        @click="$emit('update:convertToWebp', !convertToWebp)"
+                                    >
+                                        <font-awesome-icon icon="file-image" />
+                                    </button>
                                 </el-tooltip>
                                 <el-tooltip :disabled="disableTooltip" :content="$t('upload.clearList')" placement="top" :show-after="1000">
                                     <el-dropdown>
@@ -412,6 +421,30 @@ props: {
         default: false,
         required: false
     },
+    /** v2.8.8：后台「文件压缩」总开关 —— 关闭时顶栏压缩按钮不渲染 */
+    compressEnabled: {
+        type: Boolean,
+        default: true,
+        required: false
+    },
+    /** v2.8.8：后台「WebP转换」总开关 —— 关闭时顶栏「转换为WebP」按钮不渲染 */
+    webpEnabled: {
+        type: Boolean,
+        default: false,
+        required: false
+    },
+    /**
+     * v2.8.8：本次上传的视频兼容转码选择。
+     *    ''    → 跟随全局（默认，刷新后回到这个状态）
+     *    'on'  → 强制转码
+     *    'off' → 不转码
+     * 只有账户策略被管理员设为「用户决定」时，上传设置里才会出现这个下拉。
+     */
+    transcodeChoice: {
+        type: String,
+        default: '',
+        required: false
+    },
     /** 自动上传：关闭后文件仅入列，需点击「上传」手动触发（可先改文件名） */
     autoUpload: {
         type: Boolean,
@@ -460,7 +493,7 @@ props: {
         required: false
     }
 },
-emits: ['update:autoUpload'],
+emits: ['update:autoUpload', 'update:convertToWebp'],
 data() {
     return {
         fileList: [],
@@ -532,9 +565,10 @@ watch: {
         },
         immediate: true
     },
-    autoReUpload(val) {
-        this.$store.commit('setStoreAutoReUpload', val)
-    },
+    /*
+     * v2.8.8：自动重试改由后台「其他设置 → 上传相关配置 → 自动重试」统一控制，
+     * 前台不再持久化本地开关 —— 因此这里不再向 store 写值。
+     */
     /**
      * 用户在上传页当场改了上传参数（渠道 / 目录 / 命名 / 备份…）时，
      * 丢掉重试轮次缓存下来的参数快照，立刻回落到最新的 props。
@@ -684,7 +718,8 @@ created() {
 mounted() {
     document.addEventListener('paste', this.handlePaste)
     document.addEventListener('keydown', this.handlePasteShortcut)
-    this.autoReUpload = this.storeAutoReUpload
+    // v2.8.8：初始值来自后台全局配置（userConfig.autoRetry），前台不再有本地开关
+    this.autoReUpload = this.autoRetry !== false
     window.addEventListener('resize', this.updateUploadListHeight)
     // 高度自适应：先挂观察器，再量一次（列表可能是带着历史文件重新挂载的）
     this.$nextTick(() => {
@@ -729,21 +764,27 @@ methods: {
         const item = this.fileList.find(i => i.uid === uid)
         const originalSize = (item && item.originalSize) || file?.file?.size || 0
         const p = this.effParams
-        // 上传限制覆盖：只在用户真的在「上传设置」里填过时才带，避免无谓传参
-        const limitExts = this.localExtensions.join(',')
-        const limitMB = Number(this.limitMaxSizeMB) > 0 ? Number(this.limitMaxSizeMB) : 0
         /*
          * 上传来源（v2.8.6）：后端落库 FileRecord.uploadSource。
          *   「文件」模式 → Upload ｜「链接」模式转存 → Fetch
          * 只影响后台「上传接口」统计与筛选，不影响渠道选择。
          */
         const source = this.uploadMethod === 'paste' ? 'Fetch' : 'Upload'
+        /*
+         * v2.8.8：视频兼容转码选择（仅「用户决定」策略下才有值）。
+         * 空值不传 —— 后端按账户策略/全局开关决定。
+         */
+        const transcode = this.transcodeChoice === 'on' || this.transcodeChoice === 'off'
+            ? '&videoTranscode=' + (this.transcodeChoice === 'on' ? 'true' : 'false')
+            : ''
+        /*
+         * v2.8.8：「上传限制」（允许格式 / 单文件大小）已从上传设置里移除，
+         * 统一由后台「上传相关配置」与「用户管理 → 单文件大小限制」决定，前端不再传覆盖值。
+         */
         return '&compressPercent=' + (p.compressPercent || 0) +
             '&backupChannel=' + encodeURIComponent(p.backupChannel || '') +
             '&originalSize=' + originalSize +
-            '&uploadSource=' + source +
-            (limitExts ? '&allowedExtensions=' + encodeURIComponent(limitExts) : '') +
-            (limitMB ? '&maxFileSizeMB=' + limitMB : '')
+            '&uploadSource=' + source + transcode
     },
     /**
      * 列表区高度自适应（v2.0.0 重新设计）：
@@ -1528,23 +1569,30 @@ methods: {
                 withAuthCode: true
             })
             /*
-             * v2.8.3：合并 = 服务端拼接 + 压缩 + 写渠道，耗时最长也最容易碰到网络抖动。
-             * 失败自动重试 1 次（分片在服务端保留 24h，重试不会重传文件）。
+             * v2.8.3：合并 = 服务端拼接 + 写渠道（v2.8.8 起压缩/转码已挪到上传成功之后，
+             * 合并本身很快），耗时最长也最容易碰到网络抖动。
+             *
+             * v2.8.8 关键修复：后端遇到**同一会话的重复合并**会返回 400
+             * 「该文件正在合并中，请耐心等待，不要重复提交」。这**不是失败** ——
+             * 说明上一次合并还在跑（上一版会把 ffmpeg 也塞进合并，能跑几十分钟，
+             * 于是前端每次重试都被拒，表现成「合并后一直失败」）。
+             * 现在遇到这个 400 改为轮询会话状态等结果，不再当失败处理、也不再盲目重试。
              */
             let response
-            let mergeError
-            for (let attempt = 0; attempt < 2; attempt++) {
-                try {
+            try {
+                response = await mergeRequest()
+            } catch (e) {
+                const status = e?.response?.status
+                const msg = String(e?.response?.data?.message || '')
+                if (status === 400 && msg.includes('正在合并中')) {
+                    console.log('[upload] 合并仍在进行中，改为轮询等待结果:', file.file.name)
+                    response = await this.waitForMergeResult(uploadId, file.file.name)
+                } else {
+                    // 其它错误（网络抖动 / 代理超时）：分片在服务端保留 24h，重试不会重传文件
+                    await new Promise(r => setTimeout(r, 3000))
                     response = await mergeRequest()
-                    mergeError = null
-                    break
-                } catch (e) {
-                    mergeError = e
-                    if (attempt === 0) await new Promise(r => setTimeout(r, 3000))
                 }
             }
-            if (mergeError) throw mergeError
-
             // 关闭合并提示（v2.8.7：精确关闭本条，不再 closeAll 误伤其它提示）
             try {
                 const doneItem = this.fileList.find(item => item.uid === file.file.uid)
@@ -1593,6 +1641,43 @@ methods: {
             this.onUploadComplete()
         }
     },
+    /**
+     * v2.8.8：轮询「合并结果」。
+     *
+     * 触发条件：合并请求返回 400「正在合并中」—— 说明服务端还有一次合并/写渠道在跑。
+     * 这里每 3~15 秒查一次 GET /upload?session=true&uploadId=…，直到：
+     *   · completed + result → 直接当作上传成功返回（结构与合并响应一致）；
+     *   · 会话被清理（gone）→ 抛错让用户重新上传；
+     *   · 超过 10 分钟 → 抛超时错误（服务端仍会继续跑，用户可以稍后到文件管理确认）。
+     */
+    async waitForMergeResult(uploadId, fileName) {
+        const deadline = Date.now() + 10 * 60 * 1000
+        let delay = 3000
+        while (Date.now() < deadline) {
+            await new Promise(r => setTimeout(r, delay))
+            delay = Math.min(delay + 2000, 15000)
+            let data
+            try {
+                const res = await axios({
+                    url: '/upload?session=true&uploadId=' + encodeURIComponent(uploadId),
+                    method: 'get',
+                    withAuthCode: true
+                })
+                data = res.data || {}
+            } catch (e) {
+                // 网络抖动（代理重启、移动网络切换）不判失败，继续等
+                console.warn('[upload] 查询合并状态失败，继续等待:', e?.message || e)
+                continue
+            }
+            if (data.gone) throw new Error(data.message || this.$t('uploadForm.mergeExpired'))
+            if (data.completed && Array.isArray(data.result)) {
+                console.log('[upload] 轮询命中合并结果:', fileName)
+                return { data: data.result }
+            }
+        }
+        throw new Error(this.$t('uploadForm.mergeTimeout', { name: fileName }))
+    },
+
     // 缩略图最终加载失败：只记录日志。
     // 早期实现会把 file.url 直接替换成 404 占位图，导致列表里 `<a :href="file.url">`
     // 的分享链接也被一起改写（用户看到「缩略图和真实链接对不上」）。

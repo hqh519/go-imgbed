@@ -1,6 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import { createHash } from 'crypto';
 import { createReadStream, promises as fsp } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { prisma } from '../common/prisma';
 import { CryptoService } from '../common/crypto.service';
 import { SettingsService } from '../settings/settings.service';
@@ -14,6 +16,7 @@ import { normalizeUploadSource, fileTypeOf, channelShort } from '../common/file-
 import { appLog } from '../common/app-log';
 import { joinObjectKey, renderFileName, renderObjectPrefix, supportsPrefix } from '../common/path-template';
 import { compressFile, compressMedia, readDimensions, readDimensionsFile } from '../common/compress';
+import { postProcessMediaFile, enqueueMediaJob, mediaQueueStats, MEDIA_MAX_SECONDS } from './media-post';
 
 /**
  * 压缩上限（字节）：超过就不压。
@@ -38,6 +41,11 @@ interface UploadOptions {
   channelId?: string;
   uploadNameType?: string; // default | index | original
   serverCompress?: boolean;
+  /**
+   * v2.8.8：本次上传是否执行「视频兼容转码」。
+   * 仅在账户策略为「用户决定（user）」时生效；其它策略以账户/全局设置为准。
+   */
+  videoTranscode?: boolean;
   /** 压缩期望：压缩后体积占原文件的百分比（10-100）；0/缺省时读后台「网页设置 → 默认压缩期望」 */
   compressPercent?: number;
   uploadFolder?: string;
@@ -116,6 +124,35 @@ interface UploadInput {
   path?: string;
   /** 文件字节数（有 path 时用于限额/校验/落库，避免反复 stat） */
   size?: number;
+}
+
+/**
+ * 后置处理任务（v2.8.8）：文件已上传成功之后，再由全局单通道队列执行
+ * 「先压缩、后转码」。任务只带最小必要信息，执行时重新读库确认文件仍有效。
+ */
+interface MediaPostJob {
+  /** files 表主键 */
+  recordId: string;
+  /** 对外文件标识（日志用） */
+  fileId: string;
+  /** 目标渠道（原主渠道） */
+  channelId: string;
+  /** 本地源文件；为空时由 buffer 落一个临时文件 */
+  srcPath: string;
+  buffer: Buffer;
+  mime: string;
+  /** 原始扩展名（不含点） */
+  ext: string;
+  originalName: string;
+  /** 命名策略（与新 key 保持同一套规则） */
+  nameType?: string;
+  compress: boolean;
+  percent: number;
+  transcode: boolean;
+  uploader: string;
+  ip: string;
+  /** 临时文件由队列自己清理（buffer 落盘时） */
+  tempOwned?: boolean;
 }
 
 @Injectable()
@@ -336,11 +373,26 @@ export class UploadService {
     return 'application/octet-stream';
   }
 
-  /** 扩展名白名单 + 魔数 + 大小：三重服务端校验（客户端校验可被绕过） */
-  private async validate(input: UploadInput, override?: { exts?: string[]; maxMB?: number }): Promise<string | null> {
+  /**
+   * 扩展名白名单 + 魔数 + 大小：三重服务端校验（客户端校验可被绕过）。
+   *
+   * v2.8.8：大小上限新增「账户级」一层 —— 用户管理里给某个账户设了
+   * 「单文件大小限制」就用它封顶，留空才回落到后台全局的「单文件大小上限」。
+   */
+  private async validate(
+    input: UploadInput,
+    override?: { exts?: string[]; maxMB?: number },
+    uploader?: string,
+  ): Promise<string | null> {
     const base = await this.limits();
     const exts = override?.exts && override.exts.length ? override.exts : base.exts;
-    const maxMB = override?.maxMB && override.maxMB > 0 ? override.maxMB : base.maxMB;
+    const userMaxMB = await this.userMaxFileSizeMB(uploader);
+    const maxMB =
+      override?.maxMB && override.maxMB > 0
+        ? override.maxMB
+        : userMaxMB > 0
+          ? userMaxMB
+          : base.maxMB;
     const ext = (input.originalName.split('.').pop() || '').toLowerCase();
     if (!ext || ext === input.originalName.toLowerCase()) {
       return '无法识别文件类型（缺少扩展名）';
@@ -350,7 +402,10 @@ export class UploadService {
     }
     const size = Number(input.size || 0) || (input.path ? (await fsp.stat(input.path)).size : input.buffer.length);
     if (size > maxMB * 1024 * 1024) {
-      return `文件超过 ${maxMB}MB 上限（当前 ${(size / 1024 / 1024).toFixed(1)}MB），请到「其他设置 → 上传相关配置」调大单文件大小上限`;
+      const scope = userMaxMB > 0 && !(override?.maxMB && override.maxMB > 0)
+        ? `该账户的单文件大小限制为 ${maxMB}MB`
+        : `单文件大小上限 ${maxMB}MB（可在「其他设置 → 上传相关配置」调整）`;
+      return `文件超过${scope}（当前 ${(size / 1024 / 1024).toFixed(1)}MB）`;
     }
     // 魔数只看文件头 64 字节：大文件不读整份，避免校验本身把内存吃掉
     const head = input.buffer.length ? input.buffer.subarray(0, 64) : await this.readHead(input.path || '', 64);
@@ -828,6 +883,152 @@ export class UploadService {
   }
 
   /**
+   * 投递后置处理任务（v2.8.8）。
+   * 调用点已经完成「写渠道 + 落库」，这里只负责准备本地源文件并塞进全局单通道队列。
+   * 投递失败只记日志 —— 文件本身已经上传成功，不因此报错。
+   */
+  private deferMediaPostProcess(job: MediaPostJob): void {
+    void (async () => {
+      let path = job.srcPath;
+      let tempOwned = false;
+      try {
+        if (!path) {
+          const dir = join(tmpdir(), 'goimgbed-post');
+          await fsp.mkdir(dir, { recursive: true });
+          path = join(dir, `${job.fileId.replace(/[\\/:*?"<>|]/g, '_')}.${job.ext || 'bin'}`);
+          await fsp.writeFile(path, job.buffer);
+          tempOwned = true;
+        }
+      } catch (err) {
+        appLog.warn(
+          'compress',
+          `后置压缩/转码任务创建失败（文件已上传成功，跳过处理）`,
+          `${(err as Error).message} ｜ ${job.originalName}`,
+          job.ip,
+        );
+        return;
+      }
+      enqueueMediaJob(`${job.fileId}（${job.originalName}）`, () =>
+        this.runMediaPostProcess({ ...job, srcPath: path, buffer: Buffer.alloc(0), tempOwned }),
+      );
+      appLog.info(
+        'compress',
+        `已排入后置处理队列：${job.originalName}`,
+        `压缩=${job.compress ? `${job.percent}%` : '关'} ｜ 兼容转码=${job.transcode ? '开' : '关'} ｜ 队列=${mediaQueueStats().pending} 等待 | 执行中=${mediaQueueStats().current || '无'}`,
+        job.ip,
+      );
+    })();
+  }
+
+  /**
+   * 执行后置处理：压缩 → 转码（串行，全局单通道）。
+   *
+   * 成功：把产物以**新 key** 写回同一渠道，更新副本与文件记录，再 best-effort 删除旧对象。
+   * 失败/放弃：什么都不改 —— 渠道上的原文件与库记录保持上传时的状态。
+   */
+  private async runMediaPostProcess(job: MediaPostJob): Promise<void> {
+    const t0 = Date.now();
+    try {
+      const rec = await prisma.fileRecord.findUnique({
+        where: { id: job.recordId },
+        select: { status: true, originalName: true, size: true, md5: true },
+      });
+      if (!rec || rec.status !== 'active') {
+        appLog.info('compress', `后置处理跳过：文件已删除或不在正常状态`, job.fileId, job.ip);
+        return;
+      }
+      const ch = await prisma.channel.findUnique({ where: { id: job.channelId } });
+      if (!ch) {
+        appLog.warn('compress', `后置处理跳过：目标渠道已不存在`, job.fileId, job.ip);
+        return;
+      }
+
+      const r = await postProcessMediaFile(job.srcPath, job.mime, job.ext, {
+        compress: job.compress,
+        percent: job.percent,
+        transcode: job.transcode,
+      });
+      if (r.skipReason) {
+        appLog.info(
+          'compress',
+          `后置处理未改变文件：${rec.originalName}`,
+          `${r.skipReason} ｜ 耗时 ${r.elapsedMs ?? 0}ms${r.codec ? ` ｜ 编码=${r.codec}` : ''}`,
+          job.ip,
+        );
+      }
+      if (!r.compressed || r.stage === 'none') return;
+
+      const info = this.toChannelInfo(ch);
+      const newName = r.ext ? rec.originalName.replace(/\.[^.]+$/, '') + r.ext : rec.originalName;
+      const key = this.makeKeyFor(
+        { id: ch.id, code: ch.code, name: ch.name, type: ch.type, config: ch.config },
+        newName,
+        job.nameType,
+        rec.md5 || '',
+      );
+      const adapter = createAdapter(info);
+      const up = await this.uploadToAdapter(
+        adapter,
+        { buffer: Buffer.alloc(0), path: r.path, size: r.size, mime: r.mime || job.mime, originalName: newName },
+        key,
+        info,
+        job.uploader,
+      );
+
+      const copy = await prisma.fileCopy.findFirst({
+        where: { fileId: job.recordId, channelId: ch.id },
+        select: { id: true, remoteKey: true, remoteUrl: true },
+      });
+      await prisma.fileCopy.update({
+        where: { fileId_channelId: { fileId: job.recordId, channelId: ch.id } },
+        data: { remoteKey: up.remoteKey, remoteUrl: up.remoteUrl || '', status: 'active' },
+      });
+      await prisma.fileRecord.update({
+        where: { id: job.recordId },
+        data: { size: r.size, mime: r.mime || job.mime, originalName: newName },
+      });
+
+      // 旧对象删除是 best-effort：失败只会在渠道上留一个孤儿对象，不影响外链
+      if (copy && (copy.remoteKey || copy.remoteUrl)) {
+        try {
+          await adapter.delete(toCopyInfo(copy), info);
+        } catch (err) {
+          appLog.warn('compress', `旧对象删除失败（不影响新外链）`, `${(err as Error).message} ｜ ${copy.remoteKey}`, job.ip);
+        }
+      }
+      appLog.info(
+        'compress',
+        `后置${r.stage === 'transcode' ? '兼容转码' : '压缩'}完成：${rec.originalName} → ${newName}`,
+        `${rec.size}B → ${r.size}B ｜ 耗时 ${Date.now() - t0}ms（估算 ${r.estimatedSeconds ?? '-'}s）｜ 渠道=${ch.name}`,
+        job.ip,
+      );
+    } catch (err) {
+      appLog.warn(
+        'compress',
+        `后置处理失败（渠道与原记录均保持不变）：${job.originalName}`,
+        `${(err as Error).message} ｜ 耗时 ${Date.now() - t0}ms`,
+        job.ip,
+      );
+    } finally {
+      if (job.tempOwned && job.srcPath) await fsp.unlink(job.srcPath).catch(() => undefined);
+      // 压缩 / 转码中间产物（.cmp.webp / .cmp.mp4 / .h264.mp4）
+      for (const suffix of ['.cmp.mp4', '.cmp.webm', '.cmp.m4a', '.cmp.mp3', '.h264.mp4']) {
+        await fsp.unlink(`${job.srcPath}${suffix}`).catch(() => undefined);
+      }
+    }
+  }
+
+  /** 后置处理队列状态（系统状态 / 运维排查用） */
+  mediaQueue() {
+    return mediaQueueStats();
+  }
+
+  /** 单步时间上限（秒）—— 系统状态页展示用 */
+  mediaMaxSeconds(): number {
+    return MEDIA_MAX_SECONDS;
+  }
+
+  /**
    * 清洗外部传入的文件标识（S3 的 Object Key）。
    *   - 去掉协议头与查询串，去掉前导斜杠、`..` 等会破坏路由/越权的片段
    *   - 保留目录层级（/file/* 支持多级路径，如 `web/202610/ab.png`）
@@ -966,11 +1167,11 @@ export class UploadService {
   }
 
   /**
-   * 「视频兼容转码」开关（v2.8.4 引入；v2.8.5 起挂在后台 → 其他设置 → 上传相关配置）。
+   * 「视频兼容转码」全局开关（v2.8.4 引入；v2.8.5 起挂在后台 → 其他设置 → 上传相关配置）。
    * 只对浏览器播不了的编码（H.265/HEVC 等）转 H.264，与压缩开关相互独立 ——
    * 即使关闭压缩，华为等设备的 HEVC 视频也会被转码，解决「只有声音没画面」。
    */
-  private async videoTranscodeEnabled(): Promise<boolean> {
+  async globalTranscodeEnabled(): Promise<boolean> {
     try {
       const page: any = await this.sysConfig.get('page');
       const item = (page?.config || []).find((x: any) => x.id === 'videoTranscodeIncompatible');
@@ -980,6 +1181,83 @@ export class UploadService {
       return item.value === true || item.value === 'true';
     } catch {
       return true;
+    }
+  }
+
+  /**
+   * v2.8.8：账户级「视频兼容转码」策略（用户管理 → 编辑 → 管理员操作）。
+   *   inherit 跟随全局 / off 禁用 / on 启用 / user 由用户在前台上传设置里选
+   */
+  async videoTranscodePolicy(username?: string): Promise<'inherit' | 'off' | 'on' | 'user'> {
+    const name = String(username || '').trim();
+    if (!name) return 'inherit';
+    const normalize = (v: unknown): 'inherit' | 'off' | 'on' | 'user' =>
+      v === 'off' || v === 'on' || v === 'user' ? v : 'inherit';
+    try {
+      const row = await prisma.user.findUnique({
+        where: { username: name },
+        select: { transcodePolicy: true },
+      });
+      if (row) return normalize(row.transcodePolicy);
+      // 内建管理员不在 users 表中：读「用户管理 → 编辑管理员」保存的 adminProfile
+      const prof = await this.adminProfileIfAdmin(name);
+      if (prof) return normalize(prof.transcodePolicy);
+      return 'inherit';
+    } catch {
+      return 'inherit';
+    }
+  }
+
+  /**
+   * 内建管理员档案（users 表里没有 admin 行时，用 sysConfig 的 adminProfile）。
+   * 名字不匹配或读取失败返回 null。
+   */
+  private async adminProfileIfAdmin(username: string): Promise<Record<string, any> | null> {
+    try {
+      const security: any = await this.sysConfig.get('security');
+      const adminName =
+        String(security?.auth?.admin?.adminUsername || '').trim() ||
+        (process.env.ADMIN_USER || '').trim() ||
+        'admin';
+      if (username !== adminName) return null;
+      const prof: any = await this.sysConfig.get('adminProfile');
+      return prof && typeof prof === 'object' ? prof : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * v2.8.8：最终是否执行兼容转码。
+   * 优先级：账户策略 on/off（硬性） → 账户策略 user + 本次显式选择 → 全局开关。
+   */
+  async transcodeDecision(uploader?: string, explicit?: boolean): Promise<boolean> {
+    const policy = await this.videoTranscodePolicy(uploader);
+    if (policy === 'on') return true;
+    if (policy === 'off') return false;
+    if (policy === 'user' && typeof explicit === 'boolean') return explicit;
+    return this.globalTranscodeEnabled();
+  }
+
+  /**
+   * v2.8.8：账户级「单文件大小上限」（MB）。
+   *   0 / 未设置 → 用全局「单文件大小上限」
+   *   >0        → 该账户上传按此值封顶
+   */
+  async userMaxFileSizeMB(username?: string): Promise<number> {
+    const name = String(username || '').trim();
+    if (!name) return 0;
+    try {
+      const row = await prisma.user.findUnique({
+        where: { username: name },
+        select: { maxFileSizeMB: true },
+      });
+      if (row) return Math.max(0, Number(row.maxFileSizeMB) || 0);
+      const prof = await this.adminProfileIfAdmin(name);
+      if (prof) return Math.max(0, Number(prof.maxFileSizeMB) || 0);
+      return 0;
+    } catch {
+      return 0;
     }
   }
 
@@ -1015,7 +1293,7 @@ export class UploadService {
      * 「同步 / 备份型传输通道」，可能上传任意类型、任意体积的文件。
      */
     if (!opts.skipFileLimits) {
-      const invalid = await this.validate(input, opts.limitsOverride);
+      const invalid = await this.validate(input, opts.limitsOverride, opts.uploader);
       if (invalid) return { id: '', error: invalid };
     }
 
@@ -1129,28 +1407,32 @@ export class UploadService {
     const uploadAddress = await this.cachedAddress(uploadIp);
 
     /*
-     * 压缩（v2.3.0）：
-     *   · 覆盖图片 / 视频 / 音频，具体能不能压、压成什么格式统一由 common/compress.ts 判定
-     *     （gif 会丢帧、png 必须保透明、没有 ffmpeg 就跳过视频音频 …… 都在那里处理）；
-     *   · 开关优先级：本次请求显式传入（前端上传设置） > 后台「网页设置 → 默认开启压缩」；
-     *     API Token / WebDAV 这类"没有前端开关"的入口因此也会跟随后台默认值；
-     *   · 压缩失败 / 压不动 → 原文件照常上传（需求明确要求"跳过压缩直接上传"）。
-     * v2.8.3：大文件走 compressFile（输入/输出都是磁盘路径，不再整份读内存）。
-     * v2.8.4：新增「视频兼容转码」—— 与压缩开关独立，只对浏览器播不了的编码
-     *   （H.265/HEVC 等，华为手机默认录像编码）转 H.264，解决「只有声音没画面」。
+     * 预处理（v2.8.8 重构）：
+     *
+     *   「先保证上传成功，再谈压缩与转码」—— 这是本版最重要的一条规则。
+     *
+     *   · 图片：仍在写渠道之前同步压（sharp 毫秒级，且任何异常都会退回原图，
+     *     不存在「因为压缩把上传搞失败」的可能），保持既有行为与 WebP 转换体验；
+     *   · 视频 / 音频：**不在这里处理**。合并请求里跑 ffmpeg（几百 MB 的 HEVC 在低配
+     *     机器上要几十分钟）会被反向代理超时切断，前端重试又撞上「合并中」锁 ——
+     *     这就是 v2.8.7 反复「合并后失败」的根因。改为落库成功后投递到全局单通道
+     *     队列里做「先压缩、后转码」，预计超时/资源不足直接放弃（见 media-post.ts）；
+     *   · 兼容转码开关按「账户策略 → 全局」解析（用户管理里可按账户强制开/关）。
      */
     const wantCompress = opts.serverCompress ?? (await this.defaultServerCompress());
-    const wantTranscode = await this.videoTranscodeEnabled();
     const isVideo = (mime || '').startsWith('video/');
-    if (wantCompress || (wantTranscode && isVideo)) {
-      const srcExt = originalName.includes('.') ? String(originalName.split('.').pop() || '') : '';
-      const pct =
-        opts.compressPercent && opts.compressPercent > 0 ? opts.compressPercent : await this.defaultCompressPercent();
-      // 超大文件不压缩：sharp/ffmpeg 都要把内容整体读进内存，几百 MB 的视频会把进程拖垮
+    const isAudio = (mime || '').startsWith('audio/');
+    const isImage = (mime || '').startsWith('image/');
+    const wantTranscode = isVideo ? await this.transcodeDecision(opts.uploader, opts.videoTranscode) : false;
+    const srcExt = originalName.includes('.') ? String(originalName.split('.').pop() || '') : '';
+    const compressPercent =
+      opts.compressPercent && opts.compressPercent > 0 ? opts.compressPercent : await this.defaultCompressPercent();
+
+    if (wantCompress && isImage) {
       if (size > COMPRESS_MAX_BYTES) {
         console.log(`[upload] 跳过压缩：文件 ${(size / 1024 / 1024).toFixed(1)}MB 超过压缩上限`);
       } else if (srcPath) {
-        const r = await compressFile(srcPath, mime, srcExt, pct, { videoTranscode: wantTranscode, videoCompress: wantCompress === true });
+        const r = await compressFile(srcPath, mime, srcExt, compressPercent);
         if (r.compressed) {
           srcPath = r.path;
           size = r.size;
@@ -1159,14 +1441,14 @@ export class UploadService {
           appLog.info(
             'upload',
             `已压缩（流式）：${originalSize}B → ${size}B（${Math.round((1 - size / Math.max(1, originalSize)) * 100)}%）`,
-            `${originalName} ｜ 期望 ${pct}%`,
+            `${originalName} ｜ 期望 ${compressPercent}%`,
             uploadIp,
           );
         } else if (r.reason) {
           appLog.info('upload', `跳过压缩：${r.reason}`, originalName, uploadIp);
         }
       } else {
-        const r = await compressMedia(buffer, mime, srcExt, pct, { videoTranscode: wantTranscode, videoCompress: wantCompress === true });
+        const r = await compressMedia(buffer, mime, srcExt, compressPercent);
         if (r.compressed) {
           const before = buffer.length;
           buffer = r.buffer;
@@ -1176,7 +1458,7 @@ export class UploadService {
           appLog.info(
             'upload',
             `已压缩：${before}B → ${buffer.length}B（${Math.round((1 - buffer.length / before) * 100)}%）`,
-            `${originalName} ｜ 期望 ${pct}%`,
+            `${originalName} ｜ 期望 ${compressPercent}%`,
             uploadIp,
           );
         } else if (r.reason) {
@@ -1184,6 +1466,9 @@ export class UploadService {
         }
       }
     }
+
+    /** 视频 / 音频：上传成功后由后台队列做「压缩 → 转码」（本次上传不受影响） */
+    const mediaDeferred = (isVideo || isAudio) && (wantCompress || wantTranscode);
 
     // 尺寸（图片走 sharp）：详情页「图片尺寸」一直显示「无」就是因为这里从来没写过 metas.Width/Height。
     // 放在压缩之后读，拿到的是最终文件的真实尺寸。
@@ -1314,6 +1599,31 @@ export class UploadService {
     });
 
     /*
+     * v2.8.8：视频 / 音频的「压缩 → 转码」投递到全局单通道队列。
+     *
+     * 此刻文件已经写进渠道、记录已经落库 —— 前端早就拿到成功响应了。
+     * 后面无论 ffmpeg 跑多久、成功还是被放弃，都不会影响「文件上传成功」这个事实。
+     */
+    if (mediaDeferred) {
+      this.deferMediaPostProcess({
+        recordId: record.id,
+        fileId,
+        channelId: usedChannel.id,
+        srcPath,
+        buffer,
+        mime,
+        ext: srcExt,
+        originalName,
+        nameType: opts.uploadNameType,
+        compress: wantCompress === true,
+        percent: compressPercent,
+        transcode: wantTranscode,
+        uploader: opts.uploader || '',
+        ip: uploadIp,
+      });
+    }
+
+    /*
      * 以下三项都是「不影响上传结果」的收尾工作，全部丢到后台队列串行执行：
      *   1) IP 上传计数（用户管理按 IP 汇总）
      *   2) 归属地补写（缓存未命中时才会真的请求外部 API）
@@ -1374,6 +1684,204 @@ export class UploadService {
     }
 
     return { id: fileId, finalName: originalName };
+  }
+
+  /**
+   * 「登记文件」（v2.8.8）：把**已经存在于其他渠道**的文件补一条记录进库，不需要上传。
+   *
+   * 用途：文件早就在对象存储 / 图床上了，只想让 go-imgbed 有一份可管理、可签发的记录
+   * （外链、标签、分类、详情都一样），省掉「再传一遍」的流量与时间。
+   *
+   * 探测策略（全部有超时，绝不长时间挂住请求）：
+   *   1) HEAD 拿 Content-Type / Content-Length；
+   *   2) 拿不到就发 Range: bytes=0-0 的 GET，从 Content-Range 里读总长度；
+   *   3) MD5 需要完整内容 —— 只在体积小于 RECORD_MD5_MAX_MB（默认 256MB）时下载计算，
+   *      超过或失败一律留空（需求明确允许留空）。
+   */
+  async registerFile(input: {
+    sourceUrl: string;
+    originalName?: string;
+    channelId: string;
+    folder?: string;
+    note?: string;
+    uploader?: string;
+    ip?: string;
+  }): Promise<{
+    id?: string;
+    error?: string;
+    info?: { name: string; size: number; mime: string; md5: string; channel: string };
+  }> {
+    const rawUrl = String(input.sourceUrl || '').trim();
+    let url: URL;
+    try {
+      url = new URL(rawUrl);
+    } catch {
+      return { error: '文件源地址格式不正确（需以 http:// 或 https:// 开头）' };
+    }
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      return { error: '文件源地址只支持 http / https 协议' };
+    }
+
+    // 渠道 ID 既接受主键 id，也接受 6 位 code（前端下拉传的是 code）
+    const channelKey = String(input.channelId || '');
+    if (!channelKey) return { error: '请选择存储渠道' };
+    const ch = await prisma.channel.findFirst({
+      where: { OR: [{ id: channelKey }, { code: channelKey }] },
+    });
+    if (!ch) return { error: '所选存储渠道不存在' };
+    if (!ch.enabled) return { error: `存储渠道「${ch.name}」已停用，请先启用或换一个渠道` };
+
+    // ---- 1) 探测类型与大小 ----
+    let contentType = '';
+    let contentLength = 0;
+    let reachable = false;
+    const timeout = () => AbortSignal.timeout(20000);
+    try {
+      const head = await fetch(url, { method: 'HEAD', redirect: 'follow', signal: timeout() });
+      if (head.ok) {
+        reachable = true;
+        contentType = head.headers.get('content-type') || '';
+        contentLength = Number(head.headers.get('content-length') || 0) || 0;
+      }
+    } catch {
+      /* 有些源站不支持 HEAD，下面用 Range 探测 */
+    }
+    if (!contentLength || !contentType) {
+      try {
+        const probe = await fetch(url, { headers: { Range: 'bytes=0-0' }, redirect: 'follow', signal: timeout() });
+        if (probe.ok || probe.status === 206) {
+          reachable = true;
+          contentType = contentType || probe.headers.get('content-type') || '';
+          const range = probe.headers.get('content-range') || '';
+          const total = Number(range.split('/')[1]) || 0;
+          if (!contentLength) contentLength = total || 0;
+        }
+        await probe.body?.cancel().catch(() => undefined);
+      } catch {
+        /* 下面统一判可达性 */
+      }
+    }
+    if (!reachable) {
+      return { error: '无法访问该文件源地址（超时或被拒绝），请确认地址可公开访问' };
+    }
+
+    const mimeClean = (contentType || '').split(';')[0].trim().toLowerCase();
+    let originalName = String(input.originalName || '').trim();
+    if (!originalName) {
+      const last = decodeURIComponent(url.pathname.split('/').filter(Boolean).pop() || '');
+      originalName = last || `file-${Date.now()}`;
+    }
+    // 名称里不能带路径分隔符，避免污染存储 key
+    originalName = originalName.replace(/[\\/]/g, '_').slice(0, 200);
+
+    let ext = originalName.includes('.') ? String(originalName.split('.').pop() || '').toLowerCase() : '';
+    const MIME_EXT: Record<string, string> = {
+      'image/jpeg': 'jpg',
+      'image/png': 'png',
+      'image/gif': 'gif',
+      'image/webp': 'webp',
+      'image/bmp': 'bmp',
+      'image/avif': 'avif',
+      'video/mp4': 'mp4',
+      'video/webm': 'webm',
+      'video/quicktime': 'mov',
+      'audio/mpeg': 'mp3',
+      'audio/mp4': 'm4a',
+      'audio/aac': 'aac',
+      'audio/ogg': 'ogg',
+    };
+    if (!ext) {
+      ext = MIME_EXT[mimeClean] || 'bin';
+      originalName = `${originalName}.${ext}`;
+    }
+    const mime = mimeClean || UploadService.EXT_MIME[ext] || 'application/octet-stream';
+
+    // ---- 2) MD5（可选，失败留空）----
+    const md5Cap = Math.max(1, Number(process.env.RECORD_MD5_MAX_MB || 256)) * 1024 * 1024;
+    let md5 = '';
+    let size = contentLength;
+    const canHash = contentLength > 0 ? contentLength <= md5Cap : true;
+    if (canHash) {
+      try {
+        const res = await fetch(url, { redirect: 'follow', signal: AbortSignal.timeout(60000) });
+        if (res.ok && res.body) {
+          const hash = createHash('md5');
+          let total = 0;
+          let over = false;
+          for await (const chunk of res.body as unknown as AsyncIterable<Uint8Array>) {
+            total += chunk.length;
+            if (total > md5Cap) {
+              over = true;
+              break;
+            }
+            hash.update(chunk);
+          }
+          if (over) {
+            md5 = '';
+            if (!size) size = 0;
+          } else {
+            md5 = hash.digest('hex');
+            if (!size) size = total;
+          }
+        }
+      } catch {
+        md5 = '';
+      }
+    }
+    if (!size) size = 0;
+
+    // ---- 3) 落库 ----
+    const uploadIp = String(input.ip || '');
+    const uploadAddress = await this.cachedAddress(uploadIp);
+    const folder = await this.resolveFolder(input.folder);
+    const fileId = await this.uniqueFileId(this.makeFileId());
+    const now = new Date();
+    const record = await prisma.fileRecord.create({
+      data: {
+        name: fileId,
+        firstName: fileId,
+        prevName: '',
+        originalName,
+        size,
+        originalSize: size,
+        mime,
+        md5,
+        folder,
+        uploader: String(input.uploader || ''),
+        uploadSource: 'Record',
+        ip: uploadIp,
+        note: String(input.note || '').slice(0, 2000),
+        uploadStartedAt: now,
+        uploadFinishedAt: now,
+        metas: JSON.stringify({ UploadAddress: uploadAddress, Registered: true, SourceUrl: rawUrl }),
+        /*
+         * 副本只作「记录归属」。remoteUrl 存完整源地址（/file 会优先把它当绝对地址代理），
+         * remoteKey 存 URL 路径，便于在渠道视角里看出文件位置。
+         * 删除登记文件时 removeFile 不会去删源站对象（见其 Record 分支）。
+         */
+        copies: {
+          create: {
+            channelId: ch.id,
+            remoteKey: decodeURIComponent(url.pathname.replace(/^\//, '')),
+            remoteUrl: rawUrl,
+            status: 'active',
+            isPrimary: true,
+          },
+        },
+      },
+    });
+    this.enqueueBackground(() =>
+      this.autoTag(record.id, { originalName, mime, channelType: ch.type, uploadSource: 'Record' }),
+    );
+    this.enqueueBackground(() => this.touchIp(uploadIp, uploadAddress));
+
+    appLog.info(
+      'record',
+      `登记文件成功：${originalName}`,
+      `渠道=${ch.name} ｜ ${size}B ｜ mime=${mime} ｜ md5=${md5 || '未获取'} ｜ 源=${rawUrl}`,
+      uploadIp,
+    );
+    return { id: fileId, info: { name: originalName, size, mime, md5, channel: ch.name } };
   }
 
   private async backupUpload(
@@ -1499,8 +2007,20 @@ export class UploadService {
    * 删除请求一律 404，第三方插件只能"传得上、删不掉"）。
    */
   async removeFile(id: string, name = ''): Promise<void> {
+    const rec = await prisma.fileRecord.findUnique({
+      where: { id },
+      select: { uploadSource: true, originalName: true },
+    });
+    /*
+     * v2.8.8：「登记文件」（uploadSource=Record）的文件本体在**别的系统/渠道**里，
+     * 本系统只登记了它的地址。删记录时绝不能去删源站对象 —— 只删库。
+     */
+    const registered = normalizeUploadSource(rec?.uploadSource) === 'Record';
     const copies = await prisma.fileCopy.findMany({ where: { fileId: id } });
     for (const copy of copies) {
+      if (registered) continue;
+      // 没有 key 也没有 URL 的副本无从删起（例如历史脏数据），跳过避免误删渠道根目录
+      if (!copy.remoteKey && !copy.remoteUrl) continue;
       const ch = await prisma.channel.findUnique({ where: { id: copy.channelId } });
       if (!ch) continue;
       try {
@@ -1517,7 +2037,11 @@ export class UploadService {
       }
     }
     await prisma.fileRecord.delete({ where: { id } });
-    appLog.info('upload', `删除文件：${name || id}`, `远端副本 ${copies.length} 个`);
+    appLog.info(
+      'upload',
+      `删除文件：${name || id}`,
+      registered ? '登记文件：只删库记录，不动源站对象' : `远端副本 ${copies.length} 个`,
+    );
   }
 
   /** 一键备份任务状态（内存态，服务重启即清零） */

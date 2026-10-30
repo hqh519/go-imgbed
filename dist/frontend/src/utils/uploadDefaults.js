@@ -12,6 +12,7 @@ export const UPLOAD_DEFAULT_CONFIG_IDS = [
   'defaultUploadFolder', // 默认上传目录
   'defaultUploadNameType', // 默认命名方式
   'defaultUrlForm', // 默认外链格式
+  'defaultAutoRetry', // 自动重试（v2.8.8 由前台「上传设置」迁入，紧跟视频兼容转码上一行）
   'videoTranscodeIncompatible', // 视频兼容转码（v2.8.5 由网页设置迁入）
   'defaultConvertToWebp', // 默认转换 WebP
   'defaultCustomerCompress', // 默认开启压缩

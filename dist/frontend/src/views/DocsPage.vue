@@ -78,11 +78,17 @@ const ZH = {
         { t: '文件上传', d: '点击或拖拽文件到上传区，可多选；也可选择整个文件夹（会保留相对目录结构）。上传目录可在顶部输入框填写，留空即根目录。' },
         { t: '粘贴板上传', d: '切到「粘贴板上传」后，可直接粘贴图片/文件，或粘贴一个或多个 URL。' },
         { t: '转存（URL 上传）', d: '粘贴外链后选择「转存」：服务端会把该 URL 的文件抓取回来，再按当前渠道重新上传，返回本站外链。选择「外链」则只登记外链、不落盘。' },
-        { t: '文件命名方式', d: '默认 / 仅前缀 / 仅原名 / 短链接四种，可在上传页设置中调整。' },
-        { t: '上传设置（仅本次生效）', d: '「上传设置 → 上传限制」里的允许上传格式、单文件大小上限都只对当前页面本次上传生效，刷新页面即恢复跟随后台；单文件大小上限留空时，输入框提示里会直接显示后台全局值。' },
+        { t: '文件命名方式（v2.8.8）', d: '上传设置里已不再提供该项 —— 一律按后台「其他设置 → 上传相关配置 → 默认命名方式」执行，避免同一账户在不同页面得到不同文件名。' },
+        { t: '登记文件（v2.8.8）', d: '上传页右下角快捷栏「上传设置」上一个按钮，后台「文件管理 → 新建目录」右侧也有同名入口。用于把一个已经存在于对象存储 / 别的图床的文件登记进系统：只填源地址、名称（可留空）、渠道、分类、备注，类型 / 大小 / MD5 由服务端探测，上传时间取提交时间，上传方式记为 Record，自动打上 年份 / 扩展名 / 渠道简称 / 类型 / Record 标签，不重复上传、不占用上传流量。登记的文件删除时只删记录，不动源文件。' },
+        { t: '视频兼容转码（账户策略，v2.8.8）', d: '后台「用户管理 → 编辑」的「管理员操作」里可对单个账户设置：跟随全局 / 禁用 / 启用 / 用户决定。选「用户决定」时，该账户在上传页「上传设置 → 文件预处理」里会看到同名下拉（跟随全局 / 禁用 / 启用），且每次刷新复位为「跟随全局」。策略对该账户的全部上传入口生效（首页、链接转存、WebDAV、API-S3、API-Web）。' },
+        { t: '单文件大小限制（账户级，v2.8.8）', d: '后台「用户管理 → 编辑 → 管理员操作」里填写，留空或 0 表示跟随后台全局上限；填写后对该账户全部上传入口生效，超限时提示里会说明是账户限制还是全局限制。「类型和大小限制」开关已移除。' },
         { t: '禁止压缩格式', d: '位置在「上传设置 → 文件压缩 → 压缩百分比」之后：清单内的格式跳过压缩、原样上传（例如填 mp4 就不压视频）；留空则不排除任何格式，可压缩类型全部按规则压缩。内置可压缩清单：jpg/jpeg/jfif/png/webp/avif、mp4/webm/mov/m4v/mkv、mp3/m4a/aac/wav/flac/ogg/opus。' },
         { t: '压缩体积保障', d: '压缩/重编码后只要体积没有变小（等于或大于原文件），直接丢弃压缩产物、继续上传原文件，不会出现「越压越大」；唯一例外是视频兼容转码 —— 为保证浏览器能正常播放，H.265/HEVC 转 H.264 后即使变大也保留，系统日志会记录体积变化。' },
-        { t: '视频兼容转码', d: '开关在「其他设置 → 上传相关配置 → 视频兼容转码」：上传 H.265/HEVC、ProRes 等浏览器放不了的编码时，服务端自动转 H.264（需 ffmpeg）；已是 H.264/AV1/VP9 的视频不转码，与压缩开关相互独立。' }
+        { t: '视频兼容转码', d: '开关在「其他设置 → 上传相关配置 → 视频兼容转码」：上传 H.265/HEVC、ProRes 等浏览器放不了的编码时，服务端自动转 H.264（需 ffmpeg）；已是 H.264/AV1/VP9 的视频不转码，与压缩开关相互独立。' },
+        { t: '后置处理（v2.8.8 重要变化）', d: '视频 / 音频的压缩与兼容转码不再放在上传请求里：文件落库、渠道写入成功后立即返回外链，压缩与转码由后台单通道队列串行执行（全局同时只有 1 路 ffmpeg）。顺序固定为「先压缩 → 再转码」——压缩走 libx264，产物本身就是 H.264，压缩成功就直接收工不再转码。' },
+        { t: '后置处理的放弃策略', d: '任何时候都以「上传成功」为最高优先级：①预计耗时超过 5 分钟（MEDIA_POST_MAX_SECONDS）直接放弃；②CPU 少于 2 核、1 分钟负载超过核数 ×1.5、可用内存低于 256MB 时跳过；③压缩判定会失败 → 压缩与转码都放弃；④压缩成功但转码会失败 → 保留压缩结果、放弃转码；⑤执行超时同样放弃。放弃时渠道上的原文件与库记录保持上传时的状态，外链照常可访问，系统日志会写明放弃原因。' },
+        { t: 'WebP转换 / 文件压缩 现在是总开关（v2.8.8）', d: '后台「其他设置 → 上传相关配置」里这两项从「默认值」升级为「总开关」：关闭「WebP转换」→ 上传页列表顶栏的「转换为WebP」按钮不加载；关闭「文件压缩」→ 顶栏「文件压缩」按钮、上传设置里的开关/阈值/百分比/禁止格式全部隐藏，「最小压缩阈值」「默认压缩期望」在后台也一并隐藏（值不清空，重新打开即恢复）。' },
+        { t: '自动重试（v2.8.8 迁移）', d: '原上传设置里的「自动重试」开关已迁到后台「其他设置 → 上传相关配置 → 自动重试」（位于「视频兼容转码」上一行），值入库、对所有账户统一生效，前台上传页不再显示该开关。' }
       ]
     },
     {
@@ -194,7 +200,8 @@ const ZH = {
         { t: '系统状态', d: '展示文件总数、上传渠道分布、上传方式分布、上传用户分布、上传类型分布与文件状态分布；上传趋势可按「渠道类型 / 渠道名称 / 用户 / 上传方式 / 类型」五个维度切换，并支持自选日期区间。「最近上传」列出最近 20 条记录，上方是今日 / 昨日 / 本周 / 本月 / 本年上传数量、累计占用空间与文件夹数量统计（点击上传数量可跳到历史记录）。' },
         { t: '上传方式（v2.8.6）', d: '每个文件都会记录是从哪个入口传上来的：Default = v2.8.6 之前的历史网页上传；Upload = 上传页「文件」模式；Fetch = 上传页「链接」模式转存；WebDAV / API-Web / API-S3 = 对外通道。文件详情页的「上传方式」字段、文件管理的筛选与系统状态的上传方式分布用的都是这份取值。' },
         { t: '系统日志', d: '记录写操作（上传 / 保存 / 删除）与 4xx、5xx、慢请求；支持按级别、作用域、关键词过滤与导出。' },
-        { t: '移动端（v2.8.6）', d: '上传趋势的分组标签一屏放不下时改为左右滑动；历史记录 / 访问记录顶部的搜索与筛选栏随页面滚动，不再常驻占半屏。' }
+        { t: '移动端（v2.8.6）', d: '上传趋势的分组标签一屏放不下时改为左右滑动；历史记录 / 访问记录顶部的搜索与筛选栏随页面滚动，不再常驻占半屏。' },
+        { t: '访问记录时间筛选（v2.8.8）', d: '手机上原来的双月份区间选择器必然溢出屏幕，现改为「按钮 + 单个月份面板」弹窗（与「系统状态 → 趋势预览」用同一个日历面板）；已选区间时按钮高亮并显示起止日期，右侧小叉可一键清空回到「全部时间」。桌面端仍是原来的双日期选择器。' }
       ]
     },
     {
@@ -316,11 +323,17 @@ const EN = {
         { t: 'File upload', d: 'Click or drag files into the drop area (multi-select). You can also pick a whole folder; the relative directory structure is preserved. Fill the folder input on top to target a directory, leave empty for root.' },
         { t: 'Clipboard upload', d: 'Switch to clipboard mode, then paste an image/file or one or more URLs.' },
         { t: 'Transfer (URL upload)', d: '"Transfer" makes the server fetch the URL and re-upload it through the current channel, returning a local link. "External" only registers the link without storing the file.' },
-        { t: 'Naming', d: 'Default / prefix only / original name / short link — configurable in the upload settings.' },
-        { t: 'Upload settings (this session only)', d: 'Allowed formats and max file size in the upload settings dialog apply to the current page only and reset on refresh; when max file size is left empty, the placeholder shows the global value from the backend.' },
+        { t: 'Naming (v2.8.8)', d: 'No longer offered in the upload settings — every upload follows Settings → Others → Upload-related config → Default naming, so the same account gets consistent file names everywhere.' },
+        { t: 'Register File (v2.8.8)', d: 'A button right above "Upload settings" in the bottom-right quick toolbar, and another one next to "New folder" in the admin file manager. Use it to register a file that already lives on object storage or another image host: fill in the source URL, an optional name, channel, folder and note; type / size / MD5 are probed from the URL, upload time is the moment you submit, upload source is recorded as Record, and tags (year / extension / channel / type / Record) are added automatically. Nothing is uploaded again. Deleting a registered record removes the record only — the source file stays untouched.' },
+        { t: 'Per-account transcode policy (v2.8.8)', d: 'In User management → edit → Admin actions you can set, per account: follow global / disabled / enabled / let the user decide. With "let the user decide", that account sees the same dropdown in Upload settings → File preprocessing (follow global / disabled / enabled) and it resets to "follow global" on every refresh. The policy applies to all upload entry points of the account (home page, link transfer, WebDAV, API-S3, API-Web).' },
+        { t: 'Per-account file size limit (v2.8.8)', d: 'Set it in User management → edit → Admin actions; empty or 0 means the global limit. It applies to every upload entry point of that account, and the error message says whether the account or the global limit was hit. The old "type and size limits" switch has been removed.' },
         { t: 'Excluded compression formats', d: 'Sits right after File compression → Compression target (%): formats in this list skip compression and upload as-is (e.g. add mp4 to stop compressing video). Leave empty to exclude nothing — every compressible type follows the compression rules. Built-in compressible list: jpg/jpeg/jfif/png/webp/avif, mp4/webm/mov/m4v/mkv, mp3/m4a/aac/wav/flac/ogg/opus.' },
         { t: 'Size guarantee', d: 'If compression/re-encoding does not make the file smaller (equal or larger than the original), the result is discarded and the original is uploaded — never "compressed" into a bigger file. The only exception is video compatibility transcode: H.265/HEVC → H.264 is kept even when larger so browsers can play it, and the size change is written to the system log.' },
-        { t: 'Video compatibility transcode', d: 'Settings → Others → Upload-related config → Video compatibility transcode: H.265/HEVC, ProRes and other browser-unfriendly codecs are transcoded to H.264 on the server (ffmpeg required). H.264/AV1/VP9 files pass through; independent of the compression switch.' }
+        { t: 'Video compatibility transcode', d: 'Settings → Others → Upload-related config → Video compatibility transcode: H.265/HEVC, ProRes and other browser-unfriendly codecs are transcoded to H.264 on the server (ffmpeg required). H.264/AV1/VP9 files pass through; independent of the compression switch.' },
+        { t: 'Post-processing (major change in v2.8.8)', d: 'Compression and compatibility transcode for video / audio no longer run inside the upload request. Once the file is stored and the channel write succeeds the link is returned immediately, and compression / transcode run in a single background queue (at most one ffmpeg process at a time). Order is always compress first, then transcode — compression uses libx264 so its output is already H.264 and a successful compression skips transcoding entirely.' },
+        { t: 'When post-processing gives up', d: 'Upload success always wins: (1) estimated time above 5 minutes (MEDIA_POST_MAX_SECONDS) → give up; (2) fewer than 2 CPU cores, 1-minute load above cores x1.5, or under 256MB free memory → skip; (3) compression is predicted to fail → give up on both; (4) compression succeeded but transcode is predicted to fail → keep the compressed file, drop the transcode; (5) execution timeout → give up. On any give-up the original object and record stay as uploaded, links keep working, and the reason is written to the system log.' },
+        { t: 'WebP Conversion / File Compression are master switches (v2.8.8)', d: 'Both items in Settings → Others → Upload-related config were upgraded from "defaults" to master switches. Turning WebP Conversion off hides the Convert to WebP button in the upload list toolbar. Turning File Compression off hides the File Compression toolbar button and every compression option in the upload settings dialog, and also hides "Min compress threshold" / "Default compress target" in the admin — values are kept and come back when re-enabled.' },
+        { t: 'Auto retry moved (v2.8.8)', d: 'The Auto retry switch from the upload settings now lives in Settings → Others → Upload-related config → Auto retry (the row right above Video compatibility transcode). It is stored in the database, applies to every account, and is no longer shown on the upload page.' }
       ]
     },
     {
@@ -432,7 +445,8 @@ const EN = {
         { t: 'System status', d: 'File totals plus channel, upload method, user, file type and status distributions. The upload trend can be grouped by channel type, channel name, user, upload method and file type, with a selectable date range. "Recent uploads" lists the latest 20 records, followed by today / yesterday / week / month / year counts, total space used and folder count (click a count to open History).' },
         { t: 'Upload method (v2.8.6)', d: 'Every file records the entry it came from: Default = legacy web uploads before v2.8.6; Upload = the upload page in "file" mode; Fetch = the upload page in "link" mode (saved from URL); WebDAV / API-Web / API-S3 = external channels. The file detail "upload method" field, the file manager filter and the status page distribution all use these values.' },
         { t: 'Logs', d: 'Records writes (upload / save / delete) plus 4xx, 5xx and slow requests, with level/scope/keyword filters and export.' },
-        { t: 'Mobile (v2.8.6)', d: 'Upload trend tabs scroll horizontally when they overflow; History / Access log top bars scroll away with the page instead of staying pinned.' }
+        { t: 'Mobile (v2.8.6)', d: 'Upload trend tabs scroll horizontally when they overflow; History / Access log top bars scroll away with the page instead of staying pinned.' },
+        { t: 'Access log date filter (v2.8.8)', d: 'On phones the two-month range picker always overflowed the screen, so it is now a button that opens a single-month panel (the same calendar used by Status → Trend preview). With a range selected the button is highlighted and shows the start/end dates, and the small cross on the right clears it back to "all time". Desktop keeps the original range picker.' }
       ]
     },
     {

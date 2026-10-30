@@ -13,7 +13,7 @@
  */
 import { execFile, execFileSync } from 'child_process';
 import { promises as fsp } from 'fs';
-import { tmpdir } from 'os';
+import { cpus, freemem, loadavg, tmpdir } from 'os';
 import { join } from 'path';
 import { randomBytes } from 'crypto';
 import { promisify } from 'util';
@@ -38,6 +38,12 @@ const VIDEO_OK = new Set(['mp4', 'mov', 'm4v', 'webm', 'mkv', 'avi']);
 const AUDIO_OK = new Set(['mp3', 'wav', 'm4a', 'aac', 'flac', 'ogg', 'opus']);
 /** 明确跳过的（会丢帧 / 丢透明 / 矢量 / 需要专业编码器） */
 const SKIP = new Set(['gif', 'svg', 'heic', 'heif', 'tiff', 'tif', 'bmp', 'ico', 'apng', 'psd']);
+
+/**
+ * 单个 ffmpeg 步骤的时间上限（秒）—— v2.8.8 起用于「后置压缩 / 转码」。
+ * 默认 300 秒（5 分钟）：预计超过直接放弃，执行超时由 execFile 杀掉进程。
+ */
+export const MEDIA_POST_MAX_SECONDS = Math.max(30, Number(process.env.MEDIA_POST_MAX_SECONDS || 300));
 
 /* ---------------- ffmpeg 探测 ---------------- */
 
@@ -81,8 +87,26 @@ export function ffmpegAvailable(): boolean {
   return false;
 }
 
-/* ---------------- 图片 ---------------- */
+/**
+ * 解析视频/音频时长（秒）。
+ * 用 `ffmpeg -i` 的 stderr 读 Duration，不解码、几百毫秒返回；失败返回 0。
+ * v2.8.8：后置处理用它估算「这次重编码大概要多久」。
+ */
+export async function probeMediaDurationFile(srcPath: string): Promise<number> {
+  if (!ffmpegAvailable()) return 0;
+  try {
+    await run(ffmpegPath, ['-hide_banner', '-i', srcPath], { timeout: 15000, maxBuffer: 4 * 1024 * 1024 });
+    return 0;
+  } catch (err) {
+    // 没有输出目标时 ffmpeg 以退出码 1 结束，但 stderr 里带完整元信息
+    const stderr = String((err as { stderr?: string }).stderr || '');
+    const m = stderr.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
+    if (!m) return 0;
+    return Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]);
+  }
+}
 
+/* ---------------- 图片 ---------------- */
 function clampQuality(percent: number): number {
   const p = Number.isFinite(percent) && percent > 0 ? percent : 80;
   return Math.min(100, Math.max(10, p));
@@ -360,7 +384,13 @@ async function compressImageFile(srcPath: string, e: string, percent: number, or
   return keep('压缩后体积未减小');
 }
 
-async function compressVideoFile(srcPath: string, e: string, percent: number, original: number): Promise<FileCompressResult> {
+export async function compressVideoFile(
+  srcPath: string,
+  e: string,
+  percent: number,
+  original: number,
+  maxSeconds = 30 * 60,
+): Promise<FileCompressResult> {
   const keep = (reason: string): FileCompressResult => ({
     path: srcPath,
     size: original,
@@ -384,7 +414,7 @@ async function compressVideoFile(srcPath: string, e: string, percent: number, or
         '-c:a', 'aac', '-b:a', '96k',
         out,
       ];
-  await run(ffmpegPath, args, { timeout: 30 * 60 * 1000, maxBuffer: 16 * 1024 * 1024 });
+  await run(ffmpegPath, args, { timeout: Math.max(5, maxSeconds) * 1000, maxBuffer: 16 * 1024 * 1024 });
   const st = await fsp.stat(out);
   // v2.8.5：压缩后必须比原文件小，否则丢弃压缩产物、继续用原文件
   if (st.size >= original) {
@@ -400,7 +430,13 @@ async function compressVideoFile(srcPath: string, e: string, percent: number, or
   };
 }
 
-async function compressAudioFile(srcPath: string, e: string, percent: number, original: number): Promise<FileCompressResult> {
+export async function compressAudioFile(
+  srcPath: string,
+  e: string,
+  percent: number,
+  original: number,
+  maxSeconds = 30 * 60,
+): Promise<FileCompressResult> {
   const keep = (reason: string): FileCompressResult => ({
     path: srcPath,
     size: original,
@@ -418,7 +454,7 @@ async function compressAudioFile(srcPath: string, e: string, percent: number, or
   const args = outExt === '.mp3'
     ? ['-y', '-i', srcPath, '-vn', '-c:a', 'libmp3lame', '-b:a', `${bitrate}k`, out]
     : ['-y', '-i', srcPath, '-vn', '-c:a', 'aac', '-b:a', `${bitrate}k`, '-movflags', '+faststart', out];
-  await run(ffmpegPath, args, { timeout: 30 * 60 * 1000, maxBuffer: 16 * 1024 * 1024 });
+  await run(ffmpegPath, args, { timeout: Math.max(5, maxSeconds) * 1000, maxBuffer: 16 * 1024 * 1024 });
   const st = await fsp.stat(out);
   // v2.8.5：压缩后必须比原文件小，否则丢弃压缩产物、继续用原文件
   if (st.size >= original) {
@@ -444,7 +480,7 @@ async function compressAudioFile(srcPath: string, e: string, percent: number, or
  */
 
 /** mp4/mov 容器里浏览器普遍播放不了的视频编码（采样描述 fourcc） */
-const VIDEO_CODEC_INCOMPATIBLE = new Set([
+export const VIDEO_CODEC_INCOMPATIBLE = new Set([
   'hvc1', 'hev1', // H.265 / HEVC（华为、iPhone 高效格式）
   'dvh1', 'dva1', // Dolby Vision（HEVC 底座）
   'vvc1', // H.266 / VVC
@@ -569,14 +605,14 @@ export function probeVideoCodecBuffer(buf: Buffer): string {
  * 与「压缩」不同：**不要求产物比原文件小** —— 哪怕变大也换，目的就是能在浏览器里播。
  * -movflags +faststart 顺带把 moov 挪到头部，边下边播体验更好。
  */
-async function transcodeVideoFile(srcPath: string, original: number): Promise<FileCompressResult> {
+export async function transcodeVideoFile(srcPath: string, original: number, maxSeconds = 60 * 60): Promise<FileCompressResult> {
   const keep = (reason: string): FileCompressResult => ({ path: srcPath, size: original, mime: '', ext: '', compressed: false, reason });
   const out = `${srcPath}.h264.mp4`;
   try {
     await run(
       ffmpegPath,
       ['-y', '-i', srcPath, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '24', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', '-c:a', 'aac', '-b:a', '128k', out],
-      { timeout: 60 * 60 * 1000, maxBuffer: 16 * 1024 * 1024 },
+      { timeout: Math.max(5, maxSeconds) * 1000, maxBuffer: 16 * 1024 * 1024 },
     );
     const st = await fsp.stat(out);
     if (!st.size) {

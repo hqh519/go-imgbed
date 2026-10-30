@@ -187,7 +187,18 @@ computed: {
     /** 「上传相关配置」分类块：从网页设置配置里筛出迁移过来的那一批 */
     uploadDefaultItems() {
         const list = Array.isArray(this.pageSettings.config) ? this.pageSettings.config : [];
-        return list.filter(item => UPLOAD_DEFAULT_CONFIG_IDS.includes(item.id));
+        let items = list.filter(item => UPLOAD_DEFAULT_CONFIG_IDS.includes(item.id));
+        /*
+         * v2.8.8 级联：两个开关从「默认值」升级为「功能总开关」。
+         *   · 「文件压缩」关闭 → 压缩阈值 / 压缩期望没有意义，一并隐藏；
+         *   · 「WebP转换」关闭 → 没有下游子项，仅前台按钮不加载。
+         * 注意只影响展示，不改值：重新打开开关后原来的阈值 / 期望还在。
+         */
+        const compressOn = this.configBool(items, 'defaultCustomerCompress', true);
+        if (!compressOn) {
+            items = items.filter(item => item.id !== 'defaultCompressBar' && item.id !== 'defaultCompressQuality');
+        }
+        return items;
     },
     /** 图片尺寸处理：格式校验（与原「安全设置」保持一致） */
     imageTransformRules() {
@@ -211,6 +222,16 @@ computed: {
     }
 },
 methods: {
+    /**
+     * 从配置数组里读一个布尔项（同时兼容真布尔与 'true'/'false' 字符串 ——
+     * 配置项存库后可能被序列化成字符串）。
+     */
+    configBool(items, id, fallback) {
+        const hit = (items || []).find(item => item.id === id);
+        if (!hit || hit.value === undefined || hit.value === null || hit.value === '') return fallback;
+        if (typeof hit.value === 'boolean') return hit.value;
+        return String(hit.value) === 'true';
+    },
     localized(item, field) {
         if (this.isEn && item[field + '_en']) return item[field + '_en'];
         return item[field] || '';

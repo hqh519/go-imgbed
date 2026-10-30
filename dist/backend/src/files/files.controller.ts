@@ -732,7 +732,17 @@ export class LinkController {
     for (const copy of ordered) {
       const ch = channels.find((c) => c.id === copy.channelId);
       if (!ch) continue;
+      /*
+       * v2.8.8：「登记文件」的副本里存的是**完整源地址**（remoteUrl），
+       * 没有渠道内 object key —— 这类副本直接拿 remoteUrl 当候选。
+       * custom 渠道例外：它本来就用 remoteUrl 做域名替换，交给适配器处理。
+       */
+      const absoluteRemote = /^https?:\/\//i.test(String(copy.remoteUrl || '')) ? String(copy.remoteUrl) : '';
       if (ch.type === 'local') {
+        if (absoluteRemote) {
+          candidates.push({ url: absoluteRemote, label: ch.name });
+          continue;
+        }
         if (candidates.length > 0) continue;
         const abs = localFileAbs(copy.remoteKey);
         if (!abs) continue;
@@ -745,7 +755,10 @@ export class LinkController {
         config: this.channels.decryptConfig(ch.type, ch.config),
         metas: {},
       };
-      const url = createAdapter(info).buildDirectUrl(toCopyInfo(copy), info, preferInternal);
+      const url =
+        absoluteRemote && ch.type !== 'custom'
+          ? absoluteRemote
+          : createAdapter(info).buildDirectUrl(toCopyInfo(copy), info, preferInternal);
       if (url) candidates.push({ url, label: ch.name });
     }
     if (candidates.length === 0) {
@@ -2374,6 +2387,24 @@ export class UserConfigController {
       defaultConvertToWebp: pv('defaultConvertToWebp', false) === true,
       // v2.3.0：默认开启压缩（与后台「网页设置 → 默认开启压缩」的默认值保持一致）
       defaultCustomerCompress: pv('defaultCustomerCompress', true) === true,
+      /*
+       * v2.8.8：两个后台开关从「默认值」升级为「功能总开关」：
+       *   webpEnabled     —— 关闭时前台列表顶栏的「转换为WebP」按钮不加载
+       *   compressEnabled —— 关闭时前台所有压缩相关入口（顶栏按钮 / 上传设置里的
+       *                      压缩开关·阈值·百分比·禁止格式）全部隐藏
+       */
+      webpEnabled: pv('defaultConvertToWebp', false) === true,
+      compressEnabled: pv('defaultCustomerCompress', true) === true,
+      /*
+       * v2.8.8：视频兼容转码的账户策略。
+       *   transcodePolicy —— inherit / off / on / user
+       *   transcodeGlobal —— 后台全局开关当前值（策略为 inherit/user 时用户看到的「跟随全局」实际值）
+       * 前台仅在 policy === 'user' 时显示下拉，其余由后台决定。
+       */
+      transcodePolicy: await this.uploadSvc.videoTranscodePolicy(uploader),
+      transcodeGlobal: await this.uploadSvc.globalTranscodeEnabled(),
+      /** 自动重试（失败自动切换渠道）—— v2.8.8 起由后台统一配置，前台不再提供开关 */
+      autoRetry: pv('defaultAutoRetry', true) !== false,
       defaultCompressBar: pv('defaultCompressBar', '0.8'),
       // 压缩期望：已改为「压缩百分比」（如 80 = 压到原体积 80%）
       defaultCompressQuality: pv('defaultCompressQuality', '80'),
@@ -2385,7 +2416,12 @@ export class UserConfigController {
         .split(',')
         .map((x) => x.trim().replace(/^\./, '').toLowerCase())
         .filter(Boolean),
-      maxUploadSizeMB: Number(pv('maxUploadSizeMB', 1024)) || 1024,
+      /*
+       * v2.8.8：单文件大小上限 —— 账户在「用户管理 → 编辑」里设了「单文件大小限制」
+       * 就用它，留空才回落到后台全局值。前端据此做上传前的预校验（提示更及时）。
+       */
+      maxUploadSizeMB:
+        (await this.uploadSvc.userMaxFileSizeMB(uploader)) || (Number(pv('maxUploadSizeMB', 1024)) || 1024),
       // 背景图
       wallpaperEnabled: pv('wallpaperEnabled', false) === true,
       // 夜间/白天自动切换（关闭后固定白天样式）

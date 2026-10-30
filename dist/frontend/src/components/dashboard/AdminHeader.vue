@@ -221,10 +221,29 @@ export default {
     }
 
     .admin-header-content :deep(.search-area > .filter-trigger),
-    .admin-header-content :deep(.search-area > *:not(.search-card):not(.tag-filter-badge):not(.refresh-files-btn)) {
+    .admin-header-content :deep(.search-area > *:not(.search-card):not(.tag-filter-badge):not(.refresh-files-btn):not(.dashboard-header-buttons)) {
         order: 4;
         flex: 0 0 auto;
         margin-left: 8px;
+    }
+
+    /*
+     * v2.8.8：后台文件管理顶栏「刷新 / 回收站 / 声音」整组靠右。
+     * 之前这三个按钮和「更多菜单」之间没有任何推右元素（本页没有标签筛选按钮），
+     * 移动端会挤在顶行中间。这里用 margin-left:auto 把整组连同其后的
+     * 「更多菜单」一起顶到右侧，形成「…… 刷新 回收站 声音 更多」的右对齐排列。
+     */
+    .admin-header-content :deep(.search-area > .dashboard-header-buttons) {
+        order: 1;
+        margin-left: auto;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+    }
+
+    /* 容器内已有 6px 间距，去掉按钮自带的 2px 左边距，避免桌面/移动端间距不一致 */
+    .admin-header-content :deep(.dashboard-header-buttons .refresh-files-btn) {
+        margin-left: 0;
     }
 
     .admin-header-tools {

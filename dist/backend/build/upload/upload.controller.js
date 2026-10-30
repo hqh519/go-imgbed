@@ -95,12 +95,65 @@ let UploadController = class UploadController {
         const fwd = req.headers['x-forwarded-for']?.split(',')[0]?.trim();
         return (fwd || req.socket?.remoteAddress || '').replace(/^::ffff:/, '');
     }
-    async cleanupChunked(q, res) {
+    async cleanupChunked(q, req, res) {
         if (q.cleanup === 'true' && q.uploadId) {
             await (0, upload_session_1.removeSession)(q.uploadId);
             return res.json({ success: true });
         }
+        if (q.session === 'true' && q.uploadId) {
+            const session = await (0, upload_session_1.getSession)(q.uploadId);
+            if (!session) {
+                return res.json({ success: false, gone: true, message: '上传会话不存在或已过期，请重新上传' });
+            }
+            const received = await (0, upload_session_1.receivedChunks)(q.uploadId);
+            const merging = !!(session.mergingAt && Date.now() - session.mergingAt < 10 * 60_000);
+            const base = {
+                success: true,
+                uploadId: session.uploadId,
+                name: session.originalName,
+                completed: !!session.completedAt,
+                merging,
+                totalChunks: session.totalChunks,
+                receivedCount: received.length,
+            };
+            if (session.completedAt && session.mergeFileId) {
+                return res.json({
+                    ...base,
+                    result: [{ src: await this.signedSrc(session.mergeFileId, req), name: session.mergeName || session.originalName }],
+                });
+            }
+            return res.json(base);
+        }
         return res.status(400).json({ success: false, message: '无效的清理请求' });
+    }
+    async registerFile(body, req, res) {
+        const uploader = (0, auth_guard_1.currentSession)(req)?.user || req.session?.user || '';
+        if (!uploader) {
+            return res.status(401).json({ success: false, message: '请先登录后再登记文件' });
+        }
+        const result = await this.svc.registerFile({
+            sourceUrl: String(body.sourceUrl || ''),
+            originalName: String(body.originalName || ''),
+            channelId: String(body.channelId || ''),
+            folder: String(body.folder || ''),
+            note: String(body.note || ''),
+            uploader,
+            ip: this.clientIp(req),
+        });
+        if (result.error)
+            return res.status(400).json({ success: false, message: result.error });
+        return res.json({
+            success: true,
+            data: {
+                id: result.id,
+                name: result.info?.name,
+                size: result.info?.size,
+                mime: result.info?.mime,
+                md5: result.info?.md5,
+                channel: result.info?.channel,
+                src: result.id ? await this.signedSrc(result.id, req) : '',
+            },
+        });
     }
     async upload(file, q, body, req, res) {
         if (q.cleanup === 'true' && q.uploadId) {
@@ -130,6 +183,7 @@ let UploadController = class UploadController {
             ip: this.clientIp(req),
             originalSize: Number(q.originalSize || body.originalSize || 0) || 0,
             compressPercent: Number(q.compressPercent || body.compressPercent || 0) || 0,
+            videoTranscode: q.videoTranscode === undefined ? undefined : q.videoTranscode === 'true' || q.videoTranscode === '1',
             backup: backupOff ? false : q.backup !== 'false' && q.backup !== '0',
             backupChannelId,
             autoRetry: q.autoRetry === 'true' || q.autoRetry === '1',
@@ -413,11 +467,21 @@ exports.UploadController = UploadController;
 __decorate([
     (0, common_1.Get)('upload'),
     __param(0, (0, common_1.Query)()),
-    __param(1, (0, common_2.Res)()),
+    __param(1, (0, common_2.Req)()),
+    __param(2, (0, common_2.Res)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [Object, Object]),
+    __metadata("design:paramtypes", [Object, Object, Object]),
     __metadata("design:returntype", Promise)
 ], UploadController.prototype, "cleanupChunked", null);
+__decorate([
+    (0, common_1.Post)('api/record'),
+    __param(0, (0, common_1.Body)()),
+    __param(1, (0, common_2.Req)()),
+    __param(2, (0, common_2.Res)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Object, Object]),
+    __metadata("design:returntype", Promise)
+], UploadController.prototype, "registerFile", null);
 __decorate([
     (0, common_1.Post)('upload'),
     (0, common_1.UseInterceptors)((0, platform_express_1.FileInterceptor)('file', { limits: { fileSize: MAX_SINGLE_BYTES } })),

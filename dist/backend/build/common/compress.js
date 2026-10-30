@@ -33,12 +33,17 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.VIDEO_CODEC_INCOMPATIBLE = exports.MEDIA_POST_MAX_SECONDS = void 0;
 exports.ffmpegAvailable = ffmpegAvailable;
+exports.probeMediaDurationFile = probeMediaDurationFile;
 exports.compressMedia = compressMedia;
 exports.readDimensions = readDimensions;
 exports.compressFile = compressFile;
+exports.compressVideoFile = compressVideoFile;
+exports.compressAudioFile = compressAudioFile;
 exports.probeVideoCodecFile = probeVideoCodecFile;
 exports.probeVideoCodecBuffer = probeVideoCodecBuffer;
+exports.transcodeVideoFile = transcodeVideoFile;
 exports.readDimensionsFile = readDimensionsFile;
 const child_process_1 = require("child_process");
 const fs_1 = require("fs");
@@ -51,6 +56,7 @@ const IMAGE_OK = new Set(['jpg', 'jpeg', 'png', 'webp', 'avif']);
 const VIDEO_OK = new Set(['mp4', 'mov', 'm4v', 'webm', 'mkv', 'avi']);
 const AUDIO_OK = new Set(['mp3', 'wav', 'm4a', 'aac', 'flac', 'ogg', 'opus']);
 const SKIP = new Set(['gif', 'svg', 'heic', 'heif', 'tiff', 'tif', 'bmp', 'ico', 'apng', 'psd']);
+exports.MEDIA_POST_MAX_SECONDS = Math.max(30, Number(process.env.MEDIA_POST_MAX_SECONDS || 300));
 let ffmpegChecked = false;
 let ffmpegPath = '';
 function resolveFfmpegStatic() {
@@ -81,6 +87,21 @@ function ffmpegAvailable() {
     ffmpegPath = '';
     console.log('[compress] 未检测到 ffmpeg：视频 / 音频将跳过压缩与转码（图片压缩不受影响）');
     return false;
+}
+async function probeMediaDurationFile(srcPath) {
+    if (!ffmpegAvailable())
+        return 0;
+    try {
+        await run(ffmpegPath, ['-hide_banner', '-i', srcPath], { timeout: 15000, maxBuffer: 4 * 1024 * 1024 });
+        return 0;
+    }
+    catch (err) {
+        const stderr = String(err.stderr || '');
+        const m = stderr.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
+        if (!m)
+            return 0;
+        return Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]);
+    }
 }
 function clampQuality(percent) {
     const p = Number.isFinite(percent) && percent > 0 ? percent : 80;
@@ -309,7 +330,7 @@ async function compressImageFile(srcPath, e, percent, original) {
     await fs_1.promises.rm(out, { force: true }).catch(() => undefined);
     return keep('压缩后体积未减小');
 }
-async function compressVideoFile(srcPath, e, percent, original) {
+async function compressVideoFile(srcPath, e, percent, original, maxSeconds = 30 * 60) {
     const keep = (reason) => ({
         path: srcPath,
         size: original,
@@ -335,7 +356,7 @@ async function compressVideoFile(srcPath, e, percent, original) {
             '-c:a', 'aac', '-b:a', '96k',
             out,
         ];
-    await run(ffmpegPath, args, { timeout: 30 * 60 * 1000, maxBuffer: 16 * 1024 * 1024 });
+    await run(ffmpegPath, args, { timeout: Math.max(5, maxSeconds) * 1000, maxBuffer: 16 * 1024 * 1024 });
     const st = await fs_1.promises.stat(out);
     if (st.size >= original) {
         await fs_1.promises.rm(out, { force: true }).catch(() => undefined);
@@ -349,7 +370,7 @@ async function compressVideoFile(srcPath, e, percent, original) {
         compressed: true,
     };
 }
-async function compressAudioFile(srcPath, e, percent, original) {
+async function compressAudioFile(srcPath, e, percent, original, maxSeconds = 30 * 60) {
     const keep = (reason) => ({
         path: srcPath,
         size: original,
@@ -369,7 +390,7 @@ async function compressAudioFile(srcPath, e, percent, original) {
     const args = outExt === '.mp3'
         ? ['-y', '-i', srcPath, '-vn', '-c:a', 'libmp3lame', '-b:a', `${bitrate}k`, out]
         : ['-y', '-i', srcPath, '-vn', '-c:a', 'aac', '-b:a', `${bitrate}k`, '-movflags', '+faststart', out];
-    await run(ffmpegPath, args, { timeout: 30 * 60 * 1000, maxBuffer: 16 * 1024 * 1024 });
+    await run(ffmpegPath, args, { timeout: Math.max(5, maxSeconds) * 1000, maxBuffer: 16 * 1024 * 1024 });
     const st = await fs_1.promises.stat(out);
     if (st.size >= original) {
         await fs_1.promises.rm(out, { force: true }).catch(() => undefined);
@@ -383,7 +404,7 @@ async function compressAudioFile(srcPath, e, percent, original) {
         compressed: true,
     };
 }
-const VIDEO_CODEC_INCOMPATIBLE = new Set([
+exports.VIDEO_CODEC_INCOMPATIBLE = new Set([
     'hvc1', 'hev1',
     'dvh1', 'dva1',
     'vvc1',
@@ -469,7 +490,7 @@ async function probeVideoCodecFile(srcPath) {
                 const moov = Buffer.alloc(cap);
                 await fh.read(moov, 0, cap, offset + header);
                 const fourccs = collectStsdFourccs(moov, { start: 0, size: cap });
-                return fourccs.find((c) => VIDEO_CODEC_INCOMPATIBLE.has(c)) || fourccs.find((c) => ['avc1', 'av01', 'vp09'].includes(c)) || '';
+                return fourccs.find((c) => exports.VIDEO_CODEC_INCOMPATIBLE.has(c)) || fourccs.find((c) => ['avc1', 'av01', 'vp09'].includes(c)) || '';
             }
             offset += size;
         }
@@ -489,7 +510,7 @@ function probeVideoCodecBuffer(buf) {
         for (const box of parseMp4Boxes(buf, 0, buf.length)) {
             if (box.type === 'moov') {
                 const fourccs = collectStsdFourccs(buf, box);
-                return fourccs.find((c) => VIDEO_CODEC_INCOMPATIBLE.has(c)) || fourccs.find((c) => ['avc1', 'av01', 'vp09'].includes(c)) || '';
+                return fourccs.find((c) => exports.VIDEO_CODEC_INCOMPATIBLE.has(c)) || fourccs.find((c) => ['avc1', 'av01', 'vp09'].includes(c)) || '';
             }
         }
         return '';
@@ -498,11 +519,11 @@ function probeVideoCodecBuffer(buf) {
         return '';
     }
 }
-async function transcodeVideoFile(srcPath, original) {
+async function transcodeVideoFile(srcPath, original, maxSeconds = 60 * 60) {
     const keep = (reason) => ({ path: srcPath, size: original, mime: '', ext: '', compressed: false, reason });
     const out = `${srcPath}.h264.mp4`;
     try {
-        await run(ffmpegPath, ['-y', '-i', srcPath, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '24', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', '-c:a', 'aac', '-b:a', '128k', out], { timeout: 60 * 60 * 1000, maxBuffer: 16 * 1024 * 1024 });
+        await run(ffmpegPath, ['-y', '-i', srcPath, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '24', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', '-c:a', 'aac', '-b:a', '128k', out], { timeout: Math.max(5, maxSeconds) * 1000, maxBuffer: 16 * 1024 * 1024 });
         const st = await fs_1.promises.stat(out);
         if (!st.size) {
             await fs_1.promises.rm(out, { force: true }).catch(() => undefined);
@@ -522,7 +543,7 @@ async function processVideoFile(srcPath, e, percent, original, opts) {
     const keep = (reason) => ({ path: srcPath, size: original, mime: '', ext: '', compressed: false, reason });
     if (opts?.videoTranscode && ['mp4', 'mov', 'm4v'].includes(e)) {
         const codec = await probeVideoCodecFile(srcPath);
-        if (VIDEO_CODEC_INCOMPATIBLE.has(codec)) {
+        if (exports.VIDEO_CODEC_INCOMPATIBLE.has(codec)) {
             console.log(`[compress] 检测到浏览器不兼容编码 ${codec}，开始兼容转码 → H.264`);
             return transcodeVideoFile(srcPath, original);
         }
@@ -537,7 +558,7 @@ async function processVideoBuffer(buffer, e, percent, opts) {
     const keep = (reason) => ({ buffer, mime: '', ext: '', compressed: false, reason });
     if (opts?.videoTranscode && ['mp4', 'mov', 'm4v'].includes(e)) {
         const codec = probeVideoCodecBuffer(buffer);
-        if (VIDEO_CODEC_INCOMPATIBLE.has(codec)) {
+        if (exports.VIDEO_CODEC_INCOMPATIBLE.has(codec)) {
             if (!ffmpegAvailable())
                 return keep('未安装 ffmpeg，HEVC 视频跳过兼容转码');
             const outExt = '.mp4';

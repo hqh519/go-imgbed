@@ -147,14 +147,96 @@ export class UploadController {
    * 而清理分支原本只写在 @Post('upload') 里 —— GET 请求落到 404，
    * 会话目录就一直留在磁盘上等 24h TTL（v2.8.2 是内存泄漏，这里是磁盘泄漏）。
    * 这里补一个只认 cleanup 的 GET 入口，其他 GET 一律 400。
+   *
+   * v2.8.8：新增 `session=true&uploadId=` —— 合并进度/结果查询。
+   * 前端收到 400「正在合并中」时不再判失败，而是轮询这个接口等结果。
    */
   @Get('upload')
-  async cleanupChunked(@Query() q: { cleanup?: string; uploadId?: string }, @Res() res: Response) {
+  async cleanupChunked(
+    @Query() q: { cleanup?: string; uploadId?: string; session?: string },
+    @Req() req: Request,
+    @Res() res: Response,
+  ) {
     if (q.cleanup === 'true' && q.uploadId) {
       await removeSession(q.uploadId);
       return res.json({ success: true });
     }
+    if (q.session === 'true' && q.uploadId) {
+      const session = await getSession(q.uploadId);
+      if (!session) {
+        return res.json({ success: false, gone: true, message: '上传会话不存在或已过期，请重新上传' });
+      }
+      const received = await receivedChunks(q.uploadId);
+      const merging = !!(session.mergingAt && Date.now() - session.mergingAt < 10 * 60_000);
+      const base = {
+        success: true,
+        uploadId: session.uploadId,
+        name: session.originalName,
+        completed: !!session.completedAt,
+        merging,
+        totalChunks: session.totalChunks,
+        receivedCount: received.length,
+      };
+      if (session.completedAt && session.mergeFileId) {
+        return res.json({
+          ...base,
+          result: [{ src: await this.signedSrc(session.mergeFileId, req), name: session.mergeName || session.originalName }],
+        });
+      }
+      return res.json(base);
+    }
     return res.status(400).json({ success: false, message: '无效的清理请求' });
+  }
+
+  /**
+   * 「登记文件」（v2.8.8）
+   *
+   * 文件已在别的渠道/图床上，这里只补一条记录，不上传任何字节。
+   * 与后台「文件管理 → 登记文件」、前台右下角「登记文件」共用同一个接口：
+   *   源地址 → 探测类型/大小/MD5 → 写入 files + file_copies（uploadSource=Record）。
+   *
+   * 权限：必须登录（管理员或普通用户均可）。归属用户固定为当前登录账户，
+   * 避免匿名调用者往库里塞任意记录。
+   */
+  @Post('api/record')
+  async registerFile(
+    @Body()
+    body: {
+      sourceUrl?: string;
+      originalName?: string;
+      channelId?: string;
+      folder?: string;
+      note?: string;
+    },
+    @Req() req: Request & { session?: { user: string } },
+    @Res() res: Response,
+  ) {
+    const uploader = currentSession(req)?.user || req.session?.user || '';
+    if (!uploader) {
+      return res.status(401).json({ success: false, message: '请先登录后再登记文件' });
+    }
+    const result = await this.svc.registerFile({
+      sourceUrl: String(body.sourceUrl || ''),
+      originalName: String(body.originalName || ''),
+      channelId: String(body.channelId || ''),
+      folder: String(body.folder || ''),
+      note: String(body.note || ''),
+      uploader,
+      ip: this.clientIp(req),
+    });
+    if (result.error) return res.status(400).json({ success: false, message: result.error });
+    return res.json({
+      success: true,
+      data: {
+        id: result.id,
+        name: result.info?.name,
+        size: result.info?.size,
+        mime: result.info?.mime,
+        md5: result.info?.md5,
+        channel: result.info?.channel,
+        src: result.id ? await this.signedSrc(result.id, req) : '',
+      },
+    });
   }
 
   /** 核心上传：POST /upload —— 兼容前端契约（query 参数 + multipart） */
@@ -176,6 +258,11 @@ export class UploadController {
       originalSize?: string;
       /** 压缩期望：体积占原文件的百分比（10-100），0/缺省表示用后台默认值 */
       compressPercent?: string;
+      /**
+       * v2.8.8：视频兼容转码（仅当账户策略为「用户决定」时生效）。
+       * 'true' 执行 / 'false' 不执行；缺省按「跟随全局」处理。
+       */
+      videoTranscode?: string;
       /** 指定备份渠道：**渠道 ID**（6 位 code / 主键 id）；传 none 表示本次不备份 */
       backupChannelId?: string;
       backupChannel?: string;
@@ -279,6 +366,11 @@ export class UploadController {
       originalSize: Number(q.originalSize || body.originalSize || 0) || 0,
       // 压缩期望百分比（前端上传设置优先，缺省由后端读「网页设置 → 客户端设置」）
       compressPercent: Number(q.compressPercent || body.compressPercent || 0) || 0,
+      /*
+       * v2.8.8：本次是否做「视频兼容转码」。
+       * 只在账户策略为「用户决定」时被采纳；其它策略由后端按账户/全局决定（见 UploadService）。
+       */
+      videoTranscode: q.videoTranscode === undefined ? undefined : q.videoTranscode === 'true' || q.videoTranscode === '1',
       /*
        * 备份开关：
        *   - 备份渠道下拉选了 none → 本次不备份

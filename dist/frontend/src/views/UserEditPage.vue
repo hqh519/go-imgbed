@@ -263,8 +263,39 @@
             <span class="switch-item">{{ $t('userManage.canEdit') }}<el-switch v-model="form.canEdit" /></span>
             <span class="switch-item">{{ $t('userManage.canDelete') }}<el-switch v-model="form.canDelete" /></span>
             <span class="switch-item">{{ $t('userManage.linkPermission') }}<el-switch v-model="form.linkEnabled" /></span>
-            <span class="switch-item">{{ $t('userManage.enforceLimits') }}<el-switch v-model="form.enforceLimits" /></span>
+            <!-- v2.8.8：「类型和大小限制」开关已移除 —— 上传限制统一由「单文件大小限制」（下方）与后台全局配置决定 -->
           </div>
+
+          <!--
+            v2.8.8：账户级上传策略（两项都只对本账户生效，留空/跟随全局时用后台配置）
+              · 视频兼容转码：跟随全局 / 禁用 / 启用 / 用户决定
+                  「用户决定」= 允许该账户在前台上传设置里自己选，且每次刷新复位为跟随全局
+              · 单文件大小限制：留空 = 跟随后台「上传相关配置」里的全局上限
+          -->
+          <el-form label-position="top" class="edit-form account-policy-form">
+            <el-form-item :label="$t('userEdit.transcodePolicy')">
+              <el-select v-model="form.transcodePolicy" class="full-width">
+                <el-option :label="$t('userEdit.transcodeInherit')" value="inherit" />
+                <el-option :label="$t('userEdit.transcodeOff')" value="off" />
+                <el-option :label="$t('userEdit.transcodeOn')" value="on" />
+                <el-option :label="$t('userEdit.transcodeUser')" value="user" />
+              </el-select>
+              <p class="hint">{{ $t('userEdit.transcodePolicyHint') }}</p>
+            </el-form-item>
+            <el-form-item :label="$t('userEdit.maxFileSize')">
+              <!-- 0 / 留空 = 跟随全局；输入即生效于该账户的全部上传入口 -->
+              <el-input
+                v-model.number="form.maxFileSizeMB"
+                type="number"
+                min="0"
+                :placeholder="$t('userEdit.maxFileSizePlaceholder')"
+                class="full-width"
+              >
+                <template #append>MB</template>
+              </el-input>
+              <p class="hint">{{ $t('userEdit.maxFileSizeHint') }}</p>
+            </el-form-item>
+          </el-form>
           <!-- v2.4.0：管理备注输入框换到名称下一行（不再与标签同行） -->
           <div class="admin-note-block">
             <span class="admin-note-label">{{ $t('userManage.adminNote') }}</span>
@@ -358,6 +389,9 @@ export default {
                 canDelete: true,
                 linkEnabled: true,
                 enforceLimits: true,
+                // v2.8.8：账户级上传策略
+                transcodePolicy: 'inherit',
+                maxFileSizeMB: 0,
                 mainChannelId: '',
                 backupChannelId: '',
                 adminNote: '',
@@ -465,6 +499,9 @@ export default {
                     canDelete: d.canDelete !== false,
                     linkEnabled: d.linkEnabled !== false,
                     enforceLimits: d.enforceLimits !== false,
+                    // v2.8.8：账户级上传策略（后端已返回，老账户默认 inherit / 0）
+                    transcodePolicy: d.transcodePolicy || 'inherit',
+                    maxFileSizeMB: Number(d.maxFileSizeMB) || 0,
                     mainChannelId: d.mainChannelId || '',
                     backupChannelId: d.backupChannelId || '',
                     adminNote: d.adminNote || '',
@@ -690,7 +727,9 @@ export default {
                         canEdit: this.form.canEdit,
                         canDelete: this.form.canDelete,
                         linkEnabled: this.form.linkEnabled,
-                        enforceLimits: this.form.enforceLimits,
+                        // v2.8.8：账户级上传策略
+                        transcodePolicy: this.form.transcodePolicy || 'inherit',
+                        maxFileSizeMB: Number(this.form.maxFileSizeMB) || 0,
                         adminNote: this.form.adminNote,
                     });
                 }
@@ -1014,6 +1053,9 @@ export default {
     margin-bottom: 16px;
 }
 .switch-item { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; }
+/* v2.8.8：账户级上传策略（视频兼容转码 / 单文件大小限制）—— 与「存储渠道」同款两列布局 */
+.account-policy-form { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 4px; }
+.account-policy-form .el-form-item { flex: 1; min-width: 220px; }
 .channel-form { display: flex; gap: 16px; flex-wrap: wrap; }
 .channel-form .el-form-item { flex: 1; min-width: 220px; }
 .full-width { width: 100%; }

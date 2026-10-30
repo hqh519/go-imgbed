@@ -35,7 +35,14 @@
           <el-option :label="$t('accessLog.kindFile')" value="file" />
         </el-select>
 
+        <!--
+          时间筛选（v2.8.8）
+          · 桌面端：沿用 Element Plus 的双日期区间选择器；
+          · 移动端：改为「按钮 + 单个月份面板弹窗」（复用趋势预览的 DateRangeCalendar）——
+            原生 daterange 弹出的是左右两个月份面板，手机宽度下必然溢出屏幕。
+        -->
         <el-date-picker
+          v-if="!isMobile"
           v-model="filter.dateRange"
           class="filter-date"
           size="small"
@@ -46,6 +53,28 @@
           :range-separator="$t('accessLog.dateSeparator')"
           @change="applyFilter"
         />
+        <div v-else class="filter-date mobile-date-field" :class="{ 'is-active': mobileDateActive }">
+          <button
+            type="button"
+            class="mobile-date-trigger"
+            :aria-label="$t('accessLog.pickDateRange')"
+            @click="openDatePanel"
+          >
+            <font-awesome-icon icon="calendar" class="mobile-date-icon" />
+            <span class="mobile-date-text">{{ mobileDateText }}</span>
+          </button>
+          <!-- 已选区间时给一个清空入口，回到「全部时间」 -->
+          <button
+            v-if="mobileDateActive"
+            type="button"
+            class="mobile-date-clear"
+            :aria-label="$t('accessLog.clearDate')"
+            :title="$t('accessLog.clearDate')"
+            @click="clearDateRange"
+          >
+            <font-awesome-icon icon="times" />
+          </button>
+        </div>
 
         <el-tooltip :content="$t('accessLog.refresh')" placement="bottom" :show-after="800">
           <el-button class="icon-btn" circle size="small" @click="reload">
@@ -192,15 +221,31 @@
         />
       </div>
     </div>
+
+    <!-- 移动端时间筛选：单个月份面板（与后台「趋势预览」的选择方式完全一致） -->
+    <el-dialog
+      v-model="datePanelVisible"
+      :title="$t('accessLog.pickDateRange')"
+      :width="dateDialogWidth"
+      class="access-date-dialog"
+      align-center
+      append-to-body
+    >
+      <div class="access-date-panel">
+        <DateRangeCalendar v-model="dateDraft" @change="handleDatePicked" />
+      </div>
+    </el-dialog>
   </div>
 </template>
 
 <script>
 import fetchWithAuth from '@/utils/fetchWithAuth'
 import { copyText } from '@/utils/clipboard'
+import DateRangeCalendar from '@/components/DateRangeCalendar.vue'
 
 export default {
   name: 'AccessLogPage',
+  components: { DateRangeCalendar },
   data() {
     return {
       loading: false,
@@ -211,6 +256,10 @@ export default {
       filter: { keyword: '', kind: 'all', dateRange: [] },
       summary: { today: 0, todayIps: 0, todayUsers: 0, total: 0 },
       selected: [],
+      // v2.8.8：移动端时间筛选 —— 单面板弹窗 + 草稿区间
+      isMobile: window.innerWidth <= 768,
+      datePanelVisible: false,
+      dateDraft: [],
     }
   },
   computed: {
@@ -223,8 +272,23 @@ export default {
     pagerLayout() {
       return window.innerWidth <= 768 ? 'prev, pager, next' : 'total, prev, pager, next'
     },
+    /** 移动端：是否已选定时间范围（决定按钮高亮与「清空」小叉是否显示） */
+    mobileDateActive() {
+      const r = this.filter.dateRange
+      return Array.isArray(r) && r.length === 2 && !!r[0] && !!r[1]
+    },
+    /** 移动端：按钮上的时间范围文案（未选时显示占位文案） */
+    mobileDateText() {
+      if (!this.mobileDateActive) return this.$t('accessLog.pickDateRange')
+      return `${this.filter.dateRange[0]} ${this.$t('accessLog.dateSeparator')} ${this.filter.dateRange[1]}`
+    },
+    /** 时间面板弹窗宽度：手机上留出左右边距，避免月份面板贴边 */
+    dateDialogWidth() {
+      return window.innerWidth > 768 ? '420px' : '90%'
+    },
   },
   mounted() {
+    window.addEventListener('resize', this.handleResize)
     // 从「系统状态 → 访问记录」点击某条进入时带查询参数（ip / path / kind）
     const q = this.$route.query || {}
     if (q.ip) this.filter.keyword = String(q.ip)
@@ -232,10 +296,34 @@ export default {
     if (q.kind === 'page' || q.kind === 'file') this.filter.kind = q.kind
     this.reload()
   },
+  beforeUnmount() {
+    window.removeEventListener('resize', this.handleResize)
+  },
   methods: {
     goBack() {
       if (window.history.length > 1) this.$router.back()
       else this.$router.push({ name: 'systemConfig' })
+    },
+    /** 打开移动端时间面板：把当前已选区间带进面板，便于在原有基础上微调 */
+    openDatePanel() {
+      this.dateDraft = this.mobileDateActive ? [...this.filter.dateRange] : []
+      this.datePanelVisible = true
+    },
+    /** 面板里选完区间（或手动输入回车）→ 关闭弹窗并按新区间重新查询 */
+    handleDatePicked(value) {
+      if (!Array.isArray(value) || value.length !== 2 || !value[0] || !value[1]) return
+      this.filter.dateRange = [value[0], value[1]]
+      this.datePanelVisible = false
+      this.applyFilter()
+    },
+    /** 清空时间筛选（回到「全部时间」） */
+    clearDateRange() {
+      this.filter.dateRange = []
+      this.page = 1
+      this.fetchList()
+    },
+    handleResize() {
+      this.isMobile = window.innerWidth <= 768
     },
     applyFilter() {
       this.page = 1
@@ -726,6 +814,82 @@ export default {
     width: 100%;
   }
 
+  /*
+   * v2.8.8：移动端时间筛选（单面板弹窗触发按钮）
+   * 外观对齐同一行的 el-input / el-select（同高、同圆角、同边框色）。
+   */
+  .mobile-date-field {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    height: 32px;
+    padding: 0 8px;
+    border: 1px solid var(--el-border-color);
+    border-radius: var(--el-border-radius-base, 4px);
+    background: var(--el-fill-color-blank);
+    box-sizing: border-box;
+  }
+
+  .mobile-date-field.is-active {
+    border-color: var(--el-color-primary);
+  }
+
+  .mobile-date-trigger {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: 1 1 auto;
+    min-width: 0;
+    height: 100%;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--el-text-color-regular);
+    font-size: 13px;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .mobile-date-icon {
+    flex: 0 0 auto;
+    font-size: 13px;
+    color: var(--el-text-color-secondary);
+  }
+
+  .mobile-date-text {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .mobile-date-field.is-active .mobile-date-text {
+    color: var(--el-color-primary);
+  }
+
+  .mobile-date-clear {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background: var(--el-fill-color);
+    color: var(--el-text-color-secondary);
+    font-size: 10px;
+    cursor: pointer;
+  }
+
+  .mobile-date-clear:hover {
+    color: var(--el-color-primary);
+    background: var(--el-fill-color-dark);
+  }
+
   /* v2.8.7c：筛选区此前被日期控件的固有宽度撑出屏幕右侧（整条 topbar-right 370px > 可用 351px），
      这里显式给它定宽并允许收缩，让 width:100% 有确定的参照系 */
   .topbar-left,
@@ -781,5 +945,12 @@ export default {
     white-space: normal;
     word-break: break-all;
   }
+}
+.access-date-dialog :deep(.el-dialog__body) {
+  padding: 12px 16px 18px;
+}
+
+.access-date-panel {
+  min-width: 0;
 }
 </style>

@@ -18,8 +18,9 @@ export type FileTypeName = 'image' | 'video' | 'audio' | 'other';
  *   WebDAV  —— 对外 WebDAV
  *   API-Web —— API Token 的「Web 通用」通道
  *   API-S3  —— API Token 的「S3 协议」通道
+ *   Record  —— 「登记文件」：文件本来就在别的渠道上，这里只补一条记录（v2.8.8）
  */
-export const UPLOAD_SOURCES = ['Default', 'Upload', 'Fetch', 'WebDAV', 'API-Web', 'API-S3'] as const;
+export const UPLOAD_SOURCES = ['Default', 'Upload', 'Fetch', 'WebDAV', 'API-Web', 'API-S3', 'Record'] as const;
 
 /** 前端上传页允许声明的来源（其它来源只能由服务端通道自己写死，不接受外部指定） */
 export const CLIENT_UPLOAD_SOURCES = ['Upload', 'Fetch'] as const;

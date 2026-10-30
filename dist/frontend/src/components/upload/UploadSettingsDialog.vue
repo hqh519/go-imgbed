@@ -55,15 +55,10 @@
                     <span class="setting-label">{{ $t('uploadSettings.uploadDirectory') }}</span>
                     <el-input :model-value="uploadFolder" @update:model-value="handleUploadFolderInput" :placeholder="$t('uploadSettings.uploadDirectoryPlaceholder')" class="setting-input"></el-input>
                 </div>
-                <div class="setting-item">
-                    <span class="setting-label">
-                        {{ $t('uploadSettings.autoSwitch') }}
-                        <el-tooltip :content="$t('uploadSettings.autoSwitchTooltip')" placement="top">
-                            <font-awesome-icon icon="question-circle" class="inline-help-icon"/>
-                        </el-tooltip>
-                    </span>
-                    <el-switch :model-value="autoRetry" @update:model-value="$emit('update:autoRetry', $event)" />
-                </div>
+                <!--
+                    v2.8.8：「自动重试」开关已迁到后台（其他设置 → 上传相关配置），
+                    前台不再提供；「文件命名方式」也去掉，一律按后台「默认命名方式」执行。
+                -->
             </div>
         </div>
 
@@ -76,143 +71,93 @@
                 </el-tooltip>
             </div>
             <div class="section-content">
-                <div class="setting-item">
-                    <span class="setting-label">
-                        {{ $t('uploadSettings.convertToWebp') }}
-                        <el-tooltip :content="$t('uploadSettings.convertToWebpTooltip')" placement="top">
-                            <font-awesome-icon icon="question-circle" class="inline-help-icon"/>
-                        </el-tooltip>
-                    </span>
-                    <el-switch :model-value="convertToWebp" @update:model-value="$emit('update:convertToWebp', $event)" />
-                </div>
-                <div class="setting-item">
-                    <span class="setting-label">{{ $t('uploadSettings.fileCompress') }}</span>
-                    <el-switch :model-value="customerCompress" @update:model-value="$emit('update:customerCompress', $event)" />
-                </div>
-                <div class="setting-item slider-item" v-if="customerCompress">
-                    <span class="setting-label">
-                        {{ $t('uploadSettings.compressThreshold') }}
-                        <el-tooltip :content="$t('uploadSettings.compressThresholdTooltip')" placement="top">
-                            <font-awesome-icon icon="question-circle" class="inline-help-icon"/>
-                        </el-tooltip>
-                    </span>
-                    <div class="slider-wrapper">
-                        <el-slider :model-value="compressBar" @update:model-value="$emit('update:compressBar', $event)" :min="1" :max="20" :format-tooltip="(value) => `${value} MB`"/>
-                        <div class="slider-input-wrapper">
-                            <el-input-number :model-value="compressBar" @update:model-value="$emit('update:compressBar', $event)" :min="1" :max="20" :step="1" :value-on-clear="1" class="slider-input" controls-position="right"/>
-                            <span class="slider-unit">MB</span>
-                        </div>
-                    </div>
-                </div>
-                <!-- 压缩期望值：改为「压到原体积的百分比」 -->
-                <div class="setting-item slider-item" v-if="customerCompress">
-                    <span class="setting-label">
-                        {{ $t('uploadSettings.compressPercent') }}
-                        <el-tooltip :content="$t('uploadSettings.compressPercentTooltip')" placement="top" raw-content>
-                            <font-awesome-icon icon="question-circle" class="inline-help-icon"/>
-                        </el-tooltip>
-                    </span>
-                    <div class="slider-wrapper">
-                        <el-slider :model-value="compressPercent" @update:model-value="$emit('update:compressPercent', $event)" :min="10" :max="100" :step="5" :format-tooltip="(value) => `${value}%`"/>
-                        <div class="slider-input-wrapper">
-                            <el-input-number :model-value="compressPercent" @update:model-value="$emit('update:compressPercent', $event)" :min="10" :max="100" :step="5" :value-on-clear="80" class="slider-input" controls-position="right"/>
-                            <span class="slider-unit">%</span>
-                        </div>
-                    </div>
-                </div>
                 <!--
-                    v2.8.5：原「允许压缩格式」改为「禁止压缩格式」，并挪到「压缩百分比」之后。
-                    语义反转：清单内的格式跳过压缩、原样上传；不在清单内的按现有规则压缩。
+                    v2.8.8：视频兼容转码 —— 仅当管理员把该账户设为「用户决定」时出现，
+                    选项为「跟随全局 / 禁用 / 启用」；刷新页面自动回到「跟随全局」。
                 -->
-                <div class="setting-item" v-if="customerCompress">
+                <div class="setting-item" v-if="transcodePolicy === 'user'">
                     <span class="setting-label">
-                        {{ $t('uploadSettings.compressExcludeExtensions') }}
-                        <el-tooltip :content="compressExcludeTooltip" placement="top" raw-content>
+                        {{ $t('uploadSettings.videoTranscode') }}
+                        <el-tooltip :content="transcodeTooltip" placement="top" raw-content>
                             <font-awesome-icon icon="question-circle" class="inline-help-icon"/>
                         </el-tooltip>
                     </span>
-                    <el-input
-                        :model-value="limitCompressExts"
-                        @update:model-value="$emit('update:limitCompressExts', $event)"
-                        :placeholder="$t('uploadSettings.compressExcludeExtensionsPlaceholder')"
-                        clearable
+                    <el-select
+                        :model-value="transcodeChoice"
+                        @update:model-value="$emit('update:transcodeChoice', $event)"
                         class="setting-input"
-                    />
-                </div>
-            </div>
-        </div>
-
-        <!-- 上传限制（仅本次生效）：填了就用这里的值，留空跟随后台「上传相关配置」 -->
-        <div class="dialog-section">
-            <div class="section-header">
-                <span class="section-title">{{ $t('uploadSettings.uploadLimits') }}</span>
-                <el-tooltip :content="$t('uploadSettings.uploadLimitsTooltip')" placement="top" raw-content>
-                    <font-awesome-icon icon="question-circle" class="section-help-icon"/>
-                </el-tooltip>
-            </div>
-            <div class="section-content">
-                <div class="setting-item">
-                    <span class="setting-label">{{ $t('uploadSettings.allowedExtensions') }}</span>
-                    <el-input
-                        :model-value="limitExtensions"
-                        @update:model-value="$emit('update:limitExtensions', $event)"
-                        :placeholder="$t('uploadSettings.allowedExtensionsPlaceholder')"
-                        clearable
-                        class="setting-input"
-                    />
-                </div>
-                <div class="setting-item">
-                    <span class="setting-label">
-                        {{ $t('uploadSettings.maxFileSize') }}
-                        <el-tooltip :content="$t('uploadSettings.maxFileSizeTooltip')" placement="top" raw-content>
-                            <font-awesome-icon icon="question-circle" class="inline-help-icon"/>
-                        </el-tooltip>
-                    </span>
-                    <!-- v2.8.5：MB 单位放进输入框（suffix），宽度与「允许的上传格式」完全一致 -->
-                    <el-input
-                        :model-value="limitMaxSizeMB ? String(limitMaxSizeMB) : ''"
-                        @update:model-value="handleMaxSizeInput"
-                        :placeholder="maxSizePlaceholder"
-                        clearable
-                        class="setting-input limit-size-input"
                     >
-                        <template #suffix>
-                            <span class="limit-size-unit">MB</span>
-                        </template>
-                    </el-input>
+                        <el-option :label="$t('uploadSettings.transcodeInherit')" value="" />
+                        <el-option :label="$t('uploadSettings.transcodeOff')" value="off" />
+                        <el-option :label="$t('uploadSettings.transcodeOn')" value="on" />
+                    </el-select>
                 </div>
+                <!-- 文件压缩总开关关闭时，压缩相关设置整体不显示（后台「文件压缩」） -->
+                <template v-if="compressEnabled">
+                    <div class="setting-item">
+                        <span class="setting-label">{{ $t('uploadSettings.fileCompress') }}</span>
+                        <el-switch :model-value="customerCompress" @update:model-value="$emit('update:customerCompress', $event)" />
+                    </div>
+                    <div class="setting-item slider-item" v-if="customerCompress">
+                        <span class="setting-label">
+                            {{ $t('uploadSettings.compressThreshold') }}
+                            <el-tooltip :content="$t('uploadSettings.compressThresholdTooltip')" placement="top">
+                                <font-awesome-icon icon="question-circle" class="inline-help-icon"/>
+                            </el-tooltip>
+                        </span>
+                        <div class="slider-wrapper">
+                            <el-slider :model-value="compressBar" @update:model-value="$emit('update:compressBar', $event)" :min="1" :max="20" :format-tooltip="(value) => `${value} MB`"/>
+                            <div class="slider-input-wrapper">
+                                <el-input-number :model-value="compressBar" @update:model-value="$emit('update:compressBar', $event)" :min="1" :max="20" :step="1" :value-on-clear="1" class="slider-input" controls-position="right"/>
+                                <span class="slider-unit">MB</span>
+                            </div>
+                        </div>
+                    </div>
+                    <!-- 压缩期望值：改为「压到原体积的百分比」 -->
+                    <div class="setting-item slider-item" v-if="customerCompress">
+                        <span class="setting-label">
+                            {{ $t('uploadSettings.compressPercent') }}
+                            <el-tooltip :content="$t('uploadSettings.compressPercentTooltip')" placement="top" raw-content>
+                                <font-awesome-icon icon="question-circle" class="inline-help-icon"/>
+                            </el-tooltip>
+                        </span>
+                        <div class="slider-wrapper">
+                            <el-slider :model-value="compressPercent" @update:model-value="$emit('update:compressPercent', $event)" :min="10" :max="100" :step="5" :format-tooltip="(value) => `${value}%`"/>
+                            <div class="slider-input-wrapper">
+                                <el-input-number :model-value="compressPercent" @update:model-value="$emit('update:compressPercent', $event)" :min="10" :max="100" :step="5" :value-on-clear="80" class="slider-input" controls-position="right"/>
+                                <span class="slider-unit">%</span>
+                            </div>
+                        </div>
+                    </div>
+                    <!--
+                        v2.8.5：原「允许压缩格式」改为「禁止压缩格式」，并挪到「压缩百分比」之后。
+                        语义反转：清单内的格式跳过压缩、原样上传；不在清单内的按现有规则压缩。
+                    -->
+                    <div class="setting-item" v-if="customerCompress">
+                        <span class="setting-label">
+                            {{ $t('uploadSettings.compressExcludeExtensions') }}
+                            <el-tooltip :content="compressExcludeTooltip" placement="top" raw-content>
+                                <font-awesome-icon icon="question-circle" class="inline-help-icon"/>
+                            </el-tooltip>
+                        </span>
+                        <el-input
+                            :model-value="limitCompressExts"
+                            @update:model-value="$emit('update:limitCompressExts', $event)"
+                            :placeholder="$t('uploadSettings.compressExcludeExtensionsPlaceholder')"
+                            clearable
+                            class="setting-input"
+                        />
+                    </div>
+                </template>
             </div>
         </div>
 
-        <!-- v2.8.0：文件命名方式移到弹窗最后（原在「客户端预处理」之前） -->
-        <div class="dialog-section">
-            <div class="section-header">
-                <span class="section-title">{{ $t('uploadSettings.fileNaming') }}</span>
-                <el-tooltip :content="$t('uploadSettings.fileNamingTooltip')" placement="top">
-                    <font-awesome-icon icon="question-circle" class="section-help-icon"/>
-                </el-tooltip>
-            </div>
-            <div class="section-content">
-                <el-radio-group :model-value="uploadNameType" @update:model-value="$emit('update:uploadNameType', $event)" class="radio-card-group grid-2x2">
-                    <el-radio label="default" class="radio-card">
-                        <font-awesome-icon icon="cog" class="radio-icon"/>
-                        <span>{{ $t('uploadSettings.namingDefault') }}</span>
-                    </el-radio>
-                    <el-radio label="index" class="radio-card">
-                        <font-awesome-icon icon="hashtag" class="radio-icon"/>
-                        <span>{{ $t('uploadSettings.namingIndex') }}</span>
-                    </el-radio>
-                    <el-radio label="origin" class="radio-card">
-                        <font-awesome-icon icon="file-signature" class="radio-icon"/>
-                        <span>{{ $t('uploadSettings.namingOrigin') }}</span>
-                    </el-radio>
-                    <el-radio label="short" class="radio-card">
-                        <font-awesome-icon icon="compress-alt" class="radio-icon"/>
-                        <span>{{ $t('uploadSettings.namingShort') }}</span>
-                    </el-radio>
-                </el-radio-group>
-            </div>
-        </div>
+        <!--
+            v2.8.8：
+              · 「上传限制」（允许格式 / 单文件大小上限）整体移除，改由后台「上传相关配置」
+                与「用户管理 → 单文件大小限制」统一控制；
+              · 「文件命名方式」移除，一律按后台「默认命名方式」执行。
+        -->
 
         <!--
             v2.5.0：移除底部「所有设置修改后立即生效，无需保存」提示与「完成」按钮
@@ -242,37 +187,32 @@ export default {
         /** 当前生效的默认备份渠道（{ id, code, name, type }）—— 仅用于展示落点 */
         defaultBackupChannel: { type: Object, default: null },
         uploadFolder: { type: String, default: '' },
-        autoRetry: { type: Boolean, default: true },
-        uploadNameType: { type: String, default: 'default' },
-        convertToWebp: { type: Boolean, default: false },
         customerCompress: { type: Boolean, default: true },
         compressBar: { type: Number, default: 5 },
         compressPercent: { type: Number, default: 80 },
         serverCompress: { type: Boolean, default: true },
-        /** 允许的上传格式（本次覆盖，逗号分隔；空 = 跟随后台） */
-        limitExtensions: { type: String, default: '' },
         /** 允许压缩格式覆盖（本次覆盖，逗号分隔；空 = 用内置可压缩清单） */
         limitCompressExts: { type: String, default: '' },
-        /** 单文件大小上限覆盖（MB；0 = 跟随后台） */
-        limitMaxSizeMB: { type: Number, default: 0 },
-        /** 后台全局单文件大小上限（MB）—— 仅用于输入框 placeholder 提示 */
-        globalMaxSizeMB: { type: Number, default: 0 }
+        /** v2.8.8：后台「文件压缩」总开关 —— 关闭时下面所有压缩设置都不显示 */
+        compressEnabled: { type: Boolean, default: true },
+        /** v2.8.8：该账户的视频兼容转码策略（inherit/off/on/user） */
+        transcodePolicy: { type: String, default: 'inherit' },
+        /** v2.8.8：用户自己选的转码档位（'' = 跟随全局 / 'off' / 'on'），仅 user 策略下有效 */
+        transcodeChoice: { type: String, default: '' },
+        /** v2.8.8：后台全局「视频兼容转码」当前值（展示「跟随全局」的实际效果） */
+        transcodeGlobal: { type: Boolean, default: true }
     },
     emits: [
         'update:modelValue',
         'update:channelName',
         'update:backupChannel',
         'update:uploadFolder',
-        'update:autoRetry',
-        'update:uploadNameType',
-        'update:convertToWebp',
         'update:customerCompress',
         'update:compressBar',
         'update:compressPercent',
         'update:serverCompress',
-        'update:limitExtensions',
         'update:limitCompressExts',
-        'update:limitMaxSizeMB'
+        'update:transcodeChoice'
     ],
     data() {
         return {
@@ -302,15 +242,11 @@ export default {
         channelName() { this.notifySaved() },
         backupChannel() { this.notifySaved() },
         uploadFolder() { this.notifySaved() },
-        autoRetry() { this.notifySaved() },
-        uploadNameType() { this.notifySaved() },
-        convertToWebp() { this.notifySaved() },
         customerCompress() { this.notifySaved() },
         compressBar() { this.notifySaved() },
         compressPercent() { this.notifySaved() },
-        limitExtensions() { this.notifySaved() },
         limitCompressExts() { this.notifySaved() },
-        limitMaxSizeMB() { this.notifySaved() }
+        transcodeChoice() { this.notifySaved() }
     },
     methods: {
         /** 防抖弹出「保存成功」提示（600ms 内的连续变更只弹一次）；
@@ -324,11 +260,6 @@ export default {
                     this.$message.success(this.$t('uploadSettings.savedToast'))
                 } catch (e) { /* 弹窗关闭瞬间可能拿不到实例，忽略 */ }
             }, 600)
-        },
-        /** 单文件大小上限：纯输入框，只留数字；清空 = 跟随后台（0） */
-        handleMaxSizeInput(val) {
-            const digits = String(val == null ? '' : val).replace(/[^\d]/g, '')
-            this.$emit('update:limitMaxSizeMB', digits ? Number(digits) : 0)
         },
         handleUploadFolderInput(val) {
             // 自动补全前导 /
@@ -354,12 +285,11 @@ export default {
         dialogWidth() {
             return window.innerWidth > 768 ? '50%' : '90%'
         },
-        /** 单文件大小上限 placeholder：直接显示后台全局值，让「留空跟随后台」有个可读落点 */
-        maxSizePlaceholder() {
-            const global = Number(this.globalMaxSizeMB) || 0
-            return global > 0
-                ? this.$t('uploadSettings.maxFileSizePlaceholder', { mb: global })
-                : this.$t('uploadSettings.maxFileSizePlaceholderNoGlobal')
+        /** 视频兼容转码说明：把「跟随全局」的实际状态也写出来，避免用户猜 */
+        transcodeTooltip() {
+            return this.$t('uploadSettings.videoTranscodeTooltip', {
+                global: this.transcodeGlobal ? this.$t('common.enabled') : this.$t('common.disabled')
+            })
         },
         /** 允许压缩格式 tooltip：带上内置清单，方便对照填写 */
         compressExcludeTooltip() {

@@ -62,6 +62,15 @@ model User {
   // 管理备注（v2.1.0）：仅管理员在「用户管理 → 编辑账户」里可见可改，绝不下发给普通用户
   adminNote       String   @default("")
   enforceLimits   Boolean  @default(true) // 类型和大小限制：开启时受「允许上传格式 + 单文件大小上限」约束，关闭则跳过
+  // ---- v2.8.8：用户级「视频兼容转码」策略 ----
+  //   inherit —— 跟随全局（后台「其他设置 → 上传相关配置 → 视频兼容转码」）
+  //   off     —— 该账户所有上传入口都不做兼容转码（不受全局影响）
+  //   on      —— 一律做兼容转码（不受全局影响）
+  //   user    —— 由用户自己在前台上传设置里选（刷新回落到「跟随全局」）
+  transcodePolicy String   @default("inherit")
+  // ---- v2.8.8：用户级单文件大小上限（MB）----
+  // 0 = 留空，按全局「单文件大小上限」执行；>0 = 该账户上传按这个值封顶
+  maxFileSizeMB   Int      @default(0)
   mainChannelId   String   @default("") // 该账户上传时优先使用的主渠道 ID（空 = 用全局）
   backupChannelId String   @default("") // 该账户上传时优先使用的备份渠道 ID（空 = 用全局）
   // ---- 邮箱验证（v2.3.0）----

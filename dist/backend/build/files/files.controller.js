@@ -538,7 +538,12 @@ let LinkController = class LinkController {
             const ch = channels.find((c) => c.id === copy.channelId);
             if (!ch)
                 continue;
+            const absoluteRemote = /^https?:\/\//i.test(String(copy.remoteUrl || '')) ? String(copy.remoteUrl) : '';
             if (ch.type === 'local') {
+                if (absoluteRemote) {
+                    candidates.push({ url: absoluteRemote, label: ch.name });
+                    continue;
+                }
                 if (candidates.length > 0)
                     continue;
                 const abs = (0, local_adapter_1.localFileAbs)(copy.remoteKey);
@@ -553,7 +558,9 @@ let LinkController = class LinkController {
                 config: this.channels.decryptConfig(ch.type, ch.config),
                 metas: {},
             };
-            const url = (0, adapter_factory_1.createAdapter)(info).buildDirectUrl((0, adapter_factory_1.toCopyInfo)(copy), info, preferInternal);
+            const url = absoluteRemote && ch.type !== 'custom'
+                ? absoluteRemote
+                : (0, adapter_factory_1.createAdapter)(info).buildDirectUrl((0, adapter_factory_1.toCopyInfo)(copy), info, preferInternal);
             if (url)
                 candidates.push({ url, label: ch.name });
         }
@@ -2184,6 +2191,11 @@ let UserConfigController = class UserConfigController {
             defaultUploadFolder: pv('defaultUploadFolder', ''),
             defaultConvertToWebp: pv('defaultConvertToWebp', false) === true,
             defaultCustomerCompress: pv('defaultCustomerCompress', true) === true,
+            webpEnabled: pv('defaultConvertToWebp', false) === true,
+            compressEnabled: pv('defaultCustomerCompress', true) === true,
+            transcodePolicy: await this.uploadSvc.videoTranscodePolicy(uploader),
+            transcodeGlobal: await this.uploadSvc.globalTranscodeEnabled(),
+            autoRetry: pv('defaultAutoRetry', true) !== false,
             defaultCompressBar: pv('defaultCompressBar', '0.8'),
             defaultCompressQuality: pv('defaultCompressQuality', '80'),
             defaultUrlForm: pv('defaultUrlForm', 'url'),
@@ -2191,7 +2203,7 @@ let UserConfigController = class UserConfigController {
                 .split(',')
                 .map((x) => x.trim().replace(/^\./, '').toLowerCase())
                 .filter(Boolean),
-            maxUploadSizeMB: Number(pv('maxUploadSizeMB', 1024)) || 1024,
+            maxUploadSizeMB: (await this.uploadSvc.userMaxFileSizeMB(uploader)) || (Number(pv('maxUploadSizeMB', 1024)) || 1024),
             wallpaperEnabled: pv('wallpaperEnabled', false) === true,
             autoDarkMode: pv('autoDarkMode', true) !== false,
             bkInterval: Number(pv('bkInterval', 3000)) || 3000,

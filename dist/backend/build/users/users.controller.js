@@ -153,6 +153,8 @@ let UsersController = class UsersController {
             canDelete: u.canDelete,
             linkEnabled: u.linkEnabled,
             enforceLimits: u.enforceLimits,
+            transcodePolicy: u.transcodePolicy || 'inherit',
+            maxFileSizeMB: Number(u.maxFileSizeMB) || 0,
             mainChannelId: u.mainChannelId,
             backupChannelId: u.backupChannelId,
             mainChannelName: cName.get(u.mainChannelId) || '',
@@ -188,6 +190,8 @@ let UsersController = class UsersController {
                 canDelete: true,
                 linkEnabled: true,
                 enforceLimits: prof.enforceLimits !== false,
+                transcodePolicy: String(prof.transcodePolicy || 'inherit'),
+                maxFileSizeMB: Number(prof.maxFileSizeMB) || 0,
                 mainChannelId: mainId,
                 backupChannelId: backupId,
                 mainChannelName: cName.get(mainId) || '',
@@ -320,6 +324,8 @@ let UsersController = class UsersController {
                     canDelete: true,
                     linkEnabled: true,
                     enforceLimits: prof.enforceLimits !== false,
+                    transcodePolicy: String(prof.transcodePolicy || 'inherit'),
+                    maxFileSizeMB: Number(prof.maxFileSizeMB) || 0,
                     mainChannelId: String(prof.mainChannelId || ''),
                     backupChannelId: String(prof.backupChannelId || ''),
                     totpEnabled: false,
@@ -350,6 +356,8 @@ let UsersController = class UsersController {
                 canDelete: u.canDelete,
                 linkEnabled: u.linkEnabled,
                 enforceLimits: u.enforceLimits,
+                transcodePolicy: u.transcodePolicy || 'inherit',
+                maxFileSizeMB: Number(u.maxFileSizeMB) || 0,
                 mainChannelId: u.mainChannelId,
                 backupChannelId: u.backupChannelId,
                 totpEnabled: u.totpEnabled,
@@ -390,6 +398,8 @@ let UsersController = class UsersController {
                 canDelete: body.canDelete !== false,
                 linkEnabled: body.linkEnabled !== false,
                 enforceLimits: body.enforceLimits !== false,
+                transcodePolicy: normalizeTranscodePolicy(body.transcodePolicy),
+                maxFileSizeMB: clampMaxFileSizeMB(body.maxFileSizeMB),
                 mainChannelId: String(body.mainChannelId || ''),
                 backupChannelId: String(body.backupChannelId || ''),
                 adminNote: String(body.adminNote || '').slice(0, 4000),
@@ -412,6 +422,10 @@ let UsersController = class UsersController {
                 patch.backupChannelId = String(body.backupChannelId);
             if (body.enforceLimits !== undefined)
                 patch.enforceLimits = !!body.enforceLimits;
+            if (body.transcodePolicy !== undefined)
+                patch.transcodePolicy = normalizeTranscodePolicy(body.transcodePolicy);
+            if (body.maxFileSizeMB !== undefined)
+                patch.maxFileSizeMB = clampMaxFileSizeMB(body.maxFileSizeMB);
             if (body.adminNote !== undefined)
                 patch.adminNote = String(body.adminNote).slice(0, 4000);
             await this.sysConfig.save('adminProfile', patch);
@@ -488,6 +502,10 @@ let UsersController = class UsersController {
                 data.linkEnabled = !!body.linkEnabled;
             if (body.enforceLimits !== undefined)
                 data.enforceLimits = !!body.enforceLimits;
+            if (body.transcodePolicy !== undefined)
+                data.transcodePolicy = normalizeTranscodePolicy(body.transcodePolicy);
+            if (body.maxFileSizeMB !== undefined)
+                data.maxFileSizeMB = clampMaxFileSizeMB(body.maxFileSizeMB);
             if (body.adminNote !== undefined)
                 data.adminNote = String(body.adminNote).slice(0, 4000);
         }
@@ -1047,6 +1065,16 @@ exports.UsersController = UsersController = __decorate([
         settings_service_1.SettingsService,
         mail_service_1.MailService])
 ], UsersController);
+function normalizeTranscodePolicy(raw) {
+    const v = String(raw ?? '').trim();
+    return v === 'off' || v === 'on' || v === 'user' ? v : 'inherit';
+}
+function clampMaxFileSizeMB(raw) {
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n <= 0)
+        return 0;
+    return Math.min(1048576, Math.round(n));
+}
 function avatarDir() {
     return (0, project_paths_1.backendSub)('uploads', 'avatars');
 }

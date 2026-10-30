@@ -202,6 +202,17 @@ export const PAGE_CONFIG_DEFAULTS: any = {
       "category_en": "Client Settings"
     },
     {
+      "id": "defaultAutoRetry",
+      "label": "自动重试",
+      "label_en": "Auto Retry",
+      "type": "boolean",
+      "default": true,
+      "tooltip": "上传失败时自动切换到下一个可用渠道重试（v2.8.8 起由后台统一配置，前台不再提供开关）",
+      "tooltip_en": "Automatically switch to the next available channel when an upload fails. Since v2.8.8 this is configured here only; the upload page no longer shows a switch",
+      "category": "客户端设置",
+      "category_en": "Client Settings"
+    },
+    {
       "id": "videoTranscodeIncompatible",
       "label": "视频兼容转码",
       "label_en": "Video Compatibility Transcode",
@@ -214,22 +225,22 @@ export const PAGE_CONFIG_DEFAULTS: any = {
     },
     {
       "id": "defaultConvertToWebp",
-      "label": "默认转换WebP",
-      "label_en": "Default Convert to WebP",
+      "label": "WebP转换",
+      "label_en": "WebP Conversion",
       "type": "boolean",
       "default": false,
-      "tooltip": "上传前将图片转换为WebP格式，可有效减小文件体积",
-      "tooltip_en": "Convert images to WebP before upload to reduce file size",
+      "tooltip": "总开关：开启后前台上传页列表顶栏显示「转换为WebP」按钮，可把图片转成 WebP 再上传（体积更小）。关闭后该按钮不加载，也不再默认转换",
+      "tooltip_en": "Master switch: when on, the upload page shows a Convert to WebP button in the list toolbar (smaller files). When off the button is hidden and images are not converted",
       "category": "客户端设置",
       "category_en": "Client Settings"
     },
     {
       "id": "defaultCustomerCompress",
-      "label": "默认开启压缩",
-      "label_en": "Default Compression",
+      "label": "文件压缩",
+      "label_en": "File Compression",
       "type": "boolean",
       "default": true,
-      "tooltip": "开启后：前端上传页默认压缩；API Token / WebDAV 上传的文件同样走压缩。支持图片（jpg/png/webp，png 保持透明）、视频与音频（需服务器安装 ffmpeg）；gif 等无法压缩的格式会自动跳过，压缩失败也会跳过直接上传",
+      "tooltip": "总开关：开启后前台上传页会显示压缩相关设置（顶栏按钮、上传设置里的开关/阈值/百分比/禁止格式），API Token / WebDAV 上传的文件同样走压缩；关闭后这些入口全部隐藏且不再压缩。支持图片（jpg/png/webp，png 保持透明）、视频与音频（需服务器安装 ffmpeg）；gif 等无法压缩的格式会自动跳过，压缩失败也会跳过直接上传",
       "tooltip_en": "When on: uploads from the web UI, API tokens and WebDAV are all compressed. Supports images (jpg/png/webp, PNG keeps transparency), video and audio (requires ffmpeg). GIF and other unsupported formats are skipped, and failures fall back to the original file",
       "category": "客户端设置",
       "category_en": "Client Settings"

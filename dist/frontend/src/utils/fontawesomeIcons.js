@@ -53,6 +53,8 @@ import { faFileSignature } from '@fortawesome/free-solid-svg-icons/faFileSignatu
 import { faFilter } from '@fortawesome/free-solid-svg-icons/faFilter';
 import { faFolder } from '@fortawesome/free-solid-svg-icons/faFolder';
 import { faFolderOpen } from '@fortawesome/free-solid-svg-icons/faFolderOpen';
+import { faFileCirclePlus } from '@fortawesome/free-solid-svg-icons/faFileCirclePlus';
+import { faFileImage } from '@fortawesome/free-solid-svg-icons/faFileImage';
 import { faFolderTree } from '@fortawesome/free-solid-svg-icons/faFolderTree';
 import { faGlobe } from '@fortawesome/free-solid-svg-icons/faGlobe';
 import { faHashtag } from '@fortawesome/free-solid-svg-icons/faHashtag';
@@ -160,6 +162,8 @@ export default [
     faFilter,
     faFolder,
     faFolderOpen,
+    faFileCirclePlus,
+    faFileImage,
     faFolderTree,
     faGlobe,
     faHashtag,

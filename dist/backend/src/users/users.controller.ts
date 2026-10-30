@@ -157,6 +157,9 @@ export class UsersController {
       canDelete: u.canDelete,
       linkEnabled: u.linkEnabled,
       enforceLimits: u.enforceLimits,
+      // v2.8.8：账户级「视频兼容转码」策略 + 单文件大小限制
+      transcodePolicy: u.transcodePolicy || 'inherit',
+      maxFileSizeMB: Number(u.maxFileSizeMB) || 0,
       mainChannelId: u.mainChannelId,
       backupChannelId: u.backupChannelId,
       mainChannelName: cName.get(u.mainChannelId) || '',
@@ -194,6 +197,8 @@ export class UsersController {
         canDelete: true,
         linkEnabled: true,
         enforceLimits: prof.enforceLimits !== false,
+        transcodePolicy: String(prof.transcodePolicy || 'inherit'),
+        maxFileSizeMB: Number(prof.maxFileSizeMB) || 0,
         mainChannelId: mainId,
         backupChannelId: backupId,
         mainChannelName: cName.get(mainId) || '',
@@ -346,6 +351,8 @@ export class UsersController {
           canDelete: true,
           linkEnabled: true,
           enforceLimits: prof.enforceLimits !== false,
+          transcodePolicy: String(prof.transcodePolicy || 'inherit'),
+          maxFileSizeMB: Number(prof.maxFileSizeMB) || 0,
           mainChannelId: String(prof.mainChannelId || ''),
           backupChannelId: String(prof.backupChannelId || ''),
           totpEnabled: false,
@@ -374,6 +381,9 @@ export class UsersController {
         canDelete: u.canDelete,
         linkEnabled: u.linkEnabled,
         enforceLimits: u.enforceLimits,
+        // v2.8.8：账户级转码策略与单文件大小限制（管理员操作模块展示）
+        transcodePolicy: u.transcodePolicy || 'inherit',
+        maxFileSizeMB: Number(u.maxFileSizeMB) || 0,
         mainChannelId: u.mainChannelId,
         backupChannelId: u.backupChannelId,
         totpEnabled: u.totpEnabled,
@@ -408,6 +418,10 @@ export class UsersController {
       canDelete?: boolean;
       linkEnabled?: boolean;
       enforceLimits?: boolean;
+      /** v2.8.8：账户级「视频兼容转码」策略 */
+      transcodePolicy?: string;
+      /** v2.8.8：账户级单文件大小上限（MB，0 = 跟随全局） */
+      maxFileSizeMB?: number;
       mainChannelId?: string;
       backupChannelId?: string;
       adminNote?: string;
@@ -434,6 +448,8 @@ export class UsersController {
         canDelete: body.canDelete !== false,
         linkEnabled: body.linkEnabled !== false,
         enforceLimits: body.enforceLimits !== false,
+        transcodePolicy: normalizeTranscodePolicy(body.transcodePolicy),
+        maxFileSizeMB: clampMaxFileSizeMB(body.maxFileSizeMB),
         mainChannelId: String(body.mainChannelId || ''),
         backupChannelId: String(body.backupChannelId || ''),
         adminNote: String(body.adminNote || '').slice(0, 4000),
@@ -468,6 +484,10 @@ export class UsersController {
       canDelete?: boolean;
       linkEnabled?: boolean;
       enforceLimits?: boolean;
+      /** v2.8.8：账户级「视频兼容转码」策略 */
+      transcodePolicy?: string;
+      /** v2.8.8：账户级单文件大小上限（MB，0 = 跟随全局） */
+      maxFileSizeMB?: number;
       mainChannelId?: string;
       backupChannelId?: string;
       adminNote?: string;
@@ -484,6 +504,8 @@ export class UsersController {
       if (body.mainChannelId !== undefined) patch.mainChannelId = String(body.mainChannelId);
       if (body.backupChannelId !== undefined) patch.backupChannelId = String(body.backupChannelId);
       if (body.enforceLimits !== undefined) patch.enforceLimits = !!body.enforceLimits;
+      if (body.transcodePolicy !== undefined) patch.transcodePolicy = normalizeTranscodePolicy(body.transcodePolicy);
+      if (body.maxFileSizeMB !== undefined) patch.maxFileSizeMB = clampMaxFileSizeMB(body.maxFileSizeMB);
       if (body.adminNote !== undefined) patch.adminNote = String(body.adminNote).slice(0, 4000);
       await this.sysConfig.save('adminProfile', patch);
       return { success: true };
@@ -557,6 +579,8 @@ export class UsersController {
       if (body.canDelete !== undefined) data.canDelete = !!body.canDelete;
       if (body.linkEnabled !== undefined) data.linkEnabled = !!body.linkEnabled;
       if (body.enforceLimits !== undefined) data.enforceLimits = !!body.enforceLimits;
+      if (body.transcodePolicy !== undefined) data.transcodePolicy = normalizeTranscodePolicy(body.transcodePolicy);
+      if (body.maxFileSizeMB !== undefined) data.maxFileSizeMB = clampMaxFileSizeMB(body.maxFileSizeMB);
       if (body.adminNote !== undefined) data.adminNote = String(body.adminNote).slice(0, 4000);
     }
     // ---- 主/备渠道：本人也能改（v2.3.0）----
@@ -991,6 +1015,25 @@ export class UsersController {
     appLog.warn('auth', `账户「${u.username}」关闭了两步验证`);
     return { success: true };
   }
+}
+
+/**
+ * v2.8.8：账户级「视频兼容转码」策略归一化。
+ *   inherit 跟随全局（默认）/ off 禁用 / on 启用 / user 由用户在前台自行决定
+ */
+function normalizeTranscodePolicy(raw: unknown): 'inherit' | 'off' | 'on' | 'user' {
+  const v = String(raw ?? '').trim();
+  return v === 'off' || v === 'on' || v === 'user' ? v : 'inherit';
+}
+
+/**
+ * v2.8.8：账户级「单文件大小限制」（MB）。
+ * 0 = 留空，按全局「单文件大小上限」执行；上限兜到 1048576MB（1TB）。
+ */
+function clampMaxFileSizeMB(raw: unknown): number {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.min(1048576, Math.round(n));
 }
 
 /** 头像目录：<后端根>/uploads/avatars */

@@ -15,7 +15,7 @@ exports.buildDirectoryTree = buildDirectoryTree;
 exports.buildMetadata = buildMetadata;
 exports.serializeFile = serializeFile;
 exports.normalizeDir = normalizeDir;
-exports.UPLOAD_SOURCES = ['Default', 'Upload', 'Fetch', 'WebDAV', 'API-Web', 'API-S3'];
+exports.UPLOAD_SOURCES = ['Default', 'Upload', 'Fetch', 'WebDAV', 'API-Web', 'API-S3', 'Record'];
 exports.CLIENT_UPLOAD_SOURCES = ['Upload', 'Fetch'];
 function normalizeUploadSource(raw) {
     const v = String(raw || '').trim();

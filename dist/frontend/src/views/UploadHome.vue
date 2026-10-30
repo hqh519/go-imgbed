@@ -144,6 +144,12 @@
                     </el-tooltip>
                 </div>
             </div>
+            <!-- v2.8.8：「登记文件」入口，位于「上传设置」正上方（同一快捷栏，同一按钮样式） -->
+            <el-tooltip :disabled="disableTooltip" :content="$t('upload.recordFile')" placement="left" :hide-after="0" :show-after="1000">
+                <el-button class="quick-toolbar-button" @click="openRecordDialog">
+                    <font-awesome-icon icon="file-circle-plus" class="quick-toolbar-icon"/>
+                </el-button>
+            </el-tooltip>
             <el-tooltip :disabled="disableTooltip" :content="$t('upload.settings')" placement="left" :hide-after="0" :show-after="1000">
                 <el-button class="quick-toolbar-button" @click="openCompressDialog">
                     <font-awesome-icon icon="cloud-upload" class="quick-toolbar-icon"/>
@@ -217,9 +223,10 @@
             @update:autoUpload="autoUpload = $event"
             :backupChannel="backupChannel"
             :compressPercent="compressPercent"
-            :limitExtensions="limitExtensions"
             :limitCompressExts="limitCompressExts"
-            :limitMaxSizeMB="limitMaxSizeMB"
+            :compressEnabled="compressEnabled"
+            :webpEnabled="webpEnabled"
+            :transcodeChoice="transcodeChoice"
             class="upload"
         />
         </div>
@@ -280,17 +287,21 @@
             :defaultChannel="defaultChannelInfo"
             :defaultBackupChannel="defaultBackupChannelInfo"
             v-model:uploadFolder="uploadFolder"
-            v-model:autoRetry="autoRetry"
-            v-model:uploadNameType="uploadNameType"
-            v-model:convertToWebp="convertToWebp"
             v-model:customerCompress="customerCompress"
             v-model:compressBar="compressBar"
             v-model:compressPercent="compressPercent"
             v-model:serverCompress="serverCompress"
-            v-model:limitExtensions="limitExtensions"
             v-model:limitCompressExts="limitCompressExts"
-            v-model:limitMaxSizeMB="limitMaxSizeMB"
-            :globalMaxSizeMB="Number(userConfig?.maxUploadSizeMB) || 0"
+            :compressEnabled="compressEnabled"
+            :transcodePolicy="transcodePolicy"
+            v-model:transcodeChoice="transcodeChoice"
+            :transcodeGlobal="transcodeGlobal"
+        />
+        <!-- v2.8.8：登记文件弹窗（与「上传设置」同尺寸同风格） -->
+        <RecordFileDialog
+            v-model="showRecordDialog"
+            :isAdmin="isAdminRole"
+            @registered="handleRecorded"
         />
     </div>
     <Footer class="footer"/>
@@ -313,6 +324,7 @@ import Logo from '@/components/Logo.vue'
 import { setLocale } from '@/locales'
 import { writeThemeCookie } from '@/utils/themeCookie'
 import UploadSettingsDialog from '@/components/upload/UploadSettingsDialog.vue'
+import RecordFileDialog from '@/components/upload/RecordFileDialog.vue'
 import DirectoryTreePicker from '@/components/DirectoryTreePicker.vue'
 import DirectorySuggestionInput from '@/components/DirectorySuggestionInput.vue'
 import backgroundManager from '@/mixins/backgroundManager'
@@ -341,11 +353,11 @@ export default {
             uploadNameType: '', //上传文件命名方式
             customUrlPrefix: '', //自定义链接前缀
             useCustomUrl: 'false', //是否启用自定义链接格式
-            autoRetry: true, //失败自动切换
+            autoRetry: true, //失败自动切换（v2.8.8：值来自后台「上传相关配置 → 自动重试」）
             compressPercent: 80, //压缩期望百分比（压到原体积的 x%）
-            limitExtensions: '', // 允许的上传格式覆盖（仅本次页面生效，刷新清空）
             limitCompressExts: '', // 允许压缩格式覆盖（仅本次页面生效，刷新清空）
-            limitMaxSizeMB: 0, // 单文件大小上限覆盖（MB，0 = 跟随后台）
+            transcodeChoice: '', // 视频兼容转码（'' 跟随全局 / 'on' / 'off'），仅「用户决定」策略下可见
+            showRecordDialog: false, // 「登记文件」弹窗
             customDomain: '', //自定义访问域名（所有文件链接统一使用）
             autoUpload: localStorage.getItem('goimgbed_autoUpload') !== '0', //自动上传（记忆模式：记住上次选择，刷新不重置）
             useDefaultWallPaper: false,
@@ -413,9 +425,9 @@ export default {
         useCustomUrl(val) {
             this.$store.commit('setCustomUrlSettings', { key: 'useCustomUrl', value: val })
         },
-        autoRetry(val) {
-            this.$store.commit('setStoreAutoRetry', val)
-        },
+        /*
+         * v2.8.8：自动重试改由后台统一配置，前台不再持久化 —— 移除写 store 的副作用。
+         */
         uploadFolder(val) {
             // 实时输入时用非 strict 模式，不检查末尾的单独 . 以允许继续输入如 .123
             if (this.validateUploadFolder(val, false)) {
@@ -433,7 +445,7 @@ export default {
         }
     },
     computed: {
-        ...mapGetters(['userConfig', 'uploadCopyUrlForm', 'compressConfig', 'storeUploadChannel', 'storeChannelName', 'storeUploadNameType', 'customUrlSettings', 'storeAutoRetry', 'storeUploadMethod', 'storeUploadFolder', 'isAdminRole']),
+        ...mapGetters(['userConfig', 'uploadCopyUrlForm', 'compressConfig', 'storeUploadChannel', 'storeChannelName', 'storeUploadNameType', 'customUrlSettings', 'storeAutoRetry', 'storeUploadMethod', 'storeUploadFolder', 'isAdminRole', 'sessionUser']),
         ownerName() {
             return this.userConfig?.ownerName || 'go-imgbed'
         },
@@ -470,6 +482,22 @@ export default {
         // 是否显示目录候选项（从 userConfig 获取）
         showDirectorySuggestions() {
             return this.userConfig?.showDirectorySuggestions ?? false
+        },
+        /** v2.8.8：后台「文件压缩」总开关（关闭时前台所有压缩入口都不显示） */
+        compressEnabled() {
+            return this.userConfig?.compressEnabled !== false
+        },
+        /** v2.8.8：后台「WebP转换」总开关（关闭时顶栏「转换为WebP」按钮不加载） */
+        webpEnabled() {
+            return this.userConfig?.webpEnabled === true
+        },
+        /** v2.8.8：账户级视频兼容转码策略（inherit/off/on/user） */
+        transcodePolicy() {
+            return this.userConfig?.transcodePolicy || 'inherit'
+        },
+        /** v2.8.8：后台全局「视频兼容转码」当前值（给「跟随全局」展示实际效果） */
+        transcodeGlobal() {
+            return this.userConfig?.transcodeGlobal !== false
         }
     },
     mounted() {
@@ -479,13 +507,17 @@ export default {
         // 读取用户选择的链接格式（优先用户本地偏好，其次系统默认）
         this.selectedUrlForm = this.uploadCopyUrlForm || this.userConfig?.defaultUrlForm || 'url'
         // 读取用户选择的压缩设置（优先用户设置，其次系统默认配置）
-        this.customerCompress = this.compressConfig.customerCompress ?? this.parseBoolean(this.userConfig?.defaultCustomerCompress, true)
+        this.customerCompress = this.compressEnabled
+            ? (this.compressConfig.customerCompress ?? this.parseBoolean(this.userConfig?.defaultCustomerCompress, true))
+            : false
         // 压缩期望：百分比（前端设置优先，其次后台默认，兜底 80）
         this.compressPercent = this.compressConfig.compressPercent ?? this.parseNumber(this.userConfig?.defaultCompressQuality, 80)
         if (!(this.compressPercent >= 10 && this.compressPercent <= 100)) this.compressPercent = 80
         this.compressBar = this.compressConfig.compressBar ?? this.parseNumber(this.userConfig?.defaultCompressBar, 5)
         this.serverCompress = this.compressConfig.serverCompress ?? true
-        this.convertToWebp = this.compressConfig.convertToWebp ?? this.parseBoolean(this.userConfig?.defaultConvertToWebp, false)
+        // v2.8.8：WebP 转换以「后台 WebP转换 总开关」为前提，关闭时强制不转换
+        this.convertToWebp = this.webpEnabled &&
+            (this.compressConfig.convertToWebp ?? this.parseBoolean(this.userConfig?.defaultConvertToWebp, false))
         // 读取用户选择的上传渠道：上传渠道仅保留外链特殊值，常规上传走默认主渠道
         this.uploadChannel = ''
         // 页面刷新后一律复位为「默认」渠道（主图床）；
@@ -493,8 +525,8 @@ export default {
         this.channelName = ''
         // 备份渠道同样复位为「默认」（跟随全局备份渠道，而不是 none/不备份）
         this.backupChannel = ''
-        // 用户定义的失败自动切换
-        this.autoRetry = this.storeAutoRetry
+        // 失败自动切换（v2.8.8：跟随后台「上传相关配置 → 自动重试」，前台不再有开关）
+        this.autoRetry = this.userConfig?.autoRetry !== false
         // 读取用户选择的上传文件命名方式
         this.uploadNameType = this.storeUploadNameType || this.userConfig?.defaultUploadNameType || 'default'
         // 读取用户自定义链接格式
@@ -520,6 +552,9 @@ export default {
             this.themeMode = 'light'
         }
 
+        // v2.8.8：视频兼容转码选择每次刷新都复位为「跟随全局」（需求要求）
+        this.transcodeChoice = ''
+
         this.showAnnouncementIfNeeded()
     },
     components: {
@@ -528,6 +563,7 @@ export default {
         ToggleDark,
         Logo,
         UploadSettingsDialog,
+        RecordFileDialog,
         DirectoryTreePicker,
         DirectorySuggestionInput
     },
@@ -604,6 +640,24 @@ export default {
         changeUrlForm() {
             this.$store.commit('setUploadCopyUrlForm', this.selectedUrlForm)
         },
+        /**
+         * 登记文件（v2.8.8）
+         * 打开「登记文件」弹窗：把一个已经存在于对象存储 / 别处的文件
+         * 登记进系统（不重复上传，只建记录）。仅登录用户可用。
+         */
+        openRecordDialog() {
+            if (!this.sessionUser) {
+                this.$message.warning(this.$t('recordFile.needLogin'))
+                return
+            }
+            this.showRecordDialog = true
+        },
+        /** 登记成功：提示 + 让上传列表/目录树相关缓存下次进入时刷新 */
+        handleRecorded() {
+            // 成功提示由 RecordFileDialog 自己弹（带文件名与大小），这里只负责关闭弹窗
+            this.showRecordDialog = false
+        },
+
         openCompressDialog() {
             this.showCompressDialog = true
         },

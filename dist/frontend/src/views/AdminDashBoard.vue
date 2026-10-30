@@ -112,38 +112,41 @@
                             @change="handleFilterChange"
                         />
                         <!-- v2.8.7c：标签筛选已并入筛选弹窗「标签」页，顶栏原「标签」按钮移除 -->
-                        <!-- 刷新：不刷新页面，重新拉取当前分类下的文件列表 -->
-                        <el-button
-                            class="refresh-files-btn"
-                            size="small"
-                            :title="$t('dashboard.refreshFiles')"
-                            :aria-label="$t('dashboard.refreshFiles')"
-                            @click="handleRefreshFiles"
-                        >
-                            <font-awesome-icon icon="sync" :class="{ 'fa-spin': refreshLoading }" class="refresh-files-icon"/>
-                        </el-button>
-                        <!-- 回收站：切换查看已删除（软删除）的文件，可恢复或彻底删除 -->
-                        <el-button
-                            class="refresh-files-btn trash-btn"
-                            :class="{ 'is-active': trashMode }"
-                            size="small"
-                            :title="trashMode ? $t('dashboard.trashExit') : $t('dashboard.trashEnter')"
-                            :aria-label="trashMode ? $t('dashboard.trashExit') : $t('dashboard.trashEnter')"
-                            @click="toggleTrashMode"
-                        >
-                            <font-awesome-icon icon="trash-alt" :class="{ 'fa-spin': trashLoading }" class="refresh-files-icon"/>
-                        </el-button>
-                        <!-- v2.8.7：全局视频静音开关 —— 控制预览浮层与文件详情页视频是否播放声音（默认静音） -->
-                        <el-button
-                            class="refresh-files-btn mute-toggle-btn"
-                            :class="{ 'is-active': !globalVideoMuted }"
-                            size="small"
-                            :title="globalVideoMuted ? $t('dashboard.videoMutedOn') : $t('dashboard.videoMutedOff')"
-                            :aria-label="globalVideoMuted ? $t('dashboard.videoMutedOn') : $t('dashboard.videoMutedOff')"
-                            @click="toggleVideoMuted"
-                        >
-                            <font-awesome-icon :icon="globalVideoMuted ? 'volume-mute' : 'volume-up'" class="refresh-files-icon"/>
-                        </el-button>
+                        <!-- v2.8.8：刷新 / 回收站 / 声音 三个按钮收进一个容器 —— 移动端整组靠右（见 AdminHeader 断点样式） -->
+                        <div class="dashboard-header-buttons">
+                            <!-- 刷新：不刷新页面，重新拉取当前分类下的文件列表 -->
+                            <el-button
+                                class="refresh-files-btn"
+                                size="small"
+                                :title="$t('dashboard.refreshFiles')"
+                                :aria-label="$t('dashboard.refreshFiles')"
+                                @click="handleRefreshFiles"
+                            >
+                                <font-awesome-icon icon="sync" :class="{ 'fa-spin': refreshLoading }" class="refresh-files-icon"/>
+                            </el-button>
+                            <!-- 回收站：切换查看已删除（软删除）的文件，可恢复或彻底删除 -->
+                            <el-button
+                                class="refresh-files-btn trash-btn"
+                                :class="{ 'is-active': trashMode }"
+                                size="small"
+                                :title="trashMode ? $t('dashboard.trashExit') : $t('dashboard.trashEnter')"
+                                :aria-label="trashMode ? $t('dashboard.trashExit') : $t('dashboard.trashEnter')"
+                                @click="toggleTrashMode"
+                            >
+                                <font-awesome-icon icon="trash-alt" :class="{ 'fa-spin': trashLoading }" class="refresh-files-icon"/>
+                            </el-button>
+                            <!-- v2.8.7：全局视频静音开关 —— 控制预览浮层与文件详情页视频是否播放声音（默认静音） -->
+                            <el-button
+                                class="refresh-files-btn mute-toggle-btn"
+                                :class="{ 'is-active': !globalVideoMuted }"
+                                size="small"
+                                :title="globalVideoMuted ? $t('dashboard.videoMutedOn') : $t('dashboard.videoMutedOff')"
+                                :aria-label="globalVideoMuted ? $t('dashboard.videoMutedOn') : $t('dashboard.videoMutedOff')"
+                                @click="toggleVideoMuted"
+                            >
+                                <font-awesome-icon :icon="globalVideoMuted ? 'volume-mute' : 'volume-up'" class="refresh-files-icon"/>
+                            </el-button>
+                        </div>
                     </div>
                 </template>
             </AdminHeader>
@@ -314,6 +317,11 @@
                     <el-button class="new-folder-btn" size="small" :title="$t('dashboard.newFolder')" :aria-label="$t('dashboard.newFolder')" @click="handleCreateFolder">
                         <font-awesome-icon icon="plus" class="new-folder-icon"/>
                         <span class="new-folder-text">{{ $t('dashboard.newFolder') }}</span>
+                    </el-button>
+                    <!-- v2.8.8：登记文件（与前台共用同一弹窗）—— 把一个已在别处的文件登记进系统，不重复上传 -->
+                    <el-button class="new-folder-btn record-file-btn" size="small" :title="$t('recordFile.title')" :aria-label="$t('recordFile.title')" @click="showRecordDialog = true">
+                        <font-awesome-icon icon="file-circle-plus" class="new-folder-icon"/>
+                        <span class="new-folder-text">{{ $t('recordFile.title') }}</span>
                     </el-button>
                     <!-- 历史记录：位于数量统计徽章左侧
                          v2.8.6b：去掉 primary plain 配色 —— 文本/边框颜色与「新建目录」一致 -->
@@ -644,6 +652,13 @@
             </template>
         </el-dialog>
 
+        <!-- v2.8.8：登记文件弹窗（与前台「登记文件」同一组件、同一套字段与探测逻辑） -->
+        <RecordFileDialog
+            v-model="showRecordDialog"
+            :isAdmin="true"
+            @registered="handleRecorded"
+        />
+
         <!-- 移动文件对话框 -->
         <MoveFileDialog
             v-model="showMoveDialog"
@@ -674,6 +689,8 @@ import MobileDirectoryDrawer from '@/components/dashboard/MobileDirectoryDrawer.
 import DashboardCheckbox from '@/components/dashboard/DashboardCheckbox.vue';
 import FilterDialog from '@/components/dashboard/FilterDialog.vue';
 import LanguageSwitcher from '@/components/LanguageSwitcher.vue';
+// v2.8.8：登记文件弹窗（与前台共用同一组件）
+import RecordFileDialog from '@/components/upload/RecordFileDialog.vue';
 import { fileManager } from '@/utils/fileManager';
 // 文件详情通用数据构造器（与「历史记录」页共用同一套模板 + 同一套链接拼装逻辑）
 import {
@@ -790,6 +807,8 @@ data() {
         },
         // v2.8.7：筛选弹窗显隐
         showFilterDialog: false,
+        // v2.8.8：登记文件弹窗显隐（与前台共用 RecordFileDialog）
+        showRecordDialog: false,
         channelNameOptions: [], // 动态从文件列表中提取
         // 标签筛选弹窗
         showTagFilterDialog: false,
@@ -824,7 +843,8 @@ components: {
     DashboardCheckbox,
     FilterDialog,
     MoveFileDialog,
-    LanguageSwitcher
+    LanguageSwitcher,
+    RecordFileDialog
 },
 setup() {
     const cardContainerRef = ref(null);
@@ -1614,6 +1634,16 @@ methods: {
             this[key] = Math.max(0, this[key] + delta);
         }
     },
+    /**
+     * 登记文件成功回调（v2.8.8）
+     * 关弹窗 + 提示 + 刷新当前目录列表（新记录会立即出现在文件列表里）。
+     */
+    handleRecorded() {
+        // 成功提示由 RecordFileDialog 自己弹（带文件名与大小），这里只负责收尾
+        this.showRecordDialog = false;
+        if (typeof this.handleRefreshFiles === 'function') this.handleRefreshFiles();
+    },
+
     // ==================== 回收站 ====================
     /** 进入 / 退出回收站模式 */
     /** v2.8.7：切换全局视频静音（预览浮层 + 文件详情页视频共用这一个开关） */
