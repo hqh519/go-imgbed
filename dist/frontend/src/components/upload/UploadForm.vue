@@ -1950,6 +1950,53 @@ methods: {
         }
         // 注意：并发控制的 onUploadComplete 已在各上传方法的 finally 中调用
     },
+    /**
+     * v2.9.0：把「登记文件」成功的记录追加到上传列表。
+     *
+     * 场景：前台首页点「登记文件」把一条已在存储上的文件登记进系统后，
+     * 用户期望立刻在下方文件列表里看到这条记录（而不是刷新页面）。
+     *
+     * 入参 data 来自 POST /api/record 的 data：
+     *   { id, name, size, mime, md5, channel, src }
+     * 其中 id = File_ID，src = 服务端签发的统一出口外链。
+     *
+     * 注意：登记文件不经过上传管线，所以直接给 status='done'，
+     * 且不带 rawFile / stagedId（「清空」「上传」都不会碰它）。
+     */
+    addRecordedFile(data) {
+        const srcID = String((data && data.id) || '').trim();
+        if (!srcID) return false;
+        // 去重：同一条登记记录不重复入列
+        if (this.fileList.some(item => item.srcID === srcID)) return false;
+        const name = String((data && data.name) || srcID);
+        const extMatch = /\.([A-Za-z0-9]{1,12})$/.exec(name);
+        const metadata = {
+            FileName: name,
+            FileExt: extMatch ? extMatch[1].toLowerCase() : '',
+            FileSize: Number(data && data.size) || 0,
+            FileMime: String((data && data.mime) || ''),
+            ChannelName: String((data && data.channel) || ''),
+            UploadSource: 'Record'
+        };
+        const urls = buildFileUrls(srcID, name, this.rootUrl, metadata);
+        this.fileList.push({
+            uid: `record-${srcID}-${Date.now()}`,
+            name,
+            // 预览优先用服务端签发的地址（已带扩展名，图片能直接出缩略图）
+            url: String((data && data.src) || '') || fileLink(srcID),
+            status: 'done',
+            progreess: 100,
+            serverCompress: false,
+            uploadChannel: 'record',
+            retryCount: 0,
+            editableName: false,
+            isRecorded: true,
+            srcID,
+            metadata,
+            ...urls
+        });
+        return true;
+    },
     saveToHistory(fileItem) {
         try {
             const history = JSON.parse(localStorage.getItem('uploadHistory') || '[]')
@@ -4177,18 +4224,20 @@ html.dark .el-upload__text :deep(em) {
     color: var(--upload-action-copy-color);
 }
 
-/* v2.6.0：文件压缩开关按钮 —— 开启时高亮主色 */
+/* v2.9.0：文件压缩开关按钮 —— 关闭时灰色（默认操作色），开启时图标蓝色高亮。
+   之前关闭态用的是 --upload-action-copy-color（= 主色，本身就是蓝色），
+   开关切换时颜色几乎没变化，看起来像「配色没生效」。 */
 .modern-action-btn-compress {
-    color: var(--upload-action-copy-color);
+    color: var(--upload-action-btn-color);
 }
 .modern-action-btn-compress.is-active {
     color: var(--el-color-primary, #409eff);
     background: var(--el-color-primary-light-9, #ecf5ff);
 }
 
-/* v2.8.9：「转为WebP」开关按钮 —— 开启时图标蓝色高亮，关闭时跟随默认灰色 */
+/* v2.9.0：「转为WebP」开关按钮 —— 与文件压缩同一套配色：关闭灰、开启蓝 */
 .modern-action-btn-webp {
-    color: var(--upload-action-copy-color);
+    color: var(--upload-action-btn-color);
 }
 .modern-action-btn-webp.is-active {
     color: var(--el-color-primary, #409eff);

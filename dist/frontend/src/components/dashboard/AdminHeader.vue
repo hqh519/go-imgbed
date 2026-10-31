@@ -210,7 +210,7 @@ export default {
        独占第二行；手机窄屏下搜索框自动收缩，保证筛选按钮始终与搜索框同行
        （第二行整体 ≈ 90% 宽度：搜索框占满 90%，剩余位置给筛选按钮）。 */
     .admin-header-content :deep(.search-card) {
-        order: 3;
+        order: 4;
         flex: 1 1 calc(90% - 46px);
         min-width: 0;
         max-width: 90%;
@@ -221,16 +221,22 @@ export default {
     }
 
     /*
-     * v2.8.9：移动端顶行顺序调整为「搜索 筛选 → 刷新 回收站 → 更多」——
-     * 搜索 / 筛选按钮 order 提前到刷新组之前，间距收紧（margin 4px），
-     * 保证五个按钮一行显示完整；刷新组保持 margin-left:auto 靠右。
+     * v2.9.0：移动端顶行改为「搜索 筛选 刷新 回收站 更多」五个按钮紧挨、整组靠右：
+     *   搜索按钮负责把整组推到右边（margin-left:auto），其余按钮只保留极小间距；
+     *   搜索框展开时独占下面一行（order 4）。
      */
-    .admin-header-content :deep(.search-area > .mobile-search-trigger),
+    .admin-header-content :deep(.search-area > .mobile-search-trigger) {
+        order: 1;
+        flex: 0 0 auto;
+        margin-left: auto;
+        margin-right: 2px;
+    }
+
     .admin-header-content :deep(.search-area > .filter-trigger) {
         order: 1;
         flex: 0 0 auto;
         margin-left: 0;
-        margin-right: 4px;
+        margin-right: 2px;
     }
 
     .admin-header-content :deep(.search-area > *:not(.search-card):not(.tag-filter-badge):not(.refresh-files-btn):not(.dashboard-header-buttons):not(.filter-trigger):not(.mobile-search-trigger)) {
@@ -247,10 +253,10 @@ export default {
      */
     .admin-header-content :deep(.search-area > .dashboard-header-buttons) {
         order: 2;
-        margin-left: auto;
+        margin-left: 0;
         display: flex;
         align-items: center;
-        gap: 4px;
+        gap: 2px;
     }
 
     /* 容器内已有 6px 间距，去掉按钮自带的 2px 左边距，避免桌面/移动端间距不一致 */
@@ -263,9 +269,9 @@ export default {
     }
 
     .admin-header-content :deep(.admin-header-actions) {
-        order: 2;
-        /* v2.8.0 #C16：去掉 margin-left:auto —— 由标签筛选按钮负责推右，
-           让 标签/刷新/回收站 与「更多菜单」紧靠成组 */
+        order: 3;
+        margin-left: 2px;
+        /* v2.8.0 #C16：去掉 margin-left:auto —— 整组靠右由搜索按钮的 auto 负责 */
     }
 
     /*

@@ -346,13 +346,14 @@
                 </div>
                 <el-form-item :label="$t('fileDetail.renameLabel')" :error="renameValidation.error">
                     <div class="rename-input-row">
+                        <!-- v2.9.0：只读 —— 不允许手动输入，只能点「生成名称」按钮生成 48 位随机值 -->
                         <el-input
                             v-model="renameForm.newFileId"
-                            :placeholder="$t('fileDetail.renamePlaceholder')"
+                            :placeholder="$t('fileDetail.renameReadonlyPlaceholder')"
+                            readonly
                             @input="validateRenameInput"
-                            clearable
                         ></el-input>
-                        <!-- v2.8.9：按系统命名规则生成新名（仅预填输入框，不写库；确认重命名后才落库） -->
+                        <!-- 按系统命名规则生成新名（仅预填输入框，不写库；确认重命名后才落库） -->
                         <el-button
                             type="primary"
                             plain
@@ -362,6 +363,7 @@
                             @click="generateRenameName"
                         >{{ $t('fileDetail.renameGenerate') }}</el-button>
                     </div>
+                    <div class="rename-readonly-hint">{{ $t('fileDetail.renameReadonlyHint') }}</div>
                 </el-form-item>
             </el-form>
             <template #footer>
@@ -1147,18 +1149,14 @@ export default {
             this.validateRenameInput();
         },
         /**
-         * v2.8.9：「生成名称」—— 调后端按系统命名规则生成一个新 File_ID
-         * （保留扩展名与目录前缀），仅预填输入框；点「确认重命名」才写库。
+         * v2.9.0：「生成名称」—— 调后端生成 48 位「大小写 + 数字」随机 File_ID
+         * （后端已与库中已有 name 去重），仅预填输入框；点「确认重命名」才写库。
          */
         async generateRenameName() {
             if (this.renameGenerating) return;
             this.renameGenerating = true;
             try {
-                const current = this.renameForm.newFileId || this.file?.name || '';
-                const response = await fetchWithAuth(
-                    `/api/manage/rename/generate?name=${encodeURIComponent(current)}`,
-                    { method: 'GET' }
-                );
+                const response = await fetchWithAuth('/api/manage/rename/generate', { method: 'GET' });
                 const data = await response.json().catch(() => ({}));
                 if (response.ok && data.success && data.name) {
                     this.renameForm.newFileId = data.name;
@@ -1278,6 +1276,14 @@ export default {
 }
 .rename-generate-btn {
     flex: 0 0 auto;
+}
+/* v2.9.0：只读说明 */
+.rename-readonly-hint {
+    margin-top: 6px;
+    font-size: 11px;
+    line-height: 1.5;
+    opacity: 0.6;
+    white-space: normal;
 }
 
 /* v2.8.9：处理记录 —— 单行展示，超出省略，悬停看全文 */

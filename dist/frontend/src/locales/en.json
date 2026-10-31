@@ -573,7 +573,9 @@
         "processTranscodeSkipped": "not transcoded ({reason})",
         "processTranscodeFailed": "transcode failed ({reason})",
         "processWebpSkipped": "WebP not converted ({reason})",
-        "renameGenerate": "Generate Name"
+        "renameGenerate": "Generate Name",
+        "renameReadonlyPlaceholder": "Click Generate Name on the right",
+        "renameReadonlyHint": "The file ID can only be created with Generate Name (48 chars, letters and digits, unique). Renaming only changes the file ID — the category and folder stay unchanged."
     },
     "filter": {
         "accessStatus": "Access Status",
@@ -664,7 +666,16 @@
         "widthRange": "Width",
         "heightRange": "Height",
         "dimHint": "In pixels; leave empty for no limit. Only files with recorded dimensions match (images / videos)",
-        "dimReverseHint": "Landscape / portrait is judged by the shorter side, so swapping width and height still matches"
+        "dimReverseHint": "Landscape / portrait is judged by the shorter side, so swapping width and height still matches",
+        "deleted": "Deleted",
+        "tabUser": "User",
+        "userNames": "Users",
+        "userFilterEmpty": "No users",
+        "userFilterHint": "Shows the 30 most recently created users; click Load more for the rest. Multiple users selected within this tab match any of them.",
+        "loadMore": "Load more",
+        "matchModeAll": "All",
+        "matchModeAny": "Any",
+        "matchModeTooltip": "Shown when 2+ conditions are selected: <b>All</b> = every condition must match (AND); <b>Any</b> = at least one condition matches (OR).<br/>The tag tab's own AND/OR only applies to tag names."
     },
     "moveFile": {
         "title": "Move File",
@@ -924,7 +935,7 @@
         "channelPlaceholder": "Select the channel this file lives on",
         "channelRequired": "Please select a storage channel",
         "folder": "Folder",
-        "folderPlaceholder": "Leave empty for the root folder",
+        "folderPlaceholder": "Leave empty → auto folder \"Record/Year/Month\"",
         "note": "Note",
         "notePlaceholder": "Optional, e.g. origin or purpose",
         "autoSection": "Filled automatically",
@@ -942,7 +953,8 @@
         "needLogin": "Please sign in before registering files",
         "extension": "Extension",
         "extensionTooltip": "If the source URL has no file extension (e.g. Immich /api/assets/xxx), fill one in here (jpg / mp4 …) so the type can be detected. When the URL already has an extension, the URL wins",
-        "extensionPlaceholder": "e.g. jpg (optional)"
+        "extensionPlaceholder": "e.g. jpg (optional)",
+        "folderTooltip": "When empty, the file goes to <b>{path}</b> (Record / current year / current month). Opened from the admin file manager, the current directory is filled in automatically."
     },
     "accessLog": {
         "title": "Access log",
@@ -1742,5 +1754,26 @@
         "defaultOption": "Default (follow global)",
         "storageChannel": "Storage channel",
         "backupChannel": "Backup channel"
+    },
+    "mediaViewer": {
+        "slideshow": "Slideshow",
+        "slideshowSpeed": "Slideshow interval",
+        "speedPerFrame": "{s}s per slide",
+        "actualSize": "Actual size",
+        "fitWindow": "Fit to window",
+        "prev": "Previous",
+        "next": "Next",
+        "videoSettings": "More settings",
+        "playbackSpeed": "Playback speed",
+        "playMode": "Play mode",
+        "modeSingle": "Loop single",
+        "modeRandom": "Shuffle",
+        "modeSequence": "Sequential",
+        "audioCount": "{count} audio file(s) on this page — click to play",
+        "copyLink": "Copy link",
+        "openLink": "Open link",
+        "viewDetail": "View details",
+        "copied": "Link copied",
+        "imageHint": "Click the image to switch between actual size and fit-to-window"
     }
 }

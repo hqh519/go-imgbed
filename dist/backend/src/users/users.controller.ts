@@ -227,6 +227,8 @@ export class UsersController {
       nickname: u.nickname || u.username,
       avatar: u.avatar || '',
       role: u.role,
+      // v2.9.0：筛选弹窗「用户」页按「最近创建」倒序，需要创建时间
+      createdAt: u.createdAt,
     }));
   }
 

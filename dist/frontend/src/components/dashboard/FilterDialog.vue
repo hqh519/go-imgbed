@@ -148,7 +148,7 @@
                         <div class="filter-title">{{ $t('filter.tagNames') }}</div>
                         <div class="filter-options tag-name-options">
                             <button
-                                v-for="t in tagOptions"
+                                v-for="t in visibleTagOptions"
                                 :key="'tagName-' + t.name"
                                 type="button"
                                 class="quick-chip"
@@ -158,6 +158,13 @@
                             >{{ t.name }}</button>
                             <span v-if="tagOptions.length === 0" class="filter-hint">{{ $t('dashboard.tagFilterEmpty') }}</span>
                         </div>
+                        <!-- v2.9.0：标签默认只加载最近创建的 30 个，多余的折叠到「加载更多」 -->
+                        <div v-if="tagOptions.length > tagVisibleCount" class="filter-load-more-row">
+                            <el-button size="small" text type="primary" @click="loadMoreTags">
+                                {{ $t('filter.loadMore') }}
+                                <span class="filter-load-more-count">(+{{ tagOptions.length - tagVisibleCount }})</span>
+                            </el-button>
+                        </div>
                         <div v-if="draft.tagNames.length > 1" class="filter-hint">
                             {{ draft.tagMode === 'or' ? $t('dashboard.tagModeOrHint') : $t('dashboard.tagModeAndHint') }}
                         </div>
@@ -165,6 +172,38 @@
                             <el-radio-button label="or">{{ $t('dashboard.tagModeOr') }}</el-radio-button>
                             <el-radio-button label="and">{{ $t('dashboard.tagModeAnd') }}</el-radio-button>
                         </el-radio-group>
+                    </div>
+                </div>
+            </el-tab-pane>
+
+            <!-- ───── 标签页（v2.9.0 新增）：按「上传用户」筛选 ───── -->
+            <el-tab-pane name="user" v-if="userOptions.length > 0">
+                <template #label>
+                    <span class="filter-tab-label">{{ $t('filter.tabUser') }}<i v-if="tabHasValue.user" class="filter-tab-dot"></i></span>
+                </template>
+                <div class="filter-dialog-body">
+                    <div class="filter-section">
+                        <div class="filter-title">{{ $t('filter.userNames') }}</div>
+                        <div class="filter-options tag-name-options">
+                            <button
+                                v-for="u in visibleUserOptions"
+                                :key="'user-' + u.username"
+                                type="button"
+                                class="quick-chip"
+                                :class="{ 'is-active': draft.userNames.includes(u.username) }"
+                                :title="u.username"
+                                @click="toggleUserName(u.username)"
+                            >{{ u.nickname || u.username }}</button>
+                            <span v-if="userOptions.length === 0" class="filter-hint">{{ $t('filter.userFilterEmpty') }}</span>
+                        </div>
+                        <!-- 与「标签」页一致：默认最近创建的 30 个，多余的折叠到「加载更多」 -->
+                        <div v-if="userOptions.length > userVisibleCount" class="filter-load-more-row">
+                            <el-button size="small" text type="primary" @click="loadMoreUsers">
+                                {{ $t('filter.loadMore') }}
+                                <span class="filter-load-more-count">(+{{ userOptions.length - userVisibleCount }})</span>
+                            </el-button>
+                        </div>
+                        <div class="filter-hint">{{ $t('filter.userFilterHint') }}</div>
                     </div>
                 </div>
             </el-tab-pane>
@@ -327,7 +366,21 @@
         </el-tabs>
         <template #footer>
             <div class="filter-dialog-footer">
-                <el-button size="default" @click="clearAll" :disabled="draftCount === 0">{{ $t('filter.clearFilters') }}</el-button>
+                <div class="filter-footer-left">
+                    <el-button size="default" @click="clearAll" :disabled="draftCount === 0">{{ $t('filter.clearFilters') }}</el-button>
+                    <!-- v2.9.0：选了 2 个及以上条件时，出现全局「同时 / 任意」组合方式。
+                         「同时」= 所有条件都满足；「任意」= 满足任一条件即可。
+                         标签页自己的「或 / 且」只作用于标签名称，不受这里影响。 -->
+                    <template v-if="draftCount >= 2">
+                        <el-radio-group v-model="draft.matchMode" size="small" class="match-mode-group">
+                            <el-radio-button label="all">{{ $t('filter.matchModeAll') }}</el-radio-button>
+                            <el-radio-button label="any">{{ $t('filter.matchModeAny') }}</el-radio-button>
+                        </el-radio-group>
+                        <el-tooltip :content="$t('filter.matchModeTooltip')" placement="top" raw-content>
+                            <font-awesome-icon icon="question-circle" class="match-mode-help"/>
+                        </el-tooltip>
+                    </template>
+                </div>
                 <el-button size="default" type="primary" @click="apply">{{ $t('filter.apply') }}</el-button>
             </div>
         </template>
@@ -354,6 +407,9 @@ const EMPTY_FILTERS = {
     tags: [],
     tagNames: [],
     tagMode: 'or',
+    /* v2.9.0：用户页筛选 + 全局条件组合方式（all 同时 / any 任意） */
+    userNames: [],
+    matchMode: 'all',
     /* v2.8.7：日期 / 大小筛选（与快捷筛选联动） */
     datePreset: '',
     dateFrom: '',
@@ -379,7 +435,9 @@ export default {
         filters: { type: Object, default: () => ({ ...EMPTY_FILTERS }) },
         channelNameOptions: { type: Array, default: () => [] },
         /** v2.8.7b：全部标签选项 [{ name, count }]，供「标签」标签页多选 */
-        tagOptions: { type: Array, default: () => [] }
+        tagOptions: { type: Array, default: () => [] },
+        /** v2.9.0：用户选项 [{ username, nickname, createdAt }]，供「用户」标签页多选 */
+        userOptions: { type: Array, default: () => [] }
     },
     emits: ['update:modelValue', 'update:filters', 'change'],
     data() {
@@ -388,17 +446,45 @@ export default {
             draft: this.buildDraft(this.filters),
             draftDateRange: null,
             // v2.8.9：点「大小快捷项」时置位 —— 期间由预设回填输入框，不要被 syncCustomSize 清掉高亮
-            presetLock: false
+            presetLock: false,
+            // v2.9.0：标签 / 用户默认各展示 30 个最近创建的，「加载更多」每次追加 30 个
+            tagVisibleCount: 30,
+            userVisibleCount: 30
         };
     },
     computed: {
+        /** v2.9.0：标签按创建时间倒序（最近创建在前），只展示前 N 个 */
+        sortedTagOptions() {
+            return [...this.tagOptions].sort((a, b) => {
+                const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+                const tb = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+                if (ta !== tb) return tb - ta;
+                return String(a.name).localeCompare(String(b.name));
+            });
+        },
+        visibleTagOptions() {
+            return this.sortedTagOptions.slice(0, this.tagVisibleCount);
+        },
+        /** v2.9.0：用户按创建时间倒序，只展示前 N 个 */
+        sortedUserOptions() {
+            return [...this.userOptions].sort((a, b) => {
+                const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+                const tb = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+                return tb - ta;
+            });
+        },
+        visibleUserOptions() {
+            return this.sortedUserOptions.slice(0, this.userVisibleCount);
+        },
         dialogWidth() {
             return window.innerWidth <= 768 ? '94%' : '560px';
         },
         accessStatusOptions() {
             return [
                 { label: this.$t('filter.normal'), value: 'normal' },
-                { label: this.$t('filter.blocked'), value: 'blocked' }
+                { label: this.$t('filter.blocked'), value: 'blocked' },
+                // v2.9.0：已删除（回收站）—— 勾选后页面切到回收站视图并按条件筛选
+                { label: this.$t('filter.deleted'), value: 'deleted' }
             ];
         },
         listTypeOptions() {
@@ -528,6 +614,7 @@ export default {
                 filter: ['accessStatus', 'listType', 'label', 'fileType', 'channel', 'channelName', 'uploadSource', 'backup', 'redirect', 'validity', 'nameChanged']
                     .some((k) => (d[k] || []).length > 0),
                 tags: (d.tags || []).length > 0 || (d.tagNames || []).length > 0,
+                user: (d.userNames || []).length > 0,
                 date: !!(d.dateFrom || d.dateTo),
                 size: (Number(d.sizeMin) || 0) > 0 || (Number(d.sizeMax) || 0) > 0 || d.sizeMode === 'original',
                 dimension:
@@ -536,13 +623,19 @@ export default {
                     (Number(d.heightMin) || 0) > 0 || (Number(d.heightMax) || 0) > 0
             };
         },
-        /** 草稿里的有效条件数（弹窗内实时统计，供「清除筛选」按钮禁用态） */
+        /** 草稿里的有效条件数（弹窗内实时统计，供「清除筛选」按钮禁用态 / 同时任意按钮显隐） */
         draftCount() {
             const d = this.draft;
             let n = 0;
-            for (const k of ['accessStatus', 'listType', 'label', 'fileType', 'channel', 'channelName', 'uploadSource', 'backup', 'redirect', 'validity', 'nameChanged', 'tags', 'tagNames']) {
+            for (const k of ['accessStatus', 'listType', 'label', 'fileType', 'channel', 'channelName', 'uploadSource', 'backup', 'redirect', 'validity', 'nameChanged', 'tags', 'tagNames', 'userNames']) {
                 n += (d[k] || []).length;
             }
+            /*
+             * 标签名多选只算一个条件（勾了 3 个标签是「一组标签条件」，而不是 3 个独立条件），
+             * 与后端 filterGroups 的分区口径保持一致。
+             */
+            if ((d.tagNames || []).length > 1) n -= (d.tagNames || []).length - 1;
+            if ((d.userNames || []).length > 1) n -= (d.userNames || []).length - 1;
             if (d.dateFrom || d.dateTo) n += 1;
             if (d.sizeMin > 0 || d.sizeMax > 0) n += 1;
             if (d.sizeMode === 'original') n += 1;
@@ -569,6 +662,9 @@ export default {
                 tags: Array.isArray(s.tags) ? [...s.tags] : [],
                 tagNames: Array.isArray(s.tagNames) ? [...s.tagNames] : [],
                 tagMode: s.tagMode === 'and' ? 'and' : 'or',
+                // v2.9.0
+                userNames: Array.isArray(s.userNames) ? [...s.userNames] : [],
+                matchMode: s.matchMode === 'any' ? 'any' : 'all',
                 datePreset: s.datePreset || '',
                 dateFrom: s.dateFrom || '',
                 dateTo: s.dateTo || '',
@@ -603,10 +699,27 @@ export default {
             if (i === -1) this.draft.tagNames.push(name);
             else this.draft.tagNames.splice(i, 1);
         },
+        /** v2.9.0：用户页内勾选 / 取消具体用户 */
+        toggleUserName(username) {
+            const i = this.draft.userNames.indexOf(username);
+            if (i === -1) this.draft.userNames.push(username);
+            else this.draft.userNames.splice(i, 1);
+        },
+        /** v2.9.0：「加载更多」—— 每次多展示 30 个标签 */
+        loadMoreTags() {
+            this.tagVisibleCount += 30;
+        },
+        /** v2.9.0：「加载更多」—— 每次多展示 30 个用户 */
+        loadMoreUsers() {
+            this.userVisibleCount += 30;
+        },
         /** 弹窗打开时：以父组件已应用的 filters 重置草稿 */
         syncDraft() {
             this.activeTab = 'filter';
             this.draft = this.buildDraft(this.filters);
+            // v2.9.0：每次打开都回到「最近 30 个」，避免上次展开状态一直延续
+            this.tagVisibleCount = 30;
+            this.userVisibleCount = 30;
             this.draftDateRange = this.draft.dateFrom && this.draft.dateTo ? [this.draft.dateFrom, this.draft.dateTo] : null;
         },
         /** 日期快捷预设 → 覆盖日历范围 */
@@ -729,6 +842,9 @@ export default {
                 tags: [...this.draft.tags],
                 tagNames: [...(this.draft.tagNames || [])],
                 tagMode: this.draft.tagMode || 'or',
+                // v2.9.0：用户页 + 全局「同时 / 任意」
+                userNames: [...(this.draft.userNames || [])],
+                matchMode: this.draft.matchMode === 'any' ? 'any' : 'all',
                 datePreset: this.draft.datePreset,
                 dateFrom: this.draft.dateFrom,
                 dateTo: this.draft.dateTo,
@@ -933,10 +1049,42 @@ export default {
     }
 }
 
+/* v2.9.0：标签页名左右外间距调小（原 20px 太松，5 个标签在窄屏很容易挤成两行） */
+.filter-dialog-tabs :deep(.el-tabs__item) {
+    padding: 0 12px;
+}
+
+/* v2.9.0：「加载更多」行（标签页 / 用户页） */
+.filter-load-more-row {
+    margin-top: 6px;
+    display: flex;
+}
+.filter-load-more-count {
+    margin-left: 2px;
+    opacity: 0.6;
+}
+
+/* v2.9.0：底部「同时 / 任意」全局组合方式 */
+.filter-footer-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+.match-mode-group :deep(.el-radio-button__inner) {
+    padding: 5px 12px;
+}
+.match-mode-help {
+    font-size: 13px;
+    opacity: 0.55;
+    cursor: help;
+}
+
 /* 底部按钮 */
 .filter-dialog-footer {
     display: flex;
-    justify-content: flex-end;
+    align-items: center;
+    justify-content: space-between;
     gap: 10px;
 }
 </style>

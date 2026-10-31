@@ -37,7 +37,8 @@ import { appLog } from '../common/app-log';
 import { frontendAppDir } from '../common/project-paths';
 import { qqwryStatus, saveQqwry } from '../common/qqwry';
 import { ipDisplayBatch, ipDisplayOf } from '../common/ip-query';
-import { renderFileName } from '../common/path-template';
+import { CryptoService } from '../common/crypto.service';
+import { hasRecordDomains, joinRecordUrl, recordLoadOrigin } from '../common/record-link';
 
 /** 逗号分隔参数 → 数组 */
 function splitCsv(v?: string): string[] {
@@ -756,6 +757,17 @@ export class LinkController {
         config: this.channels.decryptConfig(ch.type, ch.config),
         metas: {},
       };
+      /*
+       * v2.9.0：登记文件 —— 渠道内路径 + 渠道当前实际加载域名（代理模式优先内网域名，
+       * 302 模式优先公开域名），保证渠道域名换了之后外链自动跟着变。
+       */
+      if (!absoluteRemote && copy.remoteKey && hasRecordDomains(info.config)) {
+        const recordUrl = joinRecordUrl(recordLoadOrigin(info.config, preferInternal), copy.remoteKey);
+        if (recordUrl) {
+          candidates.push({ url: recordUrl, label: ch.name });
+          continue;
+        }
+      }
       const url =
         absoluteRemote && ch.type !== 'custom'
           ? absoluteRemote
@@ -841,6 +853,176 @@ export class ManageController {
    *   出参：{ files:[{name,metadata}], directories, totalCount, directFileCount,
    *          directFolderCount, returnedCount, indexLastUpdated, isIndexedResponse }
    */
+  /**
+   * v2.9.0：把「筛选」弹窗的各个分区分别求值，返回布尔数组 ——
+   *   · 每个分区内部是「或」语义（同一分区选多个值时命中任一即可）；
+   *   · 分区之间由 matchMode（all = 同时 / any = 任意）决定，见调用处组合。
+   * 搜索框、#tag 搜索不属于弹窗筛选，仍恒为 AND，不在本方法内。
+   */
+  private filterGroups(r: any, f: {
+    hasTags: string;
+    filterTags: string[];
+    tagMode: string;
+    listType: string[];
+    label: string[];
+    fileType: string[];
+    channel: string[];
+    channelName: string[];
+    uploadSource: string[];
+    backup: string[];
+    redirect: string[];
+    access: string[];
+    validity: string[];
+    nameChanged: string[];
+    users: string[];
+    fromMs: number;
+    toMs: number;
+    sizeMin: number;
+    sizeMax: number;
+    sizeMode: string;
+    dimPreset: string[];
+    widthMin: number;
+    widthMax: number;
+    heightMin: number;
+    heightMax: number;
+  }): boolean[] {
+    const groups: boolean[] = [];
+    const tagNames: string[] = Array.isArray(r.tags) ? r.tags.map((t: any) => t?.tag?.name).filter(Boolean) : [];
+    if (f.hasTags === 'yes') groups.push(tagNames.length > 0);
+    else if (f.hasTags === 'no') groups.push(tagNames.length === 0);
+    if (f.filterTags.length) {
+      groups.push(
+        f.tagMode === 'or'
+          ? f.filterTags.some((t) => tagNames.includes(t))
+          : f.filterTags.every((t) => tagNames.includes(t)),
+      );
+    }
+
+    const metas = safeParse(r.metas);
+    const listType = (metas.ListType as string) || 'None';
+    const label = (metas.Label as string) || 'None';
+    if (f.listType.length) groups.push(f.listType.includes(listType));
+    if (f.label.length) groups.push(f.label.includes(label));
+    if (f.fileType.length) groups.push(f.fileType.includes(fileTypeOf(r.mime)));
+
+    const copies: any[] = Array.isArray(r.copies) ? r.copies : [];
+    const primary = copies.find((c) => c?.channel?.isMain) || copies[0];
+    const chType = primary?.channel?.type || '';
+    const chLabel = chType ? CHANNEL_LABEL[chType] || chType : '';
+    const chName = String(primary?.channel?.name || '');
+    if (f.channel.length) groups.push(f.channel.includes(chLabel));
+    if (f.channelName.length) groups.push(f.channelName.includes(chName));
+    if (f.uploadSource.length) {
+      groups.push(f.uploadSource.includes(normalizeUploadSource(r.uploadSource)));
+    }
+    if (f.users.length) groups.push(f.users.includes(String(r.uploader || '')));
+
+    if (f.backup.length) {
+      const hasBackup = copies.some((c) => c !== primary && c?.status === 'active' && (c?.remoteKey || c?.remoteUrl));
+      groups.push((f.backup.includes('backedup') && hasBackup) || (f.backup.includes('unbackedup') && !hasBackup));
+    }
+
+    if (f.redirect.length) {
+      const has = !!r.redirectUrl;
+      groups.push((f.redirect.includes('yes') && has) || (f.redirect.includes('no') && !has));
+    }
+
+    if (f.access.length) {
+      // v2.9.0：已删除（回收站）—— 列表接口按 status='deleted' 取数后同样走这里判定
+      const deleted = String(r.status || 'active') === 'deleted';
+      groups.push(
+        (f.access.includes('deleted') && deleted) ||
+        (!deleted && f.access.includes('normal') && listType === 'None') ||
+        (!deleted && f.access.includes('block') && listType === 'Block') ||
+        (!deleted && f.access.includes('white') && listType === 'White'),
+      );
+    }
+
+    if (f.fromMs || f.toMs) {
+      const t = r.createdAt ? new Date(r.createdAt).getTime() : 0;
+      groups.push(!!t && (!f.fromMs || t >= f.fromMs) && (!f.toMs || t <= f.toMs));
+    }
+
+    if (f.sizeMin > 0 || f.sizeMax > 0 || f.sizeMode === 'original') {
+      const cmpSize =
+        f.sizeMode === 'original' ? Number(r.originalSize) || r.size || 0 : r.size || 0;
+      groups.push(
+        (!f.sizeMin || cmpSize >= f.sizeMin) && (!f.sizeMax || cmpSize <= f.sizeMax),
+      );
+    }
+
+    if (f.validity.length) {
+      const exp = r.linkExpiresAt as Date | null | undefined;
+      const expMs = exp ? new Date(exp).getTime() : 0;
+      const now = Date.now();
+      groups.push(
+        (f.validity.includes('limited') && expMs > now) ||
+        (f.validity.includes('expired') && expMs > 0 && expMs <= now) ||
+        (f.validity.includes('permanent') && !expMs),
+      );
+    }
+
+    if (f.nameChanged.length) {
+      const renamed = !!String(r.prevName || '');
+      groups.push(
+        (f.nameChanged.includes('changed') && renamed) ||
+        (f.nameChanged.includes('unchanged') && !renamed),
+      );
+    }
+
+    if (f.dimPreset.length || f.widthMin || f.widthMax || f.heightMin || f.heightMax) {
+      const w = Number((metas.Width as number) || 0);
+      const h = Number((metas.Height as number) || 0);
+      if (!w || !h) {
+        groups.push(false);
+      } else {
+        const okRange =
+          (!f.widthMin || w >= f.widthMin) && (!f.widthMax || w <= f.widthMax) &&
+          (!f.heightMin || h >= f.heightMin) && (!f.heightMax || h <= f.heightMax);
+        const okPreset = !f.dimPreset.length || f.dimPreset.some((p) => this.matchDimPreset(w, h, p));
+        groups.push(okRange && okPreset);
+      }
+    }
+
+    return groups;
+  }
+
+  /** 尺寸快捷选项匹配：宽高不分横竖（横屏/竖屏都能命中），分辨率档位按「短边」分桶 */
+  private matchDimPreset(w: number, h: number, preset: string): boolean {
+    if (!w || !h) return false;
+    const short = Math.min(w, h);
+    const long = Math.max(w, h);
+    const ratio = long / Math.max(1, short);
+    switch (preset) {
+      case 'landscape':
+        return w > h;
+      case 'portrait':
+        return h > w;
+      case 'square':
+        return Math.abs(w - h) <= Math.max(2, Math.round(long * 0.01));
+      case 'ratio-4-3':
+        return Math.abs(ratio - 4 / 3) <= 0.06;
+      case 'ratio-16-9':
+        return Math.abs(ratio - 16 / 9) <= 0.08;
+      case '360p':
+        return short >= 300 && short < 420;
+      case '480p':
+        return short >= 420 && short < 600;
+      case '720p':
+        return short >= 600 && short < 840;
+      case '1080p':
+        return short >= 840 && short < 1300;
+      case '2k':
+        return short >= 1300 && short < 1800;
+      case '4k':
+        return short >= 1800 && short < 2600;
+      case '8k':
+        return short >= 4000;
+      default:
+        return false;
+    }
+  }
+
   @Get('list')
   async list(@Req() req: Request, @Query() q: Record<string, string>) {
     // 「系统状态」页以 action=info 复用本路由，返回索引统计而非文件列表（仅管理员）
@@ -919,44 +1101,49 @@ export class ManageController {
     const heightMin = Math.max(0, Number(q.heightMin) || 0);
     const heightMax = Math.max(0, Number(q.heightMax) || 0);
 
-    /** 尺寸快捷选项匹配：宽高不分横竖（横屏/竖屏都能命中），分辨率档位按「短边」分桶 */
-    const matchDimPreset = (w: number, h: number, preset: string): boolean => {
-      if (!w || !h) return false;
-      const short = Math.min(w, h);
-      const long = Math.max(w, h);
-      const ratio = long / Math.max(1, short);
-      switch (preset) {
-        case 'landscape':
-          return w > h;
-        case 'portrait':
-          return h > w;
-        case 'square':
-          return Math.abs(w - h) <= Math.max(2, Math.round(long * 0.01));
-        case 'ratio-4-3':
-          return Math.abs(ratio - 4 / 3) <= 0.06;
-        case 'ratio-16-9':
-          return Math.abs(ratio - 16 / 9) <= 0.08;
-        case '360p':
-          return short >= 300 && short < 420;
-        case '480p':
-          return short >= 420 && short < 600;
-        case '720p':
-          return short >= 600 && short < 840;
-        case '1080p':
-          return short >= 840 && short < 1300;
-        case '2k':
-          return short >= 1300 && short < 1800;
-        case '4k':
-          return short >= 1800 && short < 2600;
-        case '8k':
-          return short >= 4000;
-        default:
-          return false;
-      }
+    /*
+     * v2.9.0：「筛选」弹窗新增两项能力
+     *   · matchMode = all（同时，默认）/ any（任意）—— 决定各「分区」之间如何组合，
+     *     分区内部仍是「或」（同一分区勾多个值命中任一即可）；
+     *   · 访问状态含 deleted 时，把回收站记录（status='deleted'）一起取出来，
+     *     供「已删除」选项筛选回收站文件。
+     */
+    const matchMode = String(q.matchMode || '').toLowerCase() === 'any' ? 'any' : 'all';
+    const fUsers = splitCsv(q.filterUsers);
+    const withDeleted = fAccess.includes('deleted');
+    const filterOpts = {
+      hasTags,
+      filterTags,
+      tagMode,
+      listType: fListType,
+      label: fLabel,
+      fileType: fFileType,
+      channel: fChannel,
+      channelName: fChannelName,
+      uploadSource: fUploadSource,
+      backup: fBackup,
+      redirect: fRedirect,
+      access: fAccess,
+      validity: fValidity,
+      nameChanged: fNameChanged,
+      users: fUsers,
+      fromMs,
+      toMs,
+      sizeMin,
+      sizeMax,
+      sizeMode,
+      dimPreset: fDimPreset,
+      widthMin,
+      widthMax,
+      heightMin,
+      heightMax,
     };
 
     const rows = await prisma.fileRecord.findMany({
-      where: { status: 'active', ...(ownerFilter ? { uploader: ownerFilter } : {}) },
+      where: {
+        status: withDeleted ? { in: ['active', 'deleted'] } : 'active',
+        ...(ownerFilter ? { uploader: ownerFilter } : {}),
+      },
       include: {
         copies: { include: { channel: true } },
         tags: { include: { tag: true } },
@@ -969,6 +1156,7 @@ export class ManageController {
     for (const d of await this.extraFolders(req)) allFolders.add(d);
 
     const matched = rows.filter((r) => {
+      /* ---------- 搜索 / 标签搜索：不属于弹窗筛选，恒为 AND ---------- */
       if (search) {
         const tagNames = r.tags.map((t) => t.tag.name).join(',').toLowerCase();
         const mime = (r.mime || '').toLowerCase();
@@ -999,106 +1187,13 @@ export class ManageController {
                         (r.note || '').toLowerCase().includes(search);
         if (!hit) return false;
       }
-      const tagNames = r.tags.map((t) => t.tag.name);
-      if (hasTags === 'yes' && tagNames.length === 0) return false;
-      if (hasTags === 'no' && tagNames.length > 0) return false;
-      // 搜索 #tag：必须全部命中
-      if (includeTags.length && !includeTags.every((t) => tagNames.includes(t))) return false;
-      // 标签筛选弹窗：按「或 / 且」判定
-      if (filterTags.length) {
-        const hit =
-          tagMode === 'or'
-            ? filterTags.some((t) => tagNames.includes(t))
-            : filterTags.every((t) => tagNames.includes(t));
-        if (!hit) return false;
-      }
-      if (excludeTags.length && excludeTags.some((t) => tagNames.includes(t))) return false;
+      if (includeTags.length && !includeTags.every((t) => r.tags.map((x) => x.tag.name).includes(t))) return false;
+      if (excludeTags.length && excludeTags.some((t) => r.tags.map((x) => x.tag.name).includes(t))) return false;
 
-      // 重定向筛选：redirect=yes 只看设置了重定向地址的文件
-      if (fRedirect.length) {
-        const has = !!r.redirectUrl;
-        const ok = (fRedirect.includes('yes') && has) || (fRedirect.includes('no') && !has);
-        if (!ok) return false;
-      }
-
-      const metas = safeParse(r.metas);
-      const listType = (metas.ListType as string) || 'None';
-      if (fListType.length && !fListType.includes(listType)) return false;
-      if (fLabel.length && !fLabel.includes((metas.Label as string) || 'None')) return false;
-      if (fFileType.length && !fFileType.includes(fileTypeOf(r.mime))) return false;
-
-      const primary = r.copies.find((c) => c.channel?.isMain) || r.copies[0];
-      const chLabel = primary?.channel
-        ? CHANNEL_LABEL[primary.channel.type] || primary.channel.type
-        : '';
-      if (fChannel.length && !fChannel.includes(chLabel)) return false;
-      if (fChannelName.length && !fChannelName.includes(primary?.channel?.name || '')) return false;
-      // v2.7.0：上传渠道筛选（rec.uploadSource 经 normalize 兜底为 'Default'）
-      if (fUploadSource.length && !fUploadSource.includes(normalizeUploadSource((r as unknown as { uploadSource?: string }).uploadSource))) return false;
-
-      // 备份状态筛选：已备份 = 除主副本外还有其它 active 副本
-      if (fBackup.length) {
-        const hasBackup = r.copies.some((c) => c !== primary && c.status === 'active' && (c.remoteKey || c.remoteUrl));
-        const ok =
-          (fBackup.includes('backedup') && hasBackup) ||
-          (fBackup.includes('unbackedup') && !hasBackup);
-        if (!ok) return false;
-      }
-
-      if (fAccess.length) {
-        const ok =
-          (fAccess.includes('normal') && listType === 'None') ||
-          (fAccess.includes('block') && listType === 'Block') ||
-          (fAccess.includes('white') && listType === 'White');
-        if (!ok) return false;
-      }
-
-      // v2.8.7：日期范围（按上传日期 createdAt；两端含当天）
-      if (fromMs || toMs) {
-        const t = r.createdAt ? new Date(r.createdAt).getTime() : 0;
-        if (!t) return false;
-        if (fromMs && t < fromMs) return false;
-        if (toMs && t > toMs) return false;
-      }
-      // v2.8.7：大小范围（字节；0 = 不限）。v2.8.9 支持「原始大小 / 实际大小」两种口径
-      const cmpSize =
-        sizeMode === 'original'
-          ? Number((r as unknown as { originalSize?: number }).originalSize) || r.size || 0
-          : r.size || 0;
-      if (sizeMin > 0 && cmpSize < sizeMin) return false;
-      if (sizeMax > 0 && cmpSize > sizeMax) return false;
-
-      // v2.8.9：有效期筛选（限时未过期 / 已过期 / 永久有效）
-      if (fValidity.length) {
-        const exp = (r as unknown as { linkExpiresAt?: Date | null }).linkExpiresAt;
-        const expMs = exp ? new Date(exp).getTime() : 0;
-        const now = Date.now();
-        const ok =
-          (fValidity.includes('limited') && expMs > now) ||
-          (fValidity.includes('expired') && expMs > 0 && expMs <= now) ||
-          (fValidity.includes('permanent') && !expMs);
-        if (!ok) return false;
-      }
-
-      // v2.8.9：名称状态（prevName 非空 = 改过名，firstName 只在从未改名时等于 name）
-      if (fNameChanged.length) {
-        const renamed = !!String((r as unknown as { prevName?: string }).prevName || '');
-        const ok = (fNameChanged.includes('changed') && renamed) || (fNameChanged.includes('unchanged') && !renamed);
-        if (!ok) return false;
-      }
-
-      // v2.8.9：尺寸筛选（快捷档位 + 宽高范围；没有尺寸记录的文件不参与尺寸条件）
-      if (fDimPreset.length || widthMin || widthMax || heightMin || heightMax) {
-        const w = Number((metas.Width as number) || 0);
-        const h = Number((metas.Height as number) || 0);
-        if (!w || !h) return false;
-        if (widthMin && w < widthMin) return false;
-        if (widthMax && w > widthMax) return false;
-        if (heightMin && h < heightMin) return false;
-        if (heightMax && h > heightMax) return false;
-        if (fDimPreset.length && !fDimPreset.some((p) => matchDimPreset(w, h, p))) return false;
-      }
-      return true;
+      /* ---------- 弹窗筛选：分区求值 → 按 all / any 组合 ---------- */
+      const groups = this.filterGroups(r as unknown as Record<string, unknown>, filterOpts);
+      if (!groups.length) return true;
+      return matchMode === 'any' ? groups.some(Boolean) : groups.every(Boolean);
     });
 
     // 目录归属：非递归时只保留当前目录的直接文件，并列出其直接子目录
@@ -1479,35 +1574,62 @@ export class ManageController {
     const owner = this.admin(req) ? '' : currentSession(req)?.user || '';
     const rows = await prisma.fileRecord.findMany({
       where: { status: 'deleted', ...(owner ? { uploader: owner } : {}) },
-      // v2.8.7b：附带渠道信息 —— channelName 筛选需要按渠道「名称」匹配（此前误用 channelId 匹配导致恒不命中）
-      include: { copies: { select: { channelId: true, isPrimary: true, status: true, channel: { select: { name: true } } } } },
+      /*
+       * v2.9.0：回收站与普通列表共用同一套筛选求值（filterGroups）——
+       * 需要 copies.channel（渠道类型/名称）与 tags（标签页筛选），这里一并取回。
+       */
+      include: {
+        copies: { include: { channel: true } },
+        tags: { include: { tag: true } },
+      },
       orderBy: { deletedAt: 'desc' },
       take: 500,
     });
 
     /*
-     * v2.8.7：回收站同样支持联合筛选 —— 与普通列表同一套参数：
-     * search / fileType / uploadSource / channelName / 日期(dateFrom/dateTo/tz) / 大小(sizeMin/sizeMax)。
-     * 搜索、筛选、用户归属、回收站状态全部一起生效（交集）。
+     * 回收站筛选：与普通列表同一套参数（搜索 / 常规 / 标签 / 日期 / 大小 / 尺寸 / 用户），
+     * 外加 v2.9.0 的 matchMode（同时 / 任意）。
      */
     const search = (q.search || '').trim().toLowerCase();
-    const fFileType = splitCsv(q.fileType);
-    const fUploadSource = splitCsv(q.uploadSource).map((s) => normalizeUploadSource(s));
-    const fChannelName = splitCsv(q.channelName);
+    const matchMode = String(q.matchMode || '').toLowerCase() === 'any' ? 'any' : 'all';
     const dateFrom = /^\d{4}-\d{2}-\d{2}$/.test(String(q.dateFrom || '')) ? String(q.dateFrom) : '';
     const dateTo = /^\d{4}-\d{2}-\d{2}$/.test(String(q.dateTo || '')) ? String(q.dateTo) : '';
     const tzMin = Number(q.tz);
     const tzOffset = Number.isFinite(tzMin) ? Math.max(-840, Math.min(840, tzMin)) : 0;
     const dayStartMs = (date: string) => {
       const [y, m, d] = date.split('-').map(Number);
-      // getTimezoneOffset() 为「本地 = UTC - offset」：东八区返回 -480，
-      // 本地当天 00:00 的真实时刻 = Date.UTC(...) + offset 分钟
       return Date.UTC(y, m - 1, d) + tzOffset * 60_000;
     };
     const fromMs = dateFrom ? dayStartMs(dateFrom) : 0;
     const toMs = dateTo ? dayStartMs(dateTo) + 86_400_000 - 1 : 0;
-    const sizeMin = Math.max(0, Number(q.sizeMin) || 0);
-    const sizeMax = Math.max(0, Number(q.sizeMax) || 0);
+
+    const filterOpts = {
+      hasTags: String(q.hasTags || '').toLowerCase(),
+      filterTags: splitCsv(q.filterTags),
+      tagMode: String(q.tagMode || 'and').toLowerCase() === 'or' ? 'or' : 'and',
+      listType: splitCsv(q.listType),
+      label: splitCsv(q.label),
+      fileType: splitCsv(q.fileType),
+      channel: splitCsv(q.channel),
+      channelName: splitCsv(q.channelName),
+      uploadSource: splitCsv(q.uploadSource).map((v) => normalizeUploadSource(v)),
+      backup: splitCsv(q.backup),
+      redirect: splitCsv(q.redirect),
+      access: splitCsv(q.accessStatus),
+      validity: splitCsv(q.validity).map((v) => v.toLowerCase()),
+      nameChanged: splitCsv(q.nameChanged).map((v) => v.toLowerCase()),
+      users: splitCsv(q.filterUsers),
+      fromMs,
+      toMs,
+      sizeMin: Math.max(0, Number(q.sizeMin) || 0),
+      sizeMax: Math.max(0, Number(q.sizeMax) || 0),
+      sizeMode: String(q.sizeMode || 'actual').toLowerCase() === 'original' ? 'original' : 'actual',
+      dimPreset: splitCsv(q.dimPreset).map((v) => v.toLowerCase()),
+      widthMin: Math.max(0, Number(q.widthMin) || 0),
+      widthMax: Math.max(0, Number(q.widthMax) || 0),
+      heightMin: Math.max(0, Number(q.heightMin) || 0),
+      heightMax: Math.max(0, Number(q.heightMax) || 0),
+    };
 
     const filtered = rows.filter((r) => {
       if (search) {
@@ -1519,23 +1641,9 @@ export class ManageController {
           (r.md5 || '').toLowerCase().includes(search);
         if (!hit) return false;
       }
-      if (fFileType.length && !fFileType.includes(fileTypeOf(r.mime))) return false;
-      if (fUploadSource.length && !fUploadSource.includes(normalizeUploadSource(r.uploadSource))) return false;
-      if (fChannelName.length) {
-        // v2.8.7b：按渠道「名称」匹配（与 /api/manage/list 同口径）；此前用 channelId 匹配导致筛选恒为空
-        const primary = r.copies.find((c) => c.isPrimary) || r.copies[0];
-        const primaryName = String(primary?.channel?.name || '');
-        if (!fChannelName.includes(primaryName)) return false;
-      }
-      if (fromMs || toMs) {
-        const t = r.createdAt ? new Date(r.createdAt).getTime() : 0;
-        if (!t) return false;
-        if (fromMs && t < fromMs) return false;
-        if (toMs && t > toMs) return false;
-      }
-      if (sizeMin > 0 && (r.size || 0) < sizeMin) return false;
-      if (sizeMax > 0 && (r.size || 0) > sizeMax) return false;
-      return true;
+      const groups = this.filterGroups(r as unknown as Record<string, unknown>, filterOpts);
+      if (!groups.length) return true;
+      return matchMode === 'any' ? groups.some(Boolean) : groups.every(Boolean);
     });
 
     const channelIds = Array.from(new Set(filtered.flatMap((r) => r.copies.map((c) => c.channelId))));
@@ -1664,6 +1772,15 @@ export class ManageController {
           };
           infoCache.set(ch.id, info);
         }
+        /*
+         * v2.9.0：登记文件（remoteUrl 为空、remoteKey 存的是渠道内路径）——
+         * 用渠道「当前」的实际加载域名拼路径。这里是详情页展示用的源链接，
+         * 优先进公开访问域名（内网地址在浏览器里打不开），见 recordLoadOrigin。
+         */
+        if (!copy.remoteUrl && copy.remoteKey && hasRecordDomains(info.config)) {
+          const url = joinRecordUrl(recordLoadOrigin(info.config, false), copy.remoteKey);
+          if (url) return url;
+        }
         return createAdapter(info).buildDirectUrl(toCopyInfo(copy), info);
       } catch {
         return null;
@@ -1686,26 +1803,19 @@ export class ManageController {
   }
 
   /**
-   * v2.8.9：「生成名称」—— 按系统默认命名规则（与上传一致的 renderFileName）
-   * 生成一个新 File_ID 供重命名弹窗预填，只生成不写库。
-   * 保留当前文件的扩展名；带目录的 File_ID 只生成文件名段（目录保留）。
+   * v2.9.0：「生成名称」—— 生成 48 位「大小写字母 + 数字」随机 File_ID，
+   * 并与库中已有的 name 去重；只生成不写库，点「确认重命名」才落库。
    */
   @Get('rename/generate')
   async generateRenameName(@Req() req: Request) {
     if (!(await this.userPerm(req, 'edit'))) throw new ForbiddenException('没有编辑权限');
-    const raw = String(req.query.name || '').trim();
-    const dot = raw.lastIndexOf('.');
-    const ext = dot > 0 ? raw.slice(dot + 1).toLowerCase() : '';
-    const stem = dot > 0 ? raw.slice(0, dot) : raw;
-    const dir = stem.includes('/') ? `${stem.split('/').slice(0, -1).join('/')}/` : '';
-    const generated = renderFileName('', {
-      originalName: raw,
-      stem: stem.split('/').pop() || stem,
-      ext,
-      md5: '',
-      timestamp: Date.now(),
-    });
-    return { success: true, name: `${dir}${generated}${ext ? `.${ext}` : ''}` };
+    for (let i = 0; i < 30; i += 1) {
+      const candidate = CryptoService.fileId(48);
+      const dup = await prisma.fileRecord.findFirst({ where: { name: candidate }, select: { id: true } });
+      if (!dup) return { success: true, name: candidate };
+    }
+    appLog.warn('file', '生成重命名候选失败：连续 30 次与库中已有名称重复', '');
+    throw new BadRequestException('生成名称失败，请重试');
   }
 
   @Patch('rename/*')
@@ -1741,13 +1851,16 @@ export class ManageController {
     const oldRedirect = String((rec as unknown as { redirectUrl?: string }).redirectUrl || '');
     const newRedirect = oldRedirect && oldRedirect.includes(rec.name) ? oldRedirect.split(rec.name).join(newId) : oldRedirect;
 
-    // File_ID 里的目录层级同步到 folder（后台列表按目录归类）
-    const dir = newId.includes('/') ? newId.split('/').slice(0, -1).join('/') : '';
+    /*
+     * v2.9.0：重命名**只改 name 一个字段**。
+     * 之前这里会把「新名字里的目录层级」写回 folder —— 生成的是 48 位随机串（不含目录），
+     * 于是 folder 被清空、文件被自动挪到根目录，看起来像「分类被清除了」。
+     * 文件的分类归属与 name 无关，必须保持原值。
+     */
     const updated = await prisma.fileRecord.update({
       where: { id: rec.id },
       data: {
         name: newId,
-        folder: dir,
         ...(newRedirect !== oldRedirect ? { redirectUrl: newRedirect } : {}),
         // 重命名历史（v2.3.0）：把「改之前叫什么」记到 prevName，
         // firstName 只在第一次重命名时补写（老数据可能为空）。

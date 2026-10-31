@@ -31,6 +31,8 @@ import { faCodeBranch } from '@fortawesome/free-solid-svg-icons/faCodeBranch';
 import { faCog } from '@fortawesome/free-solid-svg-icons/faCog';
 import { faCogs } from '@fortawesome/free-solid-svg-icons/faCogs';
 import { faComments } from '@fortawesome/free-solid-svg-icons/faComments';
+import { faPause } from '@fortawesome/free-solid-svg-icons/faPause';
+import { faPlay } from '@fortawesome/free-solid-svg-icons/faPlay';
 import { faCompressAlt } from '@fortawesome/free-solid-svg-icons/faCompressAlt';
 import { faExpandAlt } from '@fortawesome/free-solid-svg-icons/faExpandAlt';
 import { faCopy } from '@fortawesome/free-solid-svg-icons/faCopy';
@@ -141,6 +143,8 @@ export default [
     faComments,
     faCompressAlt,
     faExpandAlt,
+    faPause,
+    faPlay,
     faCopy,
     faCut,
     faDatabase,

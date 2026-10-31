@@ -253,6 +253,15 @@ class FileManager {
             params += `&filterTags=${encodeURIComponent(filters.tagNames.join(','))}`;
             params += `&tagMode=${filters.tagMode === 'or' ? 'or' : 'and'}`;
         }
+        /*
+         * v2.9.0：用户页筛选（多选，命中任一即可）。
+         * 与「右上用户下拉」的 &user=（单选，归属过滤）是两个不同参数，互不覆盖。
+         */
+        if (filters.userNames && filters.userNames.length > 0) {
+            params += `&filterUsers=${encodeURIComponent(filters.userNames.join(','))}`;
+        }
+        // v2.9.0：全局条件组合方式（all 同时 / any 任意）—— 默认 all 不传
+        if (filters.matchMode === 'any') params += '&matchMode=any';
         // v2.8.7：日期范围筛选（按上传日期；YYYY-MM-DD，两端都含当天）
         if (filters.dateFrom) params += `&dateFrom=${encodeURIComponent(filters.dateFrom)}`;
         if (filters.dateTo) params += `&dateTo=${encodeURIComponent(filters.dateTo)}`;

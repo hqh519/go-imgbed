@@ -358,7 +358,8 @@ export class ManageCompatController {
       orderBy: { name: 'asc' },
     });
     return {
-      tags: rows.map((t) => ({ name: t.name, count: t._count?.files || 0 })),
+      // v2.9.0：附带 createdAt —— 筛选弹窗「标签」页默认按「最近创建」倒序取前 30 个
+      tags: rows.map((t) => ({ name: t.name, count: t._count?.files || 0, createdAt: t.createdAt })),
     };
   }
 

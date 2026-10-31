@@ -21,7 +21,8 @@
                 @change="handleSelectChange"
             />
         </div>
-        <!-- 2. 缩略图（v2.8.6b：点击打开文件详情页；预览改由渠道行小眼睛触发） -->
+        <!-- 2. 缩略图（v2.9.0：点击打开媒体预览 —— 图片灯箱 / 视频 / 音频 / 通用弹窗；
+             文件夹仍为进入目录；预览小眼睛保留，悬停/长按仍是浮层快看） -->
         <div
             class="list-col list-col-preview"
             @click="handlePreviewClick"
@@ -39,8 +40,8 @@
                 <font-awesome-icon icon="file" class="list-file-icon"/>
             </template>
         </div>
-        <!-- 3. 文件名（上行）+ 渠道简称 / 文件夹统计（下行） -->
-        <div class="list-col list-col-name" @click="handlePreviewClick">
+        <!-- 3. 文件名（上行）+ 渠道简称 / 文件夹统计（下行）—— 点击打开文件详情页（行为不变） -->
+        <div class="list-col list-col-name" @click="handleNameClick">
             <div class="name-line" :title="displayName">
                 <span class="filename-start">{{ fileNameStart }}</span><span class="filename-end">{{ fileNameEnd }}</span>
             </div>
@@ -149,7 +150,7 @@ export default {
         selected: { type: Boolean, default: false },
         fileLink: { type: String, default: '' }
     },
-    emits: ['update:selected', 'enter', 'detail', 'copy', 'folderCopy', 'move', 'delete', 'download', 'openLink', 'touchstart', 'touchend', 'touchmove', 'preview', 'previewMove', 'previewEnd'],
+    emits: ['update:selected', 'enter', 'detail', 'previewMedia', 'copy', 'folderCopy', 'move', 'delete', 'download', 'openLink', 'touchstart', 'touchend', 'touchmove', 'preview', 'previewMove', 'previewEnd'],
     data() {
         return {
             localSelected: this.selected,
@@ -353,7 +354,20 @@ export default {
             this.localSelected = value;
             this.$emit('update:selected', value);
         },
+        /**
+         * 缩略图点击（v2.9.0）
+         *   文件夹 → 进入目录
+         *   文件   → 打开媒体预览浮层（图片灯箱 / 视频播放器 / 音频播放器 / 通用弹窗）
+         * 文件名点击仍走 handleNameClick → 文件详情页。
+         */
         handlePreviewClick() {
+            if (this.isFolder) {
+                this.$emit('enter');
+            } else {
+                this.$emit('previewMedia', this.item);
+            }
+        },
+        handleNameClick() {
             if (this.isFolder) {
                 this.$emit('enter');
             } else {

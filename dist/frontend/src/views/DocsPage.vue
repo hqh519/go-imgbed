@@ -197,7 +197,20 @@ const ZH = {
         { t: '预览小眼睛（v2.8.6）', d: '图片 / 视频卡片第三行左侧的小眼睛：PC 鼠标悬停即弹出大图预览，移动端长按小眼睛弹出（居中显示，松手收起）；列表视图在移动端长按缩略图同样弹出预览。' },
         { t: '回收站（v2.8.6）', d: '回收站顶部提示条明确「这里的文件可进一步恢复或彻底删除(不可逆)」，并以醒目底色标出。' },
         { t: '文件名显示（v2.8.6）', d: '卡片 / 列表 / 历史记录 / 公开浏览统一「开头…结尾」中间省略：任何宽度下都保留头部与尾部（含扩展名）。' },
-        { t: '视图与批量操作', d: '卡片 / 列表两种视图；批量复制链接、下载（打包 zip）、移动、打标签、加黑/白名单、删除，以及一键备份所选。' }
+        { t: '视图与批量操作', d: '卡片 / 列表两种视图；批量复制链接、下载（打包 zip）、移动、打标签、加黑/白名单、删除，以及一键备份所选。' },
+        { t: '点击动作（v2.9.0 重做）', d: '卡片封面 / 列表缩略图 → 打开媒体预览（图片灯箱 / 视频播放器 / 音频播放器 / 其它类型通用弹窗）；文件名 → 文件详情页（行为不变）。悬停小眼睛仍保留「浮层快看」。' },
+        { t: '图片灯箱（v2.9.0）', d: '全屏展示，背景为灰系偏暗半透明 + 轻微模糊。左上是文件名与大小；顶部四个按钮：幻灯片播放（可展开 1 / 2 / 3 / 5 / 8 秒每张）、实际大小 / 适应窗口切换、关闭；底部是缩略图条，点缩略图直达该图；左右两侧圆形按钮切换，键盘 ← → 翻页、空格启停幻灯片、Esc 关闭。点图片本身也能在「实际大小 / 适应窗口」之间切换。' },
+        { t: '视频播放器（v2.9.0）', d: '全屏播放，左上角文件名与大小、右上角关闭，右下角「更多设置」：播放速度 0.5× ~ 2×，播放模式为单片循环 / 随机播放 / 顺序播放（顺序与随机在「当前页视频」范围内轮转）。' },
+        { t: '音频播放器（v2.9.0）', d: '把当前页所有音频汇集为一个列表，点任意一条即播放，播完自动接下一首，最后一条播完停止；列表显示序号、文件名与大小。' },
+        { t: '其它类型通用弹窗（v2.9.0）', d: '非图片 / 视频 / 音频的文件，弹窗显示类型图标、文件名、大小与上传用户，并提供「复制链接 / 打开链接 / 查看详情」三个动作。' },
+        { t: '控件自动隐藏（v2.9.0）', d: '预览浮层里 2 秒无操作后顶栏、切换按钮、缩略图条自动淡出（鼠标移动或触摸立刻恢复）；「更多设置」展开时不隐藏，避免点不到。' },
+        { t: '筛选：已删除（v2.9.0）', d: '「常规」页的访问状态新增「已删除」，用于在普通列表里筛出待清理的软删文件；进入回收站时该条件会自动从筛选里剔除，避免互相冲突。' },
+        { t: '筛选：用户页与加载更多（v2.9.0）', d: '筛选弹窗新增「用户」页（替代原来右上角的用户下拉），默认加载最近创建的 30 个用户，超过显示「加载更多」；「标签」页同样改为最近 30 个 + 加载更多。两个列表都按创建时间倒序。' },
+        { t: '同时 / 任意 与 或 / 且（v2.9.0）', d: '选中 2 个及以上筛选条件时，footer 左侧「清除筛选」右边会出现全局「同时 / 任意」开关，决定不同分区之间是全部命中还是任一命中。标签页里选 2 个以上标签时，标签之间另有「或 / 且」开关，只作用于标签名，不影响全局开关。' },
+        { t: '登记文件（v2.9.0 更新）', d: '①「文件分类」留空时自动归入「登记文件/当前年/当前月」；②在后台文件管理页点「登记文件」，会把当前所在目录自动填进分类；③前台登记成功后，首页文件列表立即出现这条记录（带服务端签发的外链），无需刷新；④外链按「内网通信域名 → 公开访问域名 → 上传接口地址」顺序匹配源地址，命中后剔除该段、剩下的作为存储路径，三段都匹配不上则登记失败并给出原因。' },
+        { t: '重命名（v2.9.0 修复）', d: '详情页的重命名输入框已改为只读：只能点按钮生成 48 位大小写 + 数字随机 File_ID，且会与库内已有名称比对去重，不能手动输入。重命名现在只改文件的显示名称（File_ID），不会再清空分类、也不会把文件移到根目录。' },
+        { t: '顶栏按钮统一（v2.9.0）', d: '「刷新 / 回收站 / 声音」改为与「筛选」同款样式（透明底、32×32、图标主题色）；「新建目录 / 登记文件 / 历史记录」改为与「排序」同款配色；手机上这几个按钮的内外边距一并收窄并整体靠右。' },
+        { t: '搜索范围入口（v2.9.0）', d: '原来搜索图标下拉里的「展示文件夹 / 全部展开」已迁移到卡片 / 列表视图切换按钮后面，改为两个独立图标按钮（文件夹树 / 列表），当前生效的一个高亮。' }
       ]
     },
     {
@@ -244,7 +257,9 @@ const ZH = {
         { t: 'frontend/src/views/', d: '页面：UploadHome（上传页）、AdminDashBoard（文件管理）、CustomerConfig（用户管理）、SystemConfig（系统管理）、HistoryPage（历史记录）、Login / SuperAdmin、PublicBrowse（公开画廊）、DocsPage（本文档）。' },
         { t: 'frontend/src/components/upload/', d: '上传页组件：UploadForm（上传逻辑与文件列表）、UploadFileItem、UploadSettingsDialog（上传设置）。' },
         { t: 'frontend/src/components/config/', d: '系统管理各分区：SysCogStatus（系统状态）、SysCogUpload（存储渠道）、SysCogSecurity（安全设置 / API Token）、SysCogLog（系统日志）、SysCogOthers（其他设置，含对外 WebDAV）、SysCogPage、SysCogAI。' },
-        { t: 'frontend/src/utils/', d: '工具：fileManager（列表请求参数拼装）、clipboard（剪贴板兼容层）、fetchWithAuth（带会话的请求）、upload/urlBuilder（四种外链格式生成）。' }
+        { t: 'frontend/src/utils/', d: '工具：fileManager（列表请求参数拼装）、clipboard（剪贴板兼容层）、fetchWithAuth（带会话的请求）、upload/urlBuilder（四种外链格式生成）。' },
+        { t: 'backend/src/common/record-link.ts（v2.9.0）', d: '登记文件的外链规则：recordDomainCandidates 收集渠道的三段域名（内网通信域名 / 公开访问域名 / 接口地址），matchRecordSource 按内容段匹配并剔除命中段得到路径，recordLoadOrigin 决定读取时实际用哪个域名（内网优先，缺省回落到公开 / 接口），joinRecordUrl 拼最终链接。' },
+        { t: 'frontend/src/components/dashboard/MediaPreviewOverlay.vue（v2.9.0）', d: '媒体预览浮层：图片灯箱（幻灯片 / 实际大小 / 缩略图条）、视频播放器（速度 / 单片循环·随机·顺序）、音频播放器（当前页音频列表点播）、其它类型通用弹窗；控件 2 秒自动隐藏。FileCard / FileListItem 的缩略图点击只发 previewMedia 事件，不自己拼链接。' }
       ]
     },
     {
@@ -310,7 +325,9 @@ const ZH = {
         { t: '粘贴 URL 提示「请求失败」？', d: '确认该 URL 可被服务器访问（不要指向需要登录的私有地址）；本站对 localhost 与内网地址是放行的，但仍需目标服务能正常响应。' },
         { t: '外链 404？', d: '检查文件是否被删除、是否属于黑名单，以及渠道配置（域名、桶权限、WebDAV 路径）是否正确。' },
         { t: '带扩展名访问会不会出问题？', d: '不会。扩展名只用于直观展示类型；代理、302、访问源切换都按 File_ID 处理。' },
-        { t: '上传很慢？', d: '主渠道是同步上传；可把主渠道换成带宽更好的渠道，或用备份渠道分担。大文件建议使用对象存储渠道（COS / MinIO / R2 / S3）。' }
+        { t: '上传很慢？', d: '主渠道是同步上传；可把主渠道换成带宽更好的渠道，或用备份渠道分担。大文件建议使用对象存储渠道（COS / MinIO / R2 / S3）。' },
+        { t: '点缩略图为什么不是打开详情页了？', d: 'v2.9.0 起缩略图 / 封面用于「看内容」（灯箱 / 播放器），文件名才是「管文件」（详情页）。想改名、改标签、看链接，请点文件名。' },
+        { t: '登记文件提示「源地址不属于存储渠道」？', d: '说明这条地址里找不到所选渠道配置的任何一个域名。请确认：①渠道选对了；②源地址确实带着该渠道的「内网通信域名 / 公开访问域名 / 上传接口地址」之一（可以带端口与路径，但主机名必须一致）。三段都对不上时系统不会建记录 —— 因为建了也加载不出来。' }
       ]
     }
   ]
@@ -450,7 +467,20 @@ const EN = {
         { t: 'Preview eye (v2.8.6)', d: 'The eye icon on the left of a card\'s third row: hover on PC to preview the full image/video; long-press on mobile to preview (centered, release to close). In list view, long-press the thumbnail on mobile for the same preview.' },
         { t: 'Trash (v2.8.6)', d: 'The trash banner clearly states files can be restored or permanently deleted (irreversible), highlighted with a stronger background.' },
         { t: 'File names (v2.8.6)', d: 'Cards / list / history / public pages all use the same middle-ellipsis: head and tail (with extension) are always kept.' },
-        { t: 'Views & batch actions', d: 'Card / list views; batch copy links, download as zip, move, tag, block/whitelist, delete, and backup selected.' }
+        { t: 'Views & batch actions', d: 'Card / list views; batch copy links, download as zip, move, tag, block/whitelist, delete, and backup selected.' },
+        { t: 'Click actions (v2.9.0)', d: 'Card cover / list thumbnail opens the media viewer (image lightbox, video player, audio player, or a generic dialog for other types); the file name still opens the file detail page. The hover-preview eye is unchanged.' },
+        { t: 'Image lightbox (v2.9.0)', d: 'Full screen over a dim, slightly blurred grey backdrop. Top-left shows the file name and size; the top bar has slideshow (1 / 2 / 3 / 5 / 8 seconds per slide), actual size / fit-to-window and close; the bottom strip is a thumbnail reel you can click through. Side arrows or ← → switch, Space toggles the slideshow, Esc closes. Clicking the image also toggles actual size / fit.' },
+        { t: 'Video player (v2.9.0)', d: 'Full-screen playback with the name at top-left, close at top-right, and "More settings" at bottom-right: playback speed 0.5×–2× and play mode (loop single / shuffle / sequential, rotating through the videos on the current page).' },
+        { t: 'Audio player (v2.9.0)', d: 'Collects every audio file on the current page into one playlist; click any row to play, it advances automatically and stops after the last one. Rows show the index, name and size.' },
+        { t: 'Generic dialog (v2.9.0)', d: 'For files that are not image / video / audio, the dialog shows a type icon, name, size and uploader with Copy link / Open link / View details actions.' },
+        { t: 'Auto-hiding controls (v2.9.0)', d: 'After two idle seconds the top bar, arrows and thumbnail reel fade out and come back on mouse move or touch. The video settings panel stays visible while open so it can still be clicked.' },
+        { t: 'Filter: deleted (v2.9.0)', d: 'The General tab now offers "Deleted" in access status so soft-deleted files can be filtered in the normal list. Entering the trash automatically drops this condition to avoid a conflict.' },
+        { t: 'Filter: users tab & load more (v2.9.0)', d: 'A new "Users" tab replaces the old user dropdown, loading the 30 most recently created users with a "Load more" row; the Tags tab behaves the same way. Both lists are sorted newest first.' },
+        { t: 'All / Any and Or / And (v2.9.0)', d: 'With two or more conditions selected, an All / Any switch appears next to "Clear filters" in the footer and decides whether different groups must all match or any match. Inside the Tags tab, two or more selected tags get their own Or / And switch that only affects tag names and never touches the global switch.' },
+        { t: 'Registered files (v2.9.0)', d: '① An empty folder field now defaults to "Record/current year/current month"; ② opening the dialog from the admin file manager prefills the current directory; ③ after registering on the upload page the record appears in the file list immediately with its signed link, no refresh needed; ④ links are resolved by matching the source URL against internal domain → public domain → API endpoint, dropping the matched part and keeping the rest as the storage path; if none matches, registration fails with a clear reason.' },
+        { t: 'Rename (v2.9.0 fix)', d: 'The rename input is read-only: the button generates a 48-character random File_ID (upper/lower case + digits) that is checked against existing names, and typing is no longer possible. Renaming only changes the display name — it no longer clears the folder or moves the file to the root.' },
+        { t: 'Toolbar buttons (v2.9.0)', d: 'Refresh / Trash / Sound now share the Filter button style (transparent, 32×32, themed icon); New folder / Register file / History share the Sort button palette; on phones their padding and margins are tightened and the group is right-aligned.' },
+        { t: 'Search scope entry (v2.9.0)', d: 'The "show folders / expand all" items that used to hide in the search icon dropdown moved next to the card/list switch as two icon buttons (folder tree / list), with the active one highlighted.' }
       ]
     },
     {
@@ -497,7 +527,9 @@ const EN = {
         { t: 'frontend/src/views/', d: 'Pages: UploadHome, AdminDashBoard, CustomerConfig (users), SystemConfig, HistoryPage, Login / SuperAdmin, PublicBrowse, DocsPage.' },
         { t: 'frontend/src/components/upload/', d: 'Upload page components: UploadForm, UploadFileItem, UploadSettingsDialog.' },
         { t: 'frontend/src/components/config/', d: 'Settings sections: SysCogStatus, SysCogUpload (channels), SysCogSecurity (security / tokens), SysCogLog, SysCogOthers (includes WebDAV), SysCogPage, SysCogAI.' },
-        { t: 'frontend/src/utils/', d: 'Utilities: fileManager (list query params), clipboard (compatibility layer), fetchWithAuth, upload/urlBuilder (link formats).' }
+        { t: 'frontend/src/utils/', d: 'Utilities: fileManager (list query params), clipboard (compatibility layer), fetchWithAuth, upload/urlBuilder (link formats).' },
+        { t: 'backend/src/common/record-link.ts (v2.9.0)', d: 'Link rules for registered files: recordDomainCandidates collects the three channel domains (internal / public / API endpoint), matchRecordSource matches by content segment and strips it to get the path, recordLoadOrigin decides which domain is used when reading (internal first, falling back to public / endpoint), and joinRecordUrl builds the final link.' },
+        { t: 'frontend/src/components/dashboard/MediaPreviewOverlay.vue (v2.9.0)', d: 'Media viewer: image lightbox (slideshow, actual size, thumbnail reel), video player (speed, loop single / shuffle / sequential), audio playlist for the current page, and a generic dialog for other types; controls auto-hide after two seconds. FileCard / FileListItem only emit the previewMedia event and never build links themselves.' }
       ]
     },
     {
@@ -563,7 +595,9 @@ const EN = {
         { t: '"Pasted URL request failed"?', d: 'Make sure the server can reach the URL (avoid login-protected private addresses). localhost and private ranges are allowed, but the target must respond.' },
         { t: 'Link returns 404?', d: 'Check whether the file was deleted or blacklisted, and whether the channel config (domain, bucket permissions, WebDAV path) is correct.' },
         { t: 'Does the extension break anything?', d: 'No — it is purely cosmetic. Proxy, 302 and access-source switching all work off the File_ID.' },
-        { t: 'Uploads feel slow?', d: 'The main channel uploads synchronously. Prefer a faster channel, or offload via the backup channel. For large files use object storage (COS / MinIO / R2 / S3).' }
+        { t: 'Uploads feel slow?', d: 'The main channel uploads synchronously. Prefer a faster channel, or offload via the backup channel. For large files use object storage (COS / MinIO / R2 / S3).' },
+        { t: 'Why does the thumbnail no longer open the detail page?', d: 'Since v2.9.0 thumbnails and covers are for viewing (lightbox / players) while the file name is for managing (detail page). Click the name to rename, tag or copy links.' },
+        { t: 'Registration says the source URL does not belong to the channel?', d: 'None of the domains configured on that channel appear in the URL. Check that the right channel is selected and that the URL contains the channel\'s internal domain, public domain or API endpoint (ports and paths are fine, the host must match). Nothing is recorded when all three miss — the record would not be loadable anyway.' }
       ]
     }
   ]

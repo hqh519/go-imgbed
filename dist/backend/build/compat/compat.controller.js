@@ -272,7 +272,7 @@ let ManageCompatController = class ManageCompatController {
             orderBy: { name: 'asc' },
         });
         return {
-            tags: rows.map((t) => ({ name: t.name, count: t._count?.files || 0 })),
+            tags: rows.map((t) => ({ name: t.name, count: t._count?.files || 0, createdAt: t.createdAt })),
         };
     }
     async tagsApply(body) {

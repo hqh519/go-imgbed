@@ -15,6 +15,7 @@ import { AdapterError, ChannelInfo, StorageAdapter } from '../adapters/adapter.i
 import { normalizeUploadSource, fileTypeOf, channelShort } from '../common/file-view';
 import { appLog } from '../common/app-log';
 import { joinObjectKey, renderFileName, renderObjectPrefix, supportsPrefix } from '../common/path-template';
+import { matchRecordSource, recordDomainCandidates } from '../common/record-link';
 import { compressFile, compressMedia, readDimensions, readDimensionsFile } from '../common/compress';
 import { postProcessMediaFile, enqueueMediaJob, mediaQueueStats, MEDIA_MAX_SECONDS } from './media-post';
 
@@ -1900,8 +1901,14 @@ export class UploadService {
     const ch = await prisma.channel.findFirst({
       where: { OR: [{ id: channelKey }, { code: channelKey }] },
     });
-    if (!ch) return { error: '所选存储渠道不存在' };
-    if (!ch.enabled) return { error: `存储渠道「${ch.name}」已停用，请先启用或换一个渠道` };
+    if (!ch) {
+      appLog.warn('record', '登记失败：所选存储渠道不存在', `channelId=${channelKey}`, String(input.ip || ''));
+      return { error: '所选存储渠道不存在' };
+    }
+    if (!ch.enabled) {
+      appLog.warn('record', `登记失败：存储渠道「${ch.name}」已停用`, `channelId=${channelKey}`, String(input.ip || ''));
+      return { error: `存储渠道「${ch.name}」已停用，请先启用或换一个渠道` };
+    }
 
     // ---- 1) 探测类型与大小 ----
     let contentType = '';
@@ -1934,6 +1941,12 @@ export class UploadService {
       }
     }
     if (!reachable) {
+      appLog.warn(
+        'record',
+        '登记失败：源地址不可访问',
+        `源=${rawUrl} ｜ 渠道=${ch.name}`,
+        String(input.ip || ''),
+      );
       return { error: '无法访问该文件源地址（超时或被拒绝），请确认地址可公开访问' };
     }
 
@@ -2030,22 +2043,49 @@ export class UploadService {
     // ---- 3) 落库 ----
     const uploadIp = String(input.ip || '');
     const uploadAddress = await this.cachedAddress(uploadIp);
-    const folder = await this.resolveFolder(input.folder);
+    /*
+     * v2.9.0：登记文件的分类兜底 —— 留空时落到「登记文件/年/月」，
+     * 与普通上传的「年/月」区分开，便于在文件管理里单独归档。
+     */
+    const folderInput = String(input.folder || '').trim();
+    let folder: string;
+    if (folderInput) {
+      folder = await this.resolveFolder(folderInput);
+    } else {
+      const now = new Date();
+      folder = `登记文件/${now.getFullYear()}/${String(now.getMonth() + 1).padStart(2, '0')}`;
+    }
     const fileId = await this.uniqueFileId(this.makeFileId());
     const now = new Date();
     /*
-     * v2.8.9：外链签发与普通上传保持一致 —— 不把源站域名写死进副本。
-     *   · 源地址就落在该渠道的域名上（按 内网通信域名 → 公网访问域名 → 上传接口地址
-     *     的优先级逐个匹配 host，命中哪个字段就把命中字段记进 metas.SourceHostField）：
-     *       只存 object key（remoteKey），remoteUrl 留空；读取时由适配器按渠道当前配置
-     *       以同样优先级重拼直链，以后渠道换域名，登记文件的外链自动跟着变。
-     *   · 源地址是别处的文件（immich、第三方图床）：没有渠道内 key 可用，
-     *       只能保留完整地址（同时也留一份 SourceUrl 便于追溯），这类文件与渠道域名本就无关。
-     *   · 带查询串（签名链接）时按绝对地址保留，避免丢掉鉴权参数。
+     * v2.9.0：登记文件的外链规则（按需求重做）
+     *   · 提交时用源地址依次匹配渠道的三个域名：内网通信域名 → 公开访问域名 → Endpoint，
+     *     命中哪一段就把这一段从源地址里剔除，剩下的就是「路径」（remoteKey）；
+     *   · 三段都匹配不上 → 直接登记失败（说明这个地址不属于所选渠道，登记了也加载不出来）；
+     *   · remoteUrl 恒为空：读取时用渠道「当前」的实际加载域名（内网 → 公开 → Endpoint）
+     *     拼路径，渠道域名一变，所有登记文件的外链自动跟着变。
+     * 详见 common/record-link.ts。
      */
-    const hostMatch = this.matchChannelUrlField(ch, url);
-    const sameHost = !!hostMatch && !url.search;
-    const objectKey = decodeURIComponent(url.pathname.replace(/^\/+/, ''));
+    let recordCfg: Record<string, unknown> = {};
+    try {
+      recordCfg = (this.channels.decryptConfig(ch.type, ch.config) || {}) as Record<string, unknown>;
+    } catch {
+      recordCfg = {};
+    }
+    const domainHit = matchRecordSource(recordCfg, rawUrl);
+    if (!domainHit) {
+      appLog.warn(
+        'record',
+        `登记失败：源地址与渠道域名不匹配（${ch.name}）`,
+        `源=${rawUrl} ｜ 渠道域名候选=${recordDomainCandidates(recordCfg).map((c) => `${c.field}=${c.domain}`).join(' , ') || '无'}`,
+        String(input.ip || ''),
+      );
+      return {
+        error:
+          `源地址不属于存储渠道「${ch.name}」：请确认地址里包含该渠道的「内网通信域名 / 公开访问域名 / 上传接口地址」之一`,
+      };
+    }
+    const objectKey = decodeURIComponent(domainHit.rest);
     const dims = sampleBuffer
       ? await readDimensions(sampleBuffer, mime, ext)
       : { width: undefined, height: undefined };
@@ -2070,9 +2110,9 @@ export class UploadService {
           UploadAddress: uploadAddress,
           Registered: true,
           SourceUrl: rawUrl,
-          SourceOnChannel: sameHost,
-          ...(hostMatch ? { SourceHostField: hostMatch.field } : {}),
-          ...(sameHost ? {} : { SourceOrigin: url.origin }),
+          SourceOnChannel: true,
+          SourceHostField: domainHit.field,
+          RecordPath: domainHit.rest,
           ...(dims.width && dims.height ? { Width: dims.width, Height: dims.height } : {}),
         }),
         /*
@@ -2084,7 +2124,7 @@ export class UploadService {
           create: {
             channelId: ch.id,
             remoteKey: objectKey,
-            remoteUrl: sameHost ? '' : rawUrl,
+            remoteUrl: '',
             status: 'active',
             isPrimary: true,
           },
@@ -2106,7 +2146,7 @@ export class UploadService {
     appLog.info(
       'record',
       `登记文件成功：${originalName}`,
-      `渠道=${ch.name} ｜ ${size}B ｜ mime=${mime} ｜ md5=${md5 || '未获取'} ｜ ${sameHost ? '渠道内文件（外链随渠道域名）' : '外部文件（保留绝对地址）'} ｜ 源=${rawUrl}`,
+      `渠道=${ch.name} ｜ ${size}B ｜ mime=${mime} ｜ md5=${md5 || '未获取'} ｜ 匹配域名=${domainHit.field} ｜ 路径=${domainHit.rest} ｜ 分类=${folder}${folderInput ? '' : '（默认 登记文件/年/月）'} ｜ 源=${rawUrl}`,
       uploadIp,
     );
     return { id: fileId, info: { name: originalName, size, mime, md5, channel: ch.name } };

@@ -85,8 +85,18 @@
                         />
                     </el-select>
                 </div>
+                <!--
+                    v2.9.0：文件分类
+                      · 留空 → 后端落「登记文件/年/月」（upload.service.registerFile 兜底）
+                      · 后台从文件管理页打开时，父级把当前所在目录传进 initialFolder 自动填充
+                -->
                 <div class="setting-item">
-                    <span class="setting-label">{{ $t('recordFile.folder') }}</span>
+                    <span class="setting-label">
+                        {{ $t('recordFile.folder') }}
+                        <el-tooltip :content="folderDefaultHint" placement="top" raw-content>
+                            <font-awesome-icon icon="question-circle" class="inline-help-icon"/>
+                        </el-tooltip>
+                    </span>
                     <DirectorySuggestionInput
                         v-model="form.folder"
                         :placeholder="$t('recordFile.folderPlaceholder')"
@@ -147,7 +157,9 @@ export default {
     components: { DirectorySuggestionInput },
     props: {
         modelValue: { type: Boolean, default: false },
-        isAdmin: { type: Boolean, default: true }
+        isAdmin: { type: Boolean, default: true },
+        // v2.9.0：后台从文件管理页打开时，把当前所在目录代入「文件分类」
+        initialFolder: { type: String, default: '' }
     },
     emits: ['update:modelValue', 'registered'],
     data() {
@@ -180,11 +192,28 @@ export default {
                 this.$t('recordFile.autoSource'),
                 this.$t('recordFile.autoTags')
             ]
+        },
+        folderDefaultHint() {
+            // 提示里直接给出「留空会落到哪」，用当前年月算实例，避免用户猜
+            const now = new Date()
+            const month = String(now.getMonth() + 1).padStart(2, '0')
+            return this.$t('recordFile.folderTooltip', {
+                path: `登记文件/${now.getFullYear()}/${month}`
+            })
         }
     },
     watch: {
         async modelValue(val) {
             if (!val) return
+            // 每次打开重置表单，只保留上次选的渠道；目录按父级传入值初始化
+            this.form = {
+                sourceUrl: '',
+                originalName: '',
+                extension: '',
+                channelId: this.form.channelId,
+                folder: this.initialFolder || '',
+                note: ''
+            }
             await this.loadChannels()
         }
     },
@@ -237,7 +266,14 @@ export default {
                     })
                 )
                 this.$emit('registered', data.data || {})
-                this.form = { sourceUrl: '', originalName: '', extension: '', channelId: this.form.channelId, folder: '', note: '' }
+                this.form = {
+                    sourceUrl: '',
+                    originalName: '',
+                    extension: '',
+                    channelId: this.form.channelId,
+                    folder: this.initialFolder || '',
+                    note: ''
+                }
                 this.visible = false
             } catch (e) {
                 this.$message.error(this.$t('recordFile.failed'))

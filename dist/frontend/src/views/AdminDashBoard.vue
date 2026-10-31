@@ -51,54 +51,21 @@
                                     >
                                         <font-awesome-icon icon="times" class="search-clear-icon" />
                                     </button>
-                                    <el-tooltip
-                                        ref="searchSettingsPopup"
-                                        :trigger="isMobileViewport() ? [] : 'hover'"
-                                        placement="bottom-start"
-                                        effect="light"
-                                        popper-class="el-dropdown__popper search-settings-popper"
-                                        :popper-style="{ padding: '0' }"
-                                        :focus-on-target="false"
-                                        :focus-on-show="false"
-                                        persistent
-                                        :show-after="150"
-                                        :hide-after="150"
-                                        @before-show="searchSettingsOpen = true"
-                                        @hide="searchSettingsOpen = false"
+                                    <!--
+                                        v2.9.0：搜索图标只负责「执行搜索」。
+                                        原来悬停 / 长按弹出的「展示文件夹 / 全部展开」菜单已迁到
+                                        卡片/列表视图切换按钮后面，改成两个图标按钮。
+                                    -->
+                                    <button
+                                        type="button"
+                                        class="search-icon-trigger"
+                                        :aria-label="$t('dashboard.searchPlaceholder')"
+                                        @mousedown.prevent
+                                        @contextmenu.prevent
+                                        @click="handleSearchIconClick"
                                     >
-                                        <template #default>
-                                            <button
-                                                type="button"
-                                                class="search-icon-trigger"
-                                                :aria-label="$t('dashboard.searchPlaceholder')"
-                                                @mousedown.prevent
-                                                @pointerdown="handleSearchIconPointerDown"
-                                                @pointermove="handleSearchIconPointerMove"
-                                                @pointerup="cancelSearchIconPress"
-                                                @pointercancel="cancelSearchIconPress"
-                                                @pointerleave="cancelSearchIconPress"
-                                                @contextmenu.prevent
-                                                @click="handleSearchIconClick"
-                                            >
-                                                <font-awesome-icon icon="search" class="search-icon" />
-                                            </button>
-                                        </template>
-                                        <template #content>
-                                            <div class="el-dropdown-menu modern-dropdown-menu search-result-menu" role="group" :aria-label="$t('dashboard.searchResultDisplay')" @mousedown.prevent>
-                                                <div class="search-result-settings-title">{{ $t('dashboard.searchResultDisplay') }}</div>
-                                                <button type="button" class="el-dropdown-menu__item search-result-option" :aria-pressed="searchResultDisplay === 'folders'" @click="selectSearchResultDisplay('folders')">
-                                                    <font-awesome-icon icon="folder-open" class="search-result-option-icon" />
-                                                    <span>{{ $t('dashboard.searchResultFolders') }}</span>
-                                                    <font-awesome-icon v-if="searchResultDisplay === 'folders'" icon="check" class="search-result-option-check" />
-                                                </button>
-                                                <button type="button" class="el-dropdown-menu__item search-result-option" :aria-pressed="searchResultDisplay === 'expanded'" @click="selectSearchResultDisplay('expanded')">
-                                                    <font-awesome-icon icon="list" class="search-result-option-icon" />
-                                                    <span>{{ $t('dashboard.searchResultExpanded') }}</span>
-                                                    <font-awesome-icon v-if="searchResultDisplay === 'expanded'" icon="check" class="search-result-option-check" />
-                                                </button>
-                                            </div>
-                                        </template>
-                                    </el-tooltip>
+                                        <font-awesome-icon icon="search" class="search-icon" />
+                                    </button>
                                 </template>
                             </el-input>
                         </div>
@@ -122,6 +89,7 @@
                             v-model:filters="filters"
                             :channelNameOptions="channelNameOptions"
                             :tagOptions="allTags"
+                            :userOptions="userFilterOptions"
                             @change="handleFilterChange"
                         />
                         <!-- v2.8.7c：标签筛选已并入筛选弹窗「标签」页，顶栏原「标签」按钮移除 -->
@@ -201,6 +169,37 @@
                         @click="setViewMode('list')"
                     >
                         <font-awesome-icon icon="list" class="breadcrumb-view-icon"></font-awesome-icon>
+                    </button>
+                </div>
+                <!--
+                    v2.9.0：搜索结果展示方式（展示文件夹 / 全部展开）——
+                    从搜索框图标的下拉菜单迁到这里，做成与「卡片 / 列表视图」一致的图标切换按钮。
+                -->
+                <div
+                    class="breadcrumb-view-toggle search-scope-toggle"
+                    :class="{ 'is-expanded': searchResultDisplay === 'expanded' }"
+                    role="group"
+                    :aria-label="$t('dashboard.searchResultDisplay')"
+                >
+                    <button
+                        class="breadcrumb-view-button"
+                        :class="{ 'is-active': searchResultDisplay === 'folders' }"
+                        type="button"
+                        :title="$t('dashboard.searchResultFolders')"
+                        :aria-pressed="searchResultDisplay === 'folders'"
+                        @click="selectSearchResultDisplay('folders')"
+                    >
+                        <font-awesome-icon icon="folder-tree" class="breadcrumb-view-icon"></font-awesome-icon>
+                    </button>
+                    <button
+                        class="breadcrumb-view-button"
+                        :class="{ 'is-active': searchResultDisplay === 'expanded' }"
+                        type="button"
+                        :title="$t('dashboard.searchResultExpanded')"
+                        :aria-pressed="searchResultDisplay === 'expanded'"
+                        @click="selectSearchResultDisplay('expanded')"
+                    >
+                        <font-awesome-icon icon="bars" class="breadcrumb-view-icon"></font-awesome-icon>
                     </button>
                 </div>
                 <el-dropdown
@@ -308,31 +307,15 @@
                     </el-breadcrumb>
                 </div>
                 <div class="breadcrumb-right-group">
-                    <!-- 上传用户筛选：仅管理员可见，默认「全部」 -->
-                    <el-select
-                        v-if="isAdminRole"
-                        v-model="userFilter"
-                        size="small"
-                        class="user-filter-select"
-                        popper-class="compact-select-popper"
-                        :placeholder="$t('dashboard.allUsers')"
-                        @change="handleUserFilterChange"
-                    >
-                        <el-option :label="$t('dashboard.allUsers')" value="all" />
-                        <el-option
-                            v-for="u in userOptions"
-                            :key="u.username"
-                            :label="u.nickname || u.username"
-                            :value="u.username"
-                        />
-                    </el-select>
+                    <!-- v2.9.0：右上「用户选择」移除 —— 用户筛选已并入「筛选」弹窗的「用户」页 -->
                     <!-- 新建目录：位于历史记录左侧 -->
                     <el-button class="new-folder-btn" size="small" :title="$t('dashboard.newFolder')" :aria-label="$t('dashboard.newFolder')" @click="handleCreateFolder">
                         <font-awesome-icon icon="plus" class="new-folder-icon"/>
                         <span class="new-folder-text">{{ $t('dashboard.newFolder') }}</span>
                     </el-button>
-                    <!-- v2.8.8：登记文件（与前台共用同一弹窗）—— 把一个已在别处的文件登记进系统，不重复上传 -->
-                    <el-button class="new-folder-btn record-file-btn" size="small" :title="$t('recordFile.title')" :aria-label="$t('recordFile.title')" @click="showRecordDialog = true">
+                    <!-- v2.8.8：登记文件（与前台共用同一弹窗）—— 把一个已在别处的文件登记进系统，不重复上传
+                         v2.9.0：打开时把「当前所在目录」代入弹窗的「文件分类」 -->
+                    <el-button class="new-folder-btn record-file-btn" size="small" :title="$t('recordFile.title')" :aria-label="$t('recordFile.title')" @click="openRecordDialog">
                         <font-awesome-icon icon="file-circle-plus" class="new-folder-icon"/>
                         <span class="new-folder-text">{{ $t('recordFile.title') }}</span>
                     </el-button>
@@ -405,6 +388,7 @@
                         @preview="(evt, opts) => openHoverPreview(item, evt, opts)"
                         @previewMove="moveHoverPreview($event)"
                         @previewEnd="closeHoverPreview"
+                        @previewMedia="openMediaPreview"
                     />
                 </template>
             </div>
@@ -452,6 +436,7 @@
                         @preview="(evt, opts) => openHoverPreview(item, evt, opts)"
                         @previewMove="moveHoverPreview($event)"
                         @previewEnd="closeHoverPreview"
+                        @previewMedia="openMediaPreview"
                     />
                 </template>
             </div>
@@ -669,7 +654,16 @@
         <RecordFileDialog
             v-model="showRecordDialog"
             :isAdmin="true"
+            :initialFolder="recordInitialFolder"
             @registered="handleRecorded"
+        />
+
+        <!-- v2.9.0：媒体预览浮层（点缩略图触发）—— 图片灯箱 / 视频播放器 / 音频播放器 / 通用弹窗 -->
+        <MediaPreviewOverlay
+            v-model="showMediaPreview"
+            :items="mediaPreviewItems"
+            :startIndex="mediaPreviewIndex"
+            @detail="handleMediaPreviewDetail"
         />
 
         <!-- 移动文件对话框 -->
@@ -695,6 +689,8 @@ import FolderCard from '@/components/dashboard/FolderCard.vue';
 import MoveFileDialog from '@/components/dashboard/MoveFileDialog.vue';
 import FileListItem from '@/components/dashboard/FileListItem.vue';
 import HoverPreview from '@/components/dashboard/HoverPreview.vue';
+// v2.9.0：媒体预览浮层（图片灯箱 / 视频播放器 / 音频播放器 / 通用弹窗）
+import MediaPreviewOverlay from '@/components/dashboard/MediaPreviewOverlay.vue';
 import FileDetailDialog from '@/components/dashboard/FileDetailDialog.vue';
 import BatchActionBar from '@/components/dashboard/BatchActionBar.vue';
 import MobileActionSheet from '@/components/dashboard/MobileActionSheet.vue';
@@ -823,6 +819,8 @@ data() {
             ,sizeMode: 'actual'  // 'actual'（实际大小）| 'original'（原始大小）
             ,validity: []        // 有效期: 'limited' | 'expired' | 'permanent'
             ,nameChanged: []     // 名称状态: 'changed'（已改名） | 'unchanged'（未改名）
+            ,userNames: []       // v2.9.0 用户页：上传用户（多选，命中任一即可）
+            ,matchMode: 'all'    // v2.9.0 条件组合方式: 'all'（同时） | 'any'（任意）
             ,dimPreset: ''       // 尺寸快捷: landscape|portrait|square|ratio-4-3|ratio-16-9|360p…8k
             ,widthMin: 0         // 宽最小（px，0 = 不限）
             ,widthMax: 0         // 宽最大
@@ -833,6 +831,11 @@ data() {
         showFilterDialog: false,
         // v2.8.8：登记文件弹窗显隐（与前台共用 RecordFileDialog）
         showRecordDialog: false,
+        // v2.9.0：打开登记弹窗时快照当前目录，作为「文件分类」默认值
+        recordInitialFolder: '',
+        // v2.9.0：媒体预览浮层（点缩略图打开；索引为当前页可预览媒体列表里的位置）
+        showMediaPreview: false,
+        mediaPreviewIndex: 0,
         channelNameOptions: [], // 动态从文件列表中提取
         // 标签筛选弹窗
         showTagFilterDialog: false,
@@ -860,6 +863,7 @@ components: {
     FolderCard,
     FileListItem,
     HoverPreview,
+    MediaPreviewOverlay,
     FileDetailDialog,
     BatchActionBar,
     MobileActionSheet,
@@ -949,6 +953,30 @@ computed: {
     },
     recursiveSearchResults() {
         return this.hasSearchOrFilter && this.searchResultDisplay === 'expanded';
+    },
+    /**
+     * v2.9.0：当前页「可预览媒体」平铺列表（按当前视图顺序，不含文件夹）
+     * 供媒体预览浮层的左右切换、底部缩略图条、音频播放列表使用；
+     * 只覆盖当前页，与「汇集当前页音频」的需求一致，不额外请求后端。
+     */
+    mediaPreviewItems() {
+        const out = [];
+        (this.paginatedTableData || []).forEach((row) => {
+            if (this.isFolder(row)) return;
+            const meta = row.metadata || {};
+            const kind = this.mediaKindOf(row);
+            const ext = this.fileExt(meta) || this.fileExt(row.name) || '';
+            out.push({
+                key: row.name,
+                name: (meta.FileName || row.name || '').split('/').pop(),
+                url: this.getFileLink(row.name, meta),
+                kind,
+                ext,
+                sizeText: this.fileSizeTextOf(meta),
+                user: meta.UploadUser || ''
+            });
+        });
+        return out;
     },
     paginatedTableData() {
         const sortedData = this.sortData(this.filteredTableData);
@@ -1061,6 +1089,10 @@ computed: {
     },
     pagerCount() {
         return window.innerWidth < 768 ? 5 : 7;
+    },
+    /** v2.9.0：筛选弹窗「用户」页的候选（仅管理员；普通用户只有自己，没必要单选） */
+    userFilterOptions() {
+        return this.isAdminRole ? this.userOptions : [];
     }
 },
 watch: {
@@ -1233,24 +1265,6 @@ methods: {
         }
         return bytes.toFixed(i > 0 ? 1 : 0) + ' ' + units[i];
     },
-    handleSearchIconPointerDown(event) {
-        this.cancelSearchIconPress();
-        this.searchIconLongPressed = false;
-        if (!['touch', 'pen'].includes(event.pointerType) || event.isPrimary === false) return;
-        this.searchIconPressStart = { x: event.clientX, y: event.clientY };
-        this.searchIconPressTimer = setTimeout(() => {
-            this.searchIconPressTimer = null;
-            this.searchIconLongPressed = true;
-            this.$refs.searchSettingsPopup.onOpen(event, 0);
-        }, 500);
-    },
-    handleSearchIconPointerMove(event) {
-        const start = this.searchIconPressStart;
-        if (start && Math.hypot(event.clientX - start.x, event.clientY - start.y) > 10) {
-            this.searchIconLongPressed = true;
-            this.cancelSearchIconPress();
-        }
-    },
     cancelSearchIconPress() {
         clearTimeout(this.searchIconPressTimer);
         this.searchIconPressTimer = null;
@@ -1264,8 +1278,8 @@ methods: {
         return this.handleSearch();
     },
     selectSearchResultDisplay(mode) {
-        this.$refs.searchInput.focus();
-        this.$refs.searchSettingsPopup.hide();
+        // v2.9.0：入口从搜索框下拉迁到视图切换旁的图标按钮，不再有弹层需要收起
+        this.$refs.searchInput?.focus?.();
         return this.setSearchResultDisplay(mode);
     },
     setSearchResultDisplay(mode) {
@@ -1400,10 +1414,25 @@ methods: {
 
         this.refreshFileList();
     },
-    // 处理筛选变化（来自 FilterDropdown 组件）
-    handleFilterChange({ type, filters }) {
+    // 处理筛选变化（来自 FilterDialog 组件）
+    async handleFilterChange({ type, filters }) {
         this.filters = filters;
-        this.currentPage = 1; // 重置到第一页
+        /*
+         * v2.9.0：「常规 → 访问状态」里的「已删除」= 看回收站文件。
+         * 勾选后自动切到回收站视图（恢复 / 彻底删除等操作都在那边），
+         * 取消勾选则退回普通列表；其它筛选条件在两种视图里同样生效。
+         */
+        const wantTrash = Array.isArray(filters?.accessStatus) && filters.accessStatus.includes('deleted');
+        this.currentPage = 1;
+        if (wantTrash) {
+            // 已经在回收站里就只重载数据，避免把回收站数据误存成「普通列表备份」
+            await this.enterTrashMode(this.trashMode);
+            return;
+        }
+        if (this.trashMode) {
+            this.trashMode = false;
+            this.tableData = this.normalTableData;
+        }
         this.refreshFileList();
     },
     // 清除所有筛选条件
@@ -1433,6 +1462,9 @@ methods: {
             sizeMode: 'actual',
             validity: [],
             nameChanged: [],
+            // v2.9.0
+            userNames: [],
+            matchMode: 'all',
             dimPreset: '',
             widthMin: 0,
             widthMax: 0,
@@ -1455,10 +1487,18 @@ methods: {
             const res = await fetchWithAuth('/api/manage/tags/all');
             const json = await res.json().catch(() => ({}));
             const list = Array.isArray(json?.tags) ? json.tags : [];
-            // 只保留至少被 1 个文件使用的标签，按使用次数降序
+            /*
+             * v2.9.0：筛选弹窗「标签」页默认展示「最近创建的前 30 个」（倒序），
+             * 所以这里按 createdAt 倒序；没有 createdAt 的老数据排在后面按名称排。
+             */
             this.allTags = list
                 .filter((t) => Number(t.count) > 0)
-                .sort((a, b) => Number(b.count) - Number(a.count) || String(a.name).localeCompare(String(b.name)));
+                .sort((a, b) => {
+                    const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+                    const tb = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+                    if (ta !== tb) return tb - ta;
+                    return String(a.name).localeCompare(String(b.name));
+                });
         } catch (e) {
             this.allTags = [];
         } finally {
@@ -1675,6 +1715,16 @@ methods: {
         }
     },
     /**
+     * 打开登记文件弹窗（v2.9.0）
+     * 把当前所在目录快照进 recordInitialFolder，弹窗会把它填到「文件分类」；
+     * 在根目录时传空串，弹窗留空 → 后端落「登记文件/年/月」。
+     */
+    openRecordDialog() {
+        // 去掉结尾斜杠：/2026/ → 2026，避免后端把空段当成路径层级
+        this.recordInitialFolder = String(this.currentPath || '').replace(/^\/+|\/+$/g, '');
+        this.showRecordDialog = true;
+    },
+    /**
      * 登记文件成功回调（v2.8.8）
      * 关弹窗 + 提示 + 刷新当前目录列表（新记录会立即出现在文件列表里）。
      */
@@ -1703,11 +1753,18 @@ methods: {
             this.tableData = this.normalTableData;
             this.showdetailDialog = false;
             this.trashMode = false;
+            // v2.9.0：手动退出回收站时同步取消筛选里的「已删除」，否则角标与实际视图不一致
+            if (Array.isArray(this.filters?.accessStatus) && this.filters.accessStatus.includes('deleted')) {
+                this.filters = {
+                    ...this.filters,
+                    accessStatus: this.filters.accessStatus.filter((v) => v !== 'deleted')
+                };
+            }
             return;
         }
         await this.enterTrashMode();
     },
-    async enterTrashMode() {
+    async enterTrashMode(preserveNormal = false) {
         this.trashLoading = true;
         try {
             // v2.8.7：回收站同样带上搜索 / 筛选 / 日期 / 大小等条件（后端联合过滤）
@@ -1717,8 +1774,8 @@ methods: {
             const resp = await fetchWithAuth(`/api/manage/trash?1=1${filterParams}${searchQ}`);
             if (!resp.ok) throw new Error('Request failed');
             const data = await resp.json();
-            // 备份普通列表，切换渲染数据
-            this.normalTableData = this.tableData;
+            // 备份普通列表，切换渲染数据（v2.9.0：回收站内刷新时不要覆盖这份备份）
+            if (!preserveNormal) this.normalTableData = this.tableData;
             this.clearSelection();
             const items = Array.isArray(data.items) ? data.items : [];
             this.tableData = items.map(it => this.convertTrashItem(it));
@@ -2469,6 +2526,53 @@ methods: {
         }
         return flag;
     },
+    /**
+     * v2.9.0：判断一行数据属于哪种媒体，供预览浮层决定形态。
+     * image / video / audio / other（其它一律走通用弹窗）。
+     */
+    mediaKindOf(file) {
+        const type = String(file?.metadata?.FileType || '').toLowerCase();
+        if (type.includes('image')) return 'image';
+        if (type.includes('video')) return 'video';
+        if (type.includes('audio')) return 'audio';
+        const ext = String(this.fileExt(file?.metadata || {}) || this.fileExt(file?.name || '') || '').toLowerCase();
+        if (['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg', 'avif', 'ico', 'tiff', 'tif'].includes(ext)) return 'image';
+        if (['mp4', 'webm', 'mov', 'm4v', 'avi', 'mkv', 'flv', 'wmv', 'ts', 'm3u8'].includes(ext)) return 'video';
+        if (['mp3', 'wav', 'flac', 'aac', 'm4a', 'ogg', 'oga', 'opus', 'wma'].includes(ext)) return 'audio';
+        return 'other';
+    },
+    /** v2.9.0：预览浮层顶栏显示的文件大小文案 */
+    fileSizeTextOf(meta) {
+        const bytes = Number(meta?.FileSizeBytes) || 0;
+        if (!bytes) {
+            const mb = Number(meta?.FileSize) || 0;
+            return mb ? `${mb} MB` : '';
+        }
+        if (bytes < 1024) return `${bytes} B`;
+        if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+        if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
+        return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
+    },
+    /**
+     * 打开媒体预览（v2.9.0）
+     * 点缩略图 / 封面触发：图片 → 灯箱，视频 → 播放器，音频 → 播放器，其它 → 通用弹窗。
+     * 索引在当前页可预览媒体列表里查找，保证左右切换从被点的那一个开始。
+     */
+    openMediaPreview(item) {
+        this.closeHoverPreview();
+        const key = item && (item.name || item.key);
+        const list = this.mediaPreviewItems || [];
+        const at = list.findIndex(it => it.key === key);
+        this.mediaPreviewIndex = at >= 0 ? at : 0;
+        this.showMediaPreview = true;
+    },
+    /** 预览浮层里点「查看详情」→ 复用文件详情弹窗 */
+    handleMediaPreviewDetail(payload) {
+        const key = payload && payload.key;
+        if (!key) return;
+        const index = (this.paginatedTableData || []).findIndex(row => row.name === key);
+        if (index >= 0) this.openDetailDialog(index, key);
+    },
     isImage(file) {
         let flag = file.metadata?.FileType?.includes('image');
         // 用文件名后缀判断是否为图片文件
@@ -2862,7 +2966,7 @@ methods: {
     async refreshFileList() {
         // v2.8.7：回收站模式下刷新 → 走回收站接口（同样带全部筛选 / 搜索条件联合查询）
         if (this.trashMode) {
-            await this.enterTrashMode();
+            await this.enterTrashMode(true);
             return;
         }
         this.refreshLoading = true;
@@ -3155,17 +3259,35 @@ beforeUnmount() {
     color: var(--primary-color-accent, var(--el-color-primary));
 }
 
-/* 顶部工具栏「刷新」按钮（刷新 / 回收站 / 声音三个按钮共用；v2.8.7c 左右边距收窄） */
+/* v2.9.0：「刷新 / 回收站 / 声音」改为与顶栏「筛选」按钮完全一致的图标按钮 ——
+   透明底、无边框、32×32、未激活为次要色、hover / 激活为主题色（PC 与移动端同一套）。 */
 .refresh-files-btn {
-    margin-left: 2px;
-    padding: 6px 7px;
+    width: var(--admin-header-action-size, 32px);
+    height: var(--admin-header-action-size, 32px);
+    min-width: var(--admin-header-action-size, 32px);
+    padding: 0;
+    margin: 0;
+    border: 0 !important;
+    border-radius: 8px;
+    background: transparent !important;
+    color: var(--admin-theme-toggle-color, var(--el-text-color-secondary));
+    font-size: var(--admin-header-action-font-size, 18px);
+    box-shadow: none !important;
+    transition: color 0.2s ease;
 }
-/* v2.8.9：PC 端三个按钮左右外边距各 +4px（移动端紧凑布局保持原样） */
-@media (min-width: 1025px) {
-    .refresh-files-btn {
-        margin-left: 6px;
-        margin-right: 4px;
-    }
+.refresh-files-btn:hover,
+.refresh-files-btn:focus,
+.refresh-files-btn:focus-visible {
+    border: 0 !important;
+    background: transparent !important;
+    color: var(--primary-color-accent, var(--el-color-primary));
+    box-shadow: none !important;
+}
+.refresh-files-btn.is-active {
+    color: var(--primary-color-accent, var(--el-color-primary));
+}
+.refresh-files-icon {
+    font-size: 1em;
 }
 /* v2.8.9：移动端搜索按钮 —— 样式与筛选按钮一致的图标触发器；PC 端不显示 */
 .search-area .mobile-search-trigger {
@@ -3416,6 +3538,14 @@ beforeUnmount() {
     transform: translateX(30px);
 }
 
+/* v2.9.0：搜索结果展示切换（展示文件夹 / 全部展开）—— 与视图切换同款滑块 */
+.search-scope-toggle {
+    margin-left: 6px;
+}
+.search-scope-toggle.is-expanded::before {
+    transform: translateX(30px);
+}
+
 .breadcrumb-view-button {
     position: relative;
     z-index: 1;
@@ -3589,8 +3719,50 @@ beforeUnmount() {
     font-size: 11px;
 }
 
+/* v2.9.0：新建目录 / 登记文件 / 历史记录 —— 与「排序」按钮同款外观：
+   玻璃底 + 1px 边框 + 10px 圆角 + 次要色文字，hover 时边框与文字转主题色 */
+.new-folder-btn,
+.history-btn {
+    height: 32px;
+    padding: 0 12px;
+    border: 1px solid var(--glass-border) !important;
+    border-radius: 10px !important;
+    background: var(--glass-bg) !important;
+    color: var(--el-text-color-secondary) !important;
+    box-shadow: none !important;
+    font-size: 12px;
+    transition: color 0.16s ease, border-color 0.2s ease, background-color 0.2s ease;
+}
+.new-folder-btn:hover,
+.new-folder-btn:focus,
+.history-btn:hover,
+.history-btn:focus {
+    border-color: var(--glass-border-hover) !important;
+    background: var(--glass-bg) !important;
+    color: var(--primary-color-accent, var(--el-color-primary)) !important;
+}
+.new-folder-btn .new-folder-icon,
+.history-btn .history-btn-icon {
+    font-size: 12px;
+    margin-right: 5px;
+}
+
+/* v2.9.0：移动端顶行「搜索 / 筛选 / 刷新 / 回收站 / 更多」内边距与外边距统一收窄，整组靠右 */
+@media (max-width: 1023px) {
+    .refresh-files-btn {
+        margin: 0;
+        padding: 0;
+    }
+    .search-area .mobile-search-trigger,
+    .filter-dialog-trigger {
+        padding: 0 !important;
+        margin: 0 !important;
+        width: var(--admin-header-action-size, 30px) !important;
+        height: var(--admin-header-action-size, 30px) !important;
+    }
+}
+
 @media (max-width: 768px) {
-    /* v2.7.0：历史记录按钮与「新建目录」按钮的圆角/高度保持一致 */
     .history-btn {
         height: 28px;
         font-size: 11px;

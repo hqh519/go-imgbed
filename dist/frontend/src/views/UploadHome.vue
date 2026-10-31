@@ -210,6 +210,7 @@
         </div>
         <!-- v2.8.9：convertToWebp 改用 v-model —— 原先只传 prop 未监听 update 事件，顶栏「转为WebP」开关点不动 -->
         <UploadForm
+            ref="uploadForm"
             :selectedUrlForm="selectedUrlForm"
             v-model:customerCompress="customerCompress"
             :compressBar="compressBar"
@@ -680,10 +681,18 @@ export default {
             }
             this.showRecordDialog = true
         },
-        /** 登记成功：提示 + 让上传列表/目录树相关缓存下次进入时刷新 */
-        handleRecorded() {
-            // 成功提示由 RecordFileDialog 自己弹（带文件名与大小），这里只负责关闭弹窗
+        /**
+         * 登记成功（v2.9.0）
+         * 除了关闭弹窗，把这条登记记录直接追加进下方文件列表（带服务端签发的外链），
+         * 用户不用刷新页面就能复制/查看；重复登记同一条会由列表自身去重。
+         */
+        handleRecorded(data) {
+            // 成功提示由 RecordFileDialog 自己弹（带文件名与大小），这里只负责收尾
             this.showRecordDialog = false
+            const form = this.$refs.uploadForm
+            if (form && typeof form.addRecordedFile === 'function') {
+                form.addRecordedFile(data || {})
+            }
         },
 
         openCompressDialog() {

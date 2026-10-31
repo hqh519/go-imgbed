@@ -35,7 +35,8 @@ const app_log_1 = require("../common/app-log");
 const project_paths_1 = require("../common/project-paths");
 const qqwry_1 = require("../common/qqwry");
 const ip_query_1 = require("../common/ip-query");
-const path_template_1 = require("../common/path-template");
+const crypto_service_1 = require("../common/crypto.service");
+const record_link_1 = require("../common/record-link");
 function splitCsv(v) {
     return v ? v.split(',').map((s) => s.trim()).filter(Boolean) : [];
 }
@@ -559,6 +560,13 @@ let LinkController = class LinkController {
                 config: this.channels.decryptConfig(ch.type, ch.config),
                 metas: {},
             };
+            if (!absoluteRemote && copy.remoteKey && (0, record_link_1.hasRecordDomains)(info.config)) {
+                const recordUrl = (0, record_link_1.joinRecordUrl)((0, record_link_1.recordLoadOrigin)(info.config, preferInternal), copy.remoteKey);
+                if (recordUrl) {
+                    candidates.push({ url: recordUrl, label: ch.name });
+                    continue;
+                }
+            }
             const url = absoluteRemote && ch.type !== 'custom'
                 ? absoluteRemote
                 : (0, adapter_factory_1.createAdapter)(info).buildDirectUrl((0, adapter_factory_1.toCopyInfo)(copy), info, preferInternal);
@@ -640,6 +648,127 @@ let ManageController = class ManageController {
             return false;
         return kind === 'edit' ? u.canEdit : u.canDelete;
     }
+    filterGroups(r, f) {
+        const groups = [];
+        const tagNames = Array.isArray(r.tags) ? r.tags.map((t) => t?.tag?.name).filter(Boolean) : [];
+        if (f.hasTags === 'yes')
+            groups.push(tagNames.length > 0);
+        else if (f.hasTags === 'no')
+            groups.push(tagNames.length === 0);
+        if (f.filterTags.length) {
+            groups.push(f.tagMode === 'or'
+                ? f.filterTags.some((t) => tagNames.includes(t))
+                : f.filterTags.every((t) => tagNames.includes(t)));
+        }
+        const metas = (0, file_view_1.safeParse)(r.metas);
+        const listType = metas.ListType || 'None';
+        const label = metas.Label || 'None';
+        if (f.listType.length)
+            groups.push(f.listType.includes(listType));
+        if (f.label.length)
+            groups.push(f.label.includes(label));
+        if (f.fileType.length)
+            groups.push(f.fileType.includes((0, file_view_1.fileTypeOf)(r.mime)));
+        const copies = Array.isArray(r.copies) ? r.copies : [];
+        const primary = copies.find((c) => c?.channel?.isMain) || copies[0];
+        const chType = primary?.channel?.type || '';
+        const chLabel = chType ? file_view_1.CHANNEL_LABEL[chType] || chType : '';
+        const chName = String(primary?.channel?.name || '');
+        if (f.channel.length)
+            groups.push(f.channel.includes(chLabel));
+        if (f.channelName.length)
+            groups.push(f.channelName.includes(chName));
+        if (f.uploadSource.length) {
+            groups.push(f.uploadSource.includes((0, file_view_1.normalizeUploadSource)(r.uploadSource)));
+        }
+        if (f.users.length)
+            groups.push(f.users.includes(String(r.uploader || '')));
+        if (f.backup.length) {
+            const hasBackup = copies.some((c) => c !== primary && c?.status === 'active' && (c?.remoteKey || c?.remoteUrl));
+            groups.push((f.backup.includes('backedup') && hasBackup) || (f.backup.includes('unbackedup') && !hasBackup));
+        }
+        if (f.redirect.length) {
+            const has = !!r.redirectUrl;
+            groups.push((f.redirect.includes('yes') && has) || (f.redirect.includes('no') && !has));
+        }
+        if (f.access.length) {
+            const deleted = String(r.status || 'active') === 'deleted';
+            groups.push((f.access.includes('deleted') && deleted) ||
+                (!deleted && f.access.includes('normal') && listType === 'None') ||
+                (!deleted && f.access.includes('block') && listType === 'Block') ||
+                (!deleted && f.access.includes('white') && listType === 'White'));
+        }
+        if (f.fromMs || f.toMs) {
+            const t = r.createdAt ? new Date(r.createdAt).getTime() : 0;
+            groups.push(!!t && (!f.fromMs || t >= f.fromMs) && (!f.toMs || t <= f.toMs));
+        }
+        if (f.sizeMin > 0 || f.sizeMax > 0 || f.sizeMode === 'original') {
+            const cmpSize = f.sizeMode === 'original' ? Number(r.originalSize) || r.size || 0 : r.size || 0;
+            groups.push((!f.sizeMin || cmpSize >= f.sizeMin) && (!f.sizeMax || cmpSize <= f.sizeMax));
+        }
+        if (f.validity.length) {
+            const exp = r.linkExpiresAt;
+            const expMs = exp ? new Date(exp).getTime() : 0;
+            const now = Date.now();
+            groups.push((f.validity.includes('limited') && expMs > now) ||
+                (f.validity.includes('expired') && expMs > 0 && expMs <= now) ||
+                (f.validity.includes('permanent') && !expMs));
+        }
+        if (f.nameChanged.length) {
+            const renamed = !!String(r.prevName || '');
+            groups.push((f.nameChanged.includes('changed') && renamed) ||
+                (f.nameChanged.includes('unchanged') && !renamed));
+        }
+        if (f.dimPreset.length || f.widthMin || f.widthMax || f.heightMin || f.heightMax) {
+            const w = Number(metas.Width || 0);
+            const h = Number(metas.Height || 0);
+            if (!w || !h) {
+                groups.push(false);
+            }
+            else {
+                const okRange = (!f.widthMin || w >= f.widthMin) && (!f.widthMax || w <= f.widthMax) &&
+                    (!f.heightMin || h >= f.heightMin) && (!f.heightMax || h <= f.heightMax);
+                const okPreset = !f.dimPreset.length || f.dimPreset.some((p) => this.matchDimPreset(w, h, p));
+                groups.push(okRange && okPreset);
+            }
+        }
+        return groups;
+    }
+    matchDimPreset(w, h, preset) {
+        if (!w || !h)
+            return false;
+        const short = Math.min(w, h);
+        const long = Math.max(w, h);
+        const ratio = long / Math.max(1, short);
+        switch (preset) {
+            case 'landscape':
+                return w > h;
+            case 'portrait':
+                return h > w;
+            case 'square':
+                return Math.abs(w - h) <= Math.max(2, Math.round(long * 0.01));
+            case 'ratio-4-3':
+                return Math.abs(ratio - 4 / 3) <= 0.06;
+            case 'ratio-16-9':
+                return Math.abs(ratio - 16 / 9) <= 0.08;
+            case '360p':
+                return short >= 300 && short < 420;
+            case '480p':
+                return short >= 420 && short < 600;
+            case '720p':
+                return short >= 600 && short < 840;
+            case '1080p':
+                return short >= 840 && short < 1300;
+            case '2k':
+                return short >= 1300 && short < 1800;
+            case '4k':
+                return short >= 1800 && short < 2600;
+            case '8k':
+                return short >= 4000;
+            default:
+                return false;
+        }
+    }
     async list(req, q) {
         if (q.action === 'info') {
             if (!this.admin(req))
@@ -691,43 +820,41 @@ let ManageController = class ManageController {
         const widthMax = Math.max(0, Number(q.widthMax) || 0);
         const heightMin = Math.max(0, Number(q.heightMin) || 0);
         const heightMax = Math.max(0, Number(q.heightMax) || 0);
-        const matchDimPreset = (w, h, preset) => {
-            if (!w || !h)
-                return false;
-            const short = Math.min(w, h);
-            const long = Math.max(w, h);
-            const ratio = long / Math.max(1, short);
-            switch (preset) {
-                case 'landscape':
-                    return w > h;
-                case 'portrait':
-                    return h > w;
-                case 'square':
-                    return Math.abs(w - h) <= Math.max(2, Math.round(long * 0.01));
-                case 'ratio-4-3':
-                    return Math.abs(ratio - 4 / 3) <= 0.06;
-                case 'ratio-16-9':
-                    return Math.abs(ratio - 16 / 9) <= 0.08;
-                case '360p':
-                    return short >= 300 && short < 420;
-                case '480p':
-                    return short >= 420 && short < 600;
-                case '720p':
-                    return short >= 600 && short < 840;
-                case '1080p':
-                    return short >= 840 && short < 1300;
-                case '2k':
-                    return short >= 1300 && short < 1800;
-                case '4k':
-                    return short >= 1800 && short < 2600;
-                case '8k':
-                    return short >= 4000;
-                default:
-                    return false;
-            }
+        const matchMode = String(q.matchMode || '').toLowerCase() === 'any' ? 'any' : 'all';
+        const fUsers = splitCsv(q.filterUsers);
+        const withDeleted = fAccess.includes('deleted');
+        const filterOpts = {
+            hasTags,
+            filterTags,
+            tagMode,
+            listType: fListType,
+            label: fLabel,
+            fileType: fFileType,
+            channel: fChannel,
+            channelName: fChannelName,
+            uploadSource: fUploadSource,
+            backup: fBackup,
+            redirect: fRedirect,
+            access: fAccess,
+            validity: fValidity,
+            nameChanged: fNameChanged,
+            users: fUsers,
+            fromMs,
+            toMs,
+            sizeMin,
+            sizeMax,
+            sizeMode,
+            dimPreset: fDimPreset,
+            widthMin,
+            widthMax,
+            heightMin,
+            heightMax,
         };
         const rows = await prisma_1.prisma.fileRecord.findMany({
-            where: { status: 'active', ...(ownerFilter ? { uploader: ownerFilter } : {}) },
+            where: {
+                status: withDeleted ? { in: ['active', 'deleted'] } : 'active',
+                ...(ownerFilter ? { uploader: ownerFilter } : {}),
+            },
             include: {
                 copies: { include: { channel: true } },
                 tags: { include: { tag: true } },
@@ -768,109 +895,14 @@ let ManageController = class ManageController {
                 if (!hit)
                     return false;
             }
-            const tagNames = r.tags.map((t) => t.tag.name);
-            if (hasTags === 'yes' && tagNames.length === 0)
+            if (includeTags.length && !includeTags.every((t) => r.tags.map((x) => x.tag.name).includes(t)))
                 return false;
-            if (hasTags === 'no' && tagNames.length > 0)
+            if (excludeTags.length && excludeTags.some((t) => r.tags.map((x) => x.tag.name).includes(t)))
                 return false;
-            if (includeTags.length && !includeTags.every((t) => tagNames.includes(t)))
-                return false;
-            if (filterTags.length) {
-                const hit = tagMode === 'or'
-                    ? filterTags.some((t) => tagNames.includes(t))
-                    : filterTags.every((t) => tagNames.includes(t));
-                if (!hit)
-                    return false;
-            }
-            if (excludeTags.length && excludeTags.some((t) => tagNames.includes(t)))
-                return false;
-            if (fRedirect.length) {
-                const has = !!r.redirectUrl;
-                const ok = (fRedirect.includes('yes') && has) || (fRedirect.includes('no') && !has);
-                if (!ok)
-                    return false;
-            }
-            const metas = (0, file_view_1.safeParse)(r.metas);
-            const listType = metas.ListType || 'None';
-            if (fListType.length && !fListType.includes(listType))
-                return false;
-            if (fLabel.length && !fLabel.includes(metas.Label || 'None'))
-                return false;
-            if (fFileType.length && !fFileType.includes((0, file_view_1.fileTypeOf)(r.mime)))
-                return false;
-            const primary = r.copies.find((c) => c.channel?.isMain) || r.copies[0];
-            const chLabel = primary?.channel
-                ? file_view_1.CHANNEL_LABEL[primary.channel.type] || primary.channel.type
-                : '';
-            if (fChannel.length && !fChannel.includes(chLabel))
-                return false;
-            if (fChannelName.length && !fChannelName.includes(primary?.channel?.name || ''))
-                return false;
-            if (fUploadSource.length && !fUploadSource.includes((0, file_view_1.normalizeUploadSource)(r.uploadSource)))
-                return false;
-            if (fBackup.length) {
-                const hasBackup = r.copies.some((c) => c !== primary && c.status === 'active' && (c.remoteKey || c.remoteUrl));
-                const ok = (fBackup.includes('backedup') && hasBackup) ||
-                    (fBackup.includes('unbackedup') && !hasBackup);
-                if (!ok)
-                    return false;
-            }
-            if (fAccess.length) {
-                const ok = (fAccess.includes('normal') && listType === 'None') ||
-                    (fAccess.includes('block') && listType === 'Block') ||
-                    (fAccess.includes('white') && listType === 'White');
-                if (!ok)
-                    return false;
-            }
-            if (fromMs || toMs) {
-                const t = r.createdAt ? new Date(r.createdAt).getTime() : 0;
-                if (!t)
-                    return false;
-                if (fromMs && t < fromMs)
-                    return false;
-                if (toMs && t > toMs)
-                    return false;
-            }
-            const cmpSize = sizeMode === 'original'
-                ? Number(r.originalSize) || r.size || 0
-                : r.size || 0;
-            if (sizeMin > 0 && cmpSize < sizeMin)
-                return false;
-            if (sizeMax > 0 && cmpSize > sizeMax)
-                return false;
-            if (fValidity.length) {
-                const exp = r.linkExpiresAt;
-                const expMs = exp ? new Date(exp).getTime() : 0;
-                const now = Date.now();
-                const ok = (fValidity.includes('limited') && expMs > now) ||
-                    (fValidity.includes('expired') && expMs > 0 && expMs <= now) ||
-                    (fValidity.includes('permanent') && !expMs);
-                if (!ok)
-                    return false;
-            }
-            if (fNameChanged.length) {
-                const renamed = !!String(r.prevName || '');
-                const ok = (fNameChanged.includes('changed') && renamed) || (fNameChanged.includes('unchanged') && !renamed);
-                if (!ok)
-                    return false;
-            }
-            if (fDimPreset.length || widthMin || widthMax || heightMin || heightMax) {
-                const w = Number(metas.Width || 0);
-                const h = Number(metas.Height || 0);
-                if (!w || !h)
-                    return false;
-                if (widthMin && w < widthMin)
-                    return false;
-                if (widthMax && w > widthMax)
-                    return false;
-                if (heightMin && h < heightMin)
-                    return false;
-                if (heightMax && h > heightMax)
-                    return false;
-                if (fDimPreset.length && !fDimPreset.some((p) => matchDimPreset(w, h, p)))
-                    return false;
-            }
-            return true;
+            const groups = this.filterGroups(r, filterOpts);
+            if (!groups.length)
+                return true;
+            return matchMode === 'any' ? groups.some(Boolean) : groups.every(Boolean);
         });
         const dirBare = dir.replace(/\/+$/, '');
         let files;
@@ -1196,14 +1228,15 @@ let ManageController = class ManageController {
         const owner = this.admin(req) ? '' : (0, auth_guard_1.currentSession)(req)?.user || '';
         const rows = await prisma_1.prisma.fileRecord.findMany({
             where: { status: 'deleted', ...(owner ? { uploader: owner } : {}) },
-            include: { copies: { select: { channelId: true, isPrimary: true, status: true, channel: { select: { name: true } } } } },
+            include: {
+                copies: { include: { channel: true } },
+                tags: { include: { tag: true } },
+            },
             orderBy: { deletedAt: 'desc' },
             take: 500,
         });
         const search = (q.search || '').trim().toLowerCase();
-        const fFileType = splitCsv(q.fileType);
-        const fUploadSource = splitCsv(q.uploadSource).map((s) => (0, file_view_1.normalizeUploadSource)(s));
-        const fChannelName = splitCsv(q.channelName);
+        const matchMode = String(q.matchMode || '').toLowerCase() === 'any' ? 'any' : 'all';
         const dateFrom = /^\d{4}-\d{2}-\d{2}$/.test(String(q.dateFrom || '')) ? String(q.dateFrom) : '';
         const dateTo = /^\d{4}-\d{2}-\d{2}$/.test(String(q.dateTo || '')) ? String(q.dateTo) : '';
         const tzMin = Number(q.tz);
@@ -1214,8 +1247,33 @@ let ManageController = class ManageController {
         };
         const fromMs = dateFrom ? dayStartMs(dateFrom) : 0;
         const toMs = dateTo ? dayStartMs(dateTo) + 86_400_000 - 1 : 0;
-        const sizeMin = Math.max(0, Number(q.sizeMin) || 0);
-        const sizeMax = Math.max(0, Number(q.sizeMax) || 0);
+        const filterOpts = {
+            hasTags: String(q.hasTags || '').toLowerCase(),
+            filterTags: splitCsv(q.filterTags),
+            tagMode: String(q.tagMode || 'and').toLowerCase() === 'or' ? 'or' : 'and',
+            listType: splitCsv(q.listType),
+            label: splitCsv(q.label),
+            fileType: splitCsv(q.fileType),
+            channel: splitCsv(q.channel),
+            channelName: splitCsv(q.channelName),
+            uploadSource: splitCsv(q.uploadSource).map((v) => (0, file_view_1.normalizeUploadSource)(v)),
+            backup: splitCsv(q.backup),
+            redirect: splitCsv(q.redirect),
+            access: splitCsv(q.accessStatus),
+            validity: splitCsv(q.validity).map((v) => v.toLowerCase()),
+            nameChanged: splitCsv(q.nameChanged).map((v) => v.toLowerCase()),
+            users: splitCsv(q.filterUsers),
+            fromMs,
+            toMs,
+            sizeMin: Math.max(0, Number(q.sizeMin) || 0),
+            sizeMax: Math.max(0, Number(q.sizeMax) || 0),
+            sizeMode: String(q.sizeMode || 'actual').toLowerCase() === 'original' ? 'original' : 'actual',
+            dimPreset: splitCsv(q.dimPreset).map((v) => v.toLowerCase()),
+            widthMin: Math.max(0, Number(q.widthMin) || 0),
+            widthMax: Math.max(0, Number(q.widthMax) || 0),
+            heightMin: Math.max(0, Number(q.heightMin) || 0),
+            heightMax: Math.max(0, Number(q.heightMax) || 0),
+        };
         const filtered = rows.filter((r) => {
             if (search) {
                 const hit = r.name.toLowerCase().includes(search) ||
@@ -1226,30 +1284,10 @@ let ManageController = class ManageController {
                 if (!hit)
                     return false;
             }
-            if (fFileType.length && !fFileType.includes((0, file_view_1.fileTypeOf)(r.mime)))
-                return false;
-            if (fUploadSource.length && !fUploadSource.includes((0, file_view_1.normalizeUploadSource)(r.uploadSource)))
-                return false;
-            if (fChannelName.length) {
-                const primary = r.copies.find((c) => c.isPrimary) || r.copies[0];
-                const primaryName = String(primary?.channel?.name || '');
-                if (!fChannelName.includes(primaryName))
-                    return false;
-            }
-            if (fromMs || toMs) {
-                const t = r.createdAt ? new Date(r.createdAt).getTime() : 0;
-                if (!t)
-                    return false;
-                if (fromMs && t < fromMs)
-                    return false;
-                if (toMs && t > toMs)
-                    return false;
-            }
-            if (sizeMin > 0 && (r.size || 0) < sizeMin)
-                return false;
-            if (sizeMax > 0 && (r.size || 0) > sizeMax)
-                return false;
-            return true;
+            const groups = this.filterGroups(r, filterOpts);
+            if (!groups.length)
+                return true;
+            return matchMode === 'any' ? groups.some(Boolean) : groups.every(Boolean);
         });
         const channelIds = Array.from(new Set(filtered.flatMap((r) => r.copies.map((c) => c.channelId))));
         const channels = await prisma_1.prisma.channel.findMany({
@@ -1362,6 +1400,11 @@ let ManageController = class ManageController {
                     };
                     infoCache.set(ch.id, info);
                 }
+                if (!copy.remoteUrl && copy.remoteKey && (0, record_link_1.hasRecordDomains)(info.config)) {
+                    const url = (0, record_link_1.joinRecordUrl)((0, record_link_1.recordLoadOrigin)(info.config, false), copy.remoteKey);
+                    if (url)
+                        return url;
+                }
                 return (0, adapter_factory_1.createAdapter)(info).buildDirectUrl((0, adapter_factory_1.toCopyInfo)(copy), info);
             }
             catch {
@@ -1375,19 +1418,14 @@ let ManageController = class ManageController {
     async generateRenameName(req) {
         if (!(await this.userPerm(req, 'edit')))
             throw new common_1.ForbiddenException('没有编辑权限');
-        const raw = String(req.query.name || '').trim();
-        const dot = raw.lastIndexOf('.');
-        const ext = dot > 0 ? raw.slice(dot + 1).toLowerCase() : '';
-        const stem = dot > 0 ? raw.slice(0, dot) : raw;
-        const dir = stem.includes('/') ? `${stem.split('/').slice(0, -1).join('/')}/` : '';
-        const generated = (0, path_template_1.renderFileName)('', {
-            originalName: raw,
-            stem: stem.split('/').pop() || stem,
-            ext,
-            md5: '',
-            timestamp: Date.now(),
-        });
-        return { success: true, name: `${dir}${generated}${ext ? `.${ext}` : ''}` };
+        for (let i = 0; i < 30; i += 1) {
+            const candidate = crypto_service_1.CryptoService.fileId(48);
+            const dup = await prisma_1.prisma.fileRecord.findFirst({ where: { name: candidate }, select: { id: true } });
+            if (!dup)
+                return { success: true, name: candidate };
+        }
+        app_log_1.appLog.warn('file', '生成重命名候选失败：连续 30 次与库中已有名称重复', '');
+        throw new common_1.BadRequestException('生成名称失败，请重试');
     }
     rename(req, body) {
         return this.doRename(wildcardParam(req), body, req);
@@ -1416,12 +1454,10 @@ let ManageController = class ManageController {
             throw new common_1.ConflictException('目标文件名已存在');
         const oldRedirect = String(rec.redirectUrl || '');
         const newRedirect = oldRedirect && oldRedirect.includes(rec.name) ? oldRedirect.split(rec.name).join(newId) : oldRedirect;
-        const dir = newId.includes('/') ? newId.split('/').slice(0, -1).join('/') : '';
         const updated = await prisma_1.prisma.fileRecord.update({
             where: { id: rec.id },
             data: {
                 name: newId,
-                folder: dir,
                 ...(newRedirect !== oldRedirect ? { redirectUrl: newRedirect } : {}),
                 prevName: rec.name,
                 firstName: rec.firstName || rec.name,

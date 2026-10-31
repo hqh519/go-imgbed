@@ -28,6 +28,7 @@ const adapter_interface_1 = require("../adapters/adapter.interface");
 const file_view_1 = require("../common/file-view");
 const app_log_1 = require("../common/app-log");
 const path_template_1 = require("../common/path-template");
+const record_link_1 = require("../common/record-link");
 const compress_1 = require("../common/compress");
 const media_post_1 = require("./media-post");
 const COMPRESS_MAX_BYTES = Math.max(512, Number(process.env.COMPRESS_MAX_MB || 4096)) * 1024 * 1024;
@@ -1269,10 +1270,14 @@ let UploadService = class UploadService {
         const ch = await prisma_1.prisma.channel.findFirst({
             where: { OR: [{ id: channelKey }, { code: channelKey }] },
         });
-        if (!ch)
+        if (!ch) {
+            app_log_1.appLog.warn('record', '登记失败：所选存储渠道不存在', `channelId=${channelKey}`, String(input.ip || ''));
             return { error: '所选存储渠道不存在' };
-        if (!ch.enabled)
+        }
+        if (!ch.enabled) {
+            app_log_1.appLog.warn('record', `登记失败：存储渠道「${ch.name}」已停用`, `channelId=${channelKey}`, String(input.ip || ''));
             return { error: `存储渠道「${ch.name}」已停用，请先启用或换一个渠道` };
+        }
         let contentType = '';
         let contentLength = 0;
         let reachable = false;
@@ -1304,6 +1309,7 @@ let UploadService = class UploadService {
             }
         }
         if (!reachable) {
+            app_log_1.appLog.warn('record', '登记失败：源地址不可访问', `源=${rawUrl} ｜ 渠道=${ch.name}`, String(input.ip || ''));
             return { error: '无法访问该文件源地址（超时或被拒绝），请确认地址可公开访问' };
         }
         const mimeClean = (contentType || '').split(';')[0].trim().toLowerCase();
@@ -1391,12 +1397,32 @@ let UploadService = class UploadService {
             size = 0;
         const uploadIp = String(input.ip || '');
         const uploadAddress = await this.cachedAddress(uploadIp);
-        const folder = await this.resolveFolder(input.folder);
+        const folderInput = String(input.folder || '').trim();
+        let folder;
+        if (folderInput) {
+            folder = await this.resolveFolder(folderInput);
+        }
+        else {
+            const now = new Date();
+            folder = `登记文件/${now.getFullYear()}/${String(now.getMonth() + 1).padStart(2, '0')}`;
+        }
         const fileId = await this.uniqueFileId(this.makeFileId());
         const now = new Date();
-        const hostMatch = this.matchChannelUrlField(ch, url);
-        const sameHost = !!hostMatch && !url.search;
-        const objectKey = decodeURIComponent(url.pathname.replace(/^\/+/, ''));
+        let recordCfg = {};
+        try {
+            recordCfg = (this.channels.decryptConfig(ch.type, ch.config) || {});
+        }
+        catch {
+            recordCfg = {};
+        }
+        const domainHit = (0, record_link_1.matchRecordSource)(recordCfg, rawUrl);
+        if (!domainHit) {
+            app_log_1.appLog.warn('record', `登记失败：源地址与渠道域名不匹配（${ch.name}）`, `源=${rawUrl} ｜ 渠道域名候选=${(0, record_link_1.recordDomainCandidates)(recordCfg).map((c) => `${c.field}=${c.domain}`).join(' , ') || '无'}`, String(input.ip || ''));
+            return {
+                error: `源地址不属于存储渠道「${ch.name}」：请确认地址里包含该渠道的「内网通信域名 / 公开访问域名 / 上传接口地址」之一`,
+            };
+        }
+        const objectKey = decodeURIComponent(domainHit.rest);
         const dims = sampleBuffer
             ? await (0, compress_1.readDimensions)(sampleBuffer, mime, ext)
             : { width: undefined, height: undefined };
@@ -1421,16 +1447,16 @@ let UploadService = class UploadService {
                     UploadAddress: uploadAddress,
                     Registered: true,
                     SourceUrl: rawUrl,
-                    SourceOnChannel: sameHost,
-                    ...(hostMatch ? { SourceHostField: hostMatch.field } : {}),
-                    ...(sameHost ? {} : { SourceOrigin: url.origin }),
+                    SourceOnChannel: true,
+                    SourceHostField: domainHit.field,
+                    RecordPath: domainHit.rest,
                     ...(dims.width && dims.height ? { Width: dims.width, Height: dims.height } : {}),
                 }),
                 copies: {
                     create: {
                         channelId: ch.id,
                         remoteKey: objectKey,
-                        remoteUrl: sameHost ? '' : rawUrl,
+                        remoteUrl: '',
                         status: 'active',
                         isPrimary: true,
                     },
@@ -1446,7 +1472,7 @@ let UploadService = class UploadService {
             height: dims.height,
         }));
         this.enqueueBackground(() => this.touchIp(uploadIp, uploadAddress));
-        app_log_1.appLog.info('record', `登记文件成功：${originalName}`, `渠道=${ch.name} ｜ ${size}B ｜ mime=${mime} ｜ md5=${md5 || '未获取'} ｜ ${sameHost ? '渠道内文件（外链随渠道域名）' : '外部文件（保留绝对地址）'} ｜ 源=${rawUrl}`, uploadIp);
+        app_log_1.appLog.info('record', `登记文件成功：${originalName}`, `渠道=${ch.name} ｜ ${size}B ｜ mime=${mime} ｜ md5=${md5 || '未获取'} ｜ 匹配域名=${domainHit.field} ｜ 路径=${domainHit.rest} ｜ 分类=${folder}${folderInput ? '' : '（默认 登记文件/年/月）'} ｜ 源=${rawUrl}`, uploadIp);
         return { id: fileId, info: { name: originalName, size, mime, md5, channel: ch.name } };
     }
     matchChannelUrlField(ch, url) {

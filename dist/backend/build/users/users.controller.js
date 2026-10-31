@@ -217,6 +217,7 @@ let UsersController = class UsersController {
             nickname: u.nickname || u.username,
             avatar: u.avatar || '',
             role: u.role,
+            createdAt: u.createdAt,
         }));
     }
     async getNotice(req) {

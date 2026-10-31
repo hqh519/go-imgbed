@@ -13,8 +13,8 @@
         @touchend="$emit('touchend', $event)"
         @touchmove="$emit('touchmove', $event)"
     >
-        <!-- 上半部分：缩略图 -->
-        <div class="card-preview" @click="$emit('detail')">
+        <!-- 上半部分：缩略图（v2.9.0：点击打开媒体预览 —— 图片灯箱 / 视频 / 音频 / 通用弹窗） -->
+        <div class="card-preview" @click="$emit('previewMedia', item)">
             <!-- 视频预览 -->
             <template v-if="isVideo">
                 <div v-if="videoLoading" class="skeleton-wrapper"></div>
@@ -173,7 +173,7 @@ export default {
         previewSrcList: { type: Array, default: () => [] },
         disableTooltip: { type: Boolean, default: false }
     },
-    emits: ['update:selected', 'detail', 'openLink', 'copy', 'move', 'delete', 'download', 'touchstart', 'touchend', 'touchmove', 'preview', 'previewMove', 'previewEnd'],
+    emits: ['update:selected', 'detail', 'previewMedia', 'openLink', 'copy', 'move', 'delete', 'download', 'touchstart', 'touchend', 'touchmove', 'preview', 'previewMove', 'previewEnd'],
     data() {
         return {
             localSelected: this.selected,
