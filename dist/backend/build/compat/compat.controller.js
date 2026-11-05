@@ -14,6 +14,7 @@ var __param = (this && this.__param) || function (paramIndex, decorator) {
 var ManageCompatController_1;
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ManageCompatController = exports.PublicCompatController = void 0;
+const request_origin_1 = require("../common/request-origin");
 const common_1 = require("@nestjs/common");
 const crypto_1 = require("crypto");
 const prisma_1 = require("../common/prisma");
@@ -96,7 +97,7 @@ let ManageCompatController = class ManageCompatController {
     }
     async listTokens(req) {
         const rows = await prisma_1.prisma.apiToken.findMany({ orderBy: { createdAt: 'desc' } });
-        const origin = `${req.protocol}://${req.get('host')}`;
+        const origin = (0, request_origin_1.signOrigin)(req);
         return {
             tokens: rows.map((t) => {
                 const metas = JSON.parse(t.metas || '{}');
@@ -182,7 +183,7 @@ let ManageCompatController = class ManageCompatController {
                 }),
             },
         });
-        const origin = `${req.protocol}://${req.get('host')}`;
+        const origin = (0, request_origin_1.signOrigin)(req);
         return {
             success: true,
             token: raw,
@@ -282,10 +283,34 @@ let ManageCompatController = class ManageCompatController {
         return { success: true, count: ids.length };
     }
     async tagsBatch(body) {
-        const ids = body.fileIds || [];
-        for (const id of ids)
-            await this.applyTags(id, body.tags || [], body.action || 'add');
-        return { success: true, count: ids.length };
+        const ids = Array.isArray(body.fileIds) ? body.fileIds : [];
+        const tags = Array.isArray(body.tags) ? body.tags.map((t) => String(t).trim()).filter(Boolean) : [];
+        const raw = String(body.action || 'add').toLowerCase();
+        const action = raw === 'remove' || raw === 'set' ? raw : 'add';
+        const results = [];
+        for (const id of ids) {
+            const rec = await this.findFile(id);
+            if (!rec) {
+                results.push({ fileId: String(id), saved: false, tags: [], indexPending: false, error: '文件不存在' });
+                continue;
+            }
+            let savedTags = [];
+            if (action === 'set') {
+                await prisma_1.prisma.fileTag.deleteMany({ where: { fileId: rec.id } });
+                savedTags = tags.length ? await this.applyTags(id, tags, 'add') : [];
+            }
+            else {
+                savedTags = await this.applyTags(id, tags, action);
+            }
+            results.push({ fileId: String(id), saved: true, tags: savedTags, indexPending: false });
+        }
+        const updated = results.filter((r) => r.saved).length;
+        return {
+            success: ids.length > 0 && updated === ids.length,
+            updated,
+            count: ids.length,
+            results,
+        };
     }
     async getTags(req) {
         const rec = await this.findFile(wildcardParam(req));
@@ -315,7 +340,11 @@ let ManageCompatController = class ManageCompatController {
             const name = String(raw).trim();
             if (!name)
                 continue;
-            const tag = await prisma_1.prisma.tag.upsert({ where: { name }, update: {}, create: { name } });
+            const tag = await prisma_1.prisma.tag.upsert({
+                where: { name_instanceId: { name, instanceId: '' } },
+                update: {},
+                create: { name, instanceId: '' },
+            });
             if (action === 'remove') {
                 await prisma_1.prisma.fileTag.deleteMany({ where: { fileId: rec.id, tagId: tag.id } });
             }

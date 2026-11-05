@@ -17,16 +17,27 @@
       </div>
 
       <div class="topbar-right">
-        <!-- 上传用户：仅管理员可见，默认全部 -->
+        <!--
+          v3.0.0：移除「上传用户」下拉框 —— 历史记录页只展示当前登录账户自己的记录；
+          管理员若要看某个用户的记录，从「用户管理 → 按用户收集」行内的「查看记录」进入
+          （带 ?user=xxx 参数，只作用于本次加载，不在页面上暴露切换入口）。
+        -->
+
+        <!--
+          v3.0.0：实例切换 —— 默认实例 + 实例列表（持久化 goimgbed_instance_id）
+          v3.0.0（第三轮）：位置从「上传用户」之前移到其后，并与用户选择联动 ——
+          管理员选了某个用户后，这里列出的就是「那个用户」的实例。
+        -->
         <el-select
-          v-if="isAdminRole"
-          v-model="filter.user"
-          class="filter-select is-user"
+          v-model="filter.instance"
+          class="filter-select is-instance"
           size="small"
-          @change="applyFilter"
+          @change="onInstanceChange"
         >
-          <el-option :label="$t('dashboard.allUsers')" value="all" />
-          <el-option v-for="u in userOptions" :key="u" :label="u" :value="u" />
+          <!-- v3.0.0（R5）：全部实例（不过滤）/ 默认实例 / 已创建实例，默认全部 -->
+          <el-option :label="$t('history.allInstances')" value="*" />
+          <el-option :label="$t('history.defaultInstance')" value="" />
+          <el-option v-for="ins in instances" :key="ins.id" :label="ins.name" :value="ins.id" />
         </el-select>
 
         <!-- 时间范围（系统状态统计点击跳转时自动带入） -->
@@ -73,7 +84,7 @@
       </div>
     </header>
 
-    <div ref="scrollBody" class="history-body" @scroll="handleScroll">
+    <div ref="scrollBody" class="history-body">
       <div v-if="loading" class="loading-state">
         <font-awesome-icon icon="spinner" spin />
         <span>{{ $t('uploadHistory.loading') }}</span>
@@ -91,7 +102,7 @@
           <div v-if="viewMode === 'grid'" class="grid-view">
             <div v-for="item in group.items" :key="item.name" class="grid-item is-clickable" @click="openDetail(item)">
               <div class="grid-preview">
-                <img v-if="isImage(item)" :src="urlOf(item)" loading="lazy" @error="onImgError" />
+                <img v-if="isImage(item)" :src="thumbOf(item)" loading="lazy" decoding="async" @error="onImgError" />
                 <video v-else-if="isVideo(item)" :src="urlOf(item)" muted preload="metadata"></video>
                 <div v-else class="file-icon-wrapper">
                   <font-awesome-icon icon="file" />
@@ -114,9 +125,16 @@
                   <span class="upload-time">{{ formatTime(item.metadata?.TimeStamp) }}</span>
                   <span class="upload-size">{{ item.metadata?.FileSize }}</span>
                 </div>
-                <div v-if="isAdminRole" class="upload-user" :title="$t('dashboard.uploadUser')">
-                  <font-awesome-icon icon="user" />
-                  {{ item.metadata?.UploadUser || $t('fileDetail.unknown') }}
+                <!-- v3.0.0：实例名靠左 + 上传用户靠右（同一行两端对齐） -->
+                <div class="upload-user-row">
+                  <span class="upload-instance" :title="$t('history.fileInstance')">
+                    <font-awesome-icon icon="database" />
+                    {{ instanceNameOf(item) }}
+                  </span>
+                  <span v-if="isAdminRole" class="upload-user" :title="$t('dashboard.uploadUser')">
+                    <font-awesome-icon icon="user" />
+                    {{ item.metadata?.UploadUser || $t('fileDetail.unknown') }}
+                  </span>
                 </div>
               </div>
             </div>
@@ -126,7 +144,7 @@
           <div v-else class="list-view">
             <div v-for="item in group.items" :key="item.name" class="list-item is-clickable" @click="openDetail(item)">
               <div class="list-preview">
-                <img v-if="isImage(item)" :src="urlOf(item)" loading="lazy" @error="onImgError" />
+                <img v-if="isImage(item)" :src="thumbOf(item)" loading="lazy" decoding="async" @error="onImgError" />
                 <video v-else-if="isVideo(item)" :src="urlOf(item)" muted preload="metadata"></video>
                 <div v-else class="file-icon-wrapper-small">
                   <font-awesome-icon icon="file" />
@@ -136,7 +154,11 @@
                 <div class="file-name" :title="item.metadata?.FileName">
                   <span class="name-start">{{ nameParts(item).start }}</span><span class="name-end">{{ nameParts(item).end }}</span>
                 </div>
-                <div class="file-url" :title="urlOf(item)">{{ urlOf(item) }}</div>
+                <!-- v3.0.0：原「文件链接」列替换为「文件所属实例」 -->
+                <div class="file-instance" :title="$t('history.fileInstance')">
+                  <font-awesome-icon icon="database" />
+                  {{ instanceNameOf(item) }}
+                </div>
               </div>
               <div class="list-meta">
                 <span class="upload-size">{{ item.metadata?.FileSize }}</span>
@@ -159,20 +181,32 @@
           </div>
         </div>
 
-        <!-- 滚动懒加载哨兵 -->
+        <!--
+          v3.0.0：改为「手动加载更多」—— 不再随滚动自动续页，
+          只在用户点按钮时加载一次（桌面端 / 移动端统一）。
+        -->
         <div class="load-more-container">
           <div v-if="loadingMore" class="loading-indicator">
             <font-awesome-icon icon="spinner" spin />
             <span>{{ $t('uploadHistory.loading') }}</span>
           </div>
-          <div v-else-if="hasMore" class="load-more-hint">{{ $t('uploadHistory.pullToLoadMore') }}</div>
+          <el-button
+            v-else-if="hasMore"
+            class="load-more-btn"
+            size="small"
+            plain
+            @click="loadMore"
+          >
+            <font-awesome-icon icon="angle-down" style="margin-right: 4px;" />{{ $t('uploadHistory.loadMore') }}
+          </el-button>
           <div v-else class="no-more-hint">{{ $t('uploadHistory.noMoreRecords') }}</div>
         </div>
       </template>
 
       <div v-else class="empty-state">
         <font-awesome-icon icon="history" class="empty-icon" />
-        <p>{{ $t('uploadHistory.emptyHistory') }}</p>
+        <!-- 选了某个具体实例却没数据时，明确提示「该实例暂无记录」 -->
+        <p>{{ filter.instance && filter.instance !== '*' ? $t('history.instanceEmpty') : $t('uploadHistory.emptyHistory') }}</p>
       </div>
     </div>
 
@@ -208,6 +242,7 @@
 </template>
 
 <script>
+import { thumbUrl } from '../utils/thumb';
 import { splitFileName } from '../utils/fileName';
 import fetchWithAuth from '@/utils/fetchWithAuth';
 import { copyText } from '@/utils/clipboard';
@@ -233,8 +268,11 @@ export default {
       renderedCount: RENDER_STEP, // 时间线已渲染条数（懒加载）
       serverStart: 0,
       serverHasMore: true,
-      filter: { user: 'all', range: 'all', fileType: 'all', search: '' },
+      // v3.0.0（R5）：instance 取值 '*'=全部实例 / ''=默认实例 / <id>=具体实例
+      filter: { instance: '*', user: 'all', range: 'all', fileType: 'all', search: '' },
       userOptions: [],
+      // v3.0.0：实例列表（不含默认实例；默认实例用 '' 表示）
+      instances: [],
       // 文件详情弹窗（与后台文件管理共用同一模板）
       showDetail: false,
       detailFile: null,
@@ -300,16 +338,76 @@ export default {
     const savedMode = localStorage.getItem('historyViewMode');
     if (savedMode) this.viewMode = savedMode;
 
-    // 支持从「系统状态」统计徽章带查询参数跳入（?range=today&user=xxx&type=image）
+    // v3.0.0：实例筛选默认「全部实例」（'*' = 不过滤；'' = 默认实例）
+    this.filter.instance = '*';
+
+    /*
+     * 支持带查询参数跳入：
+     *   ?range=today&type=image（「系统状态」统计徽章）
+     *   ?user=xxx（「用户管理 → 按用户收集 → 查看记录」，仅管理员有效）
+     * 没有任何 user 参数时，一律只加载「当前登录账户」自己的记录。
+     */
     const q = this.$route.query || {};
     if (q.range) this.filter.range = String(q.range);
-    if (q.user) this.filter.user = String(q.user);
     if (q.type) this.filter.fileType = String(q.type);
+    this.filter.user = q.user ? String(q.user) : (this.$store.getters.sessionUser || '');
 
-    if (this.isAdminRole) this.fetchUserOptions();
+    // 实例列表按「当前查看的用户」加载（与「实例」下拉联动）
+    this.fetchInstances(this.filter.user && this.filter.user !== 'all' ? this.filter.user : '');
+
     this.reload();
   },
   methods: {
+    /**
+     * v3.0.0：拉取实例列表（不含默认实例）。拉取失败不阻塞页面：下拉框里仍保留「默认实例」一项。
+     * v3.0.0（第三轮）：管理员可传 username，按「所选用户」取实例（后端 ?username= 仅管理员生效）。
+     */
+    async fetchInstances(username = '') {
+      try {
+        const qs = username ? `?username=${encodeURIComponent(username)}` : '';
+        const res = await fetchWithAuth(`/api/instances${qs}`);
+        if (!res.ok) return;
+        const rows = await res.json();
+        this.instances = Array.isArray(rows) ? rows : [];
+      } catch {
+        this.instances = [];
+      }
+    },
+    /**
+     * v3.0.0（第三轮）：上传用户切换 → 实例下拉跟着换（按该用户加载）；
+     * 原先选中的实例若已不在新列表里，回退到默认实例，避免筛出空结果。
+     */
+    async onUserChange(v) {
+      if (this.isAdminRole) {
+        await this.fetchInstances(v && v !== 'all' ? String(v) : '');
+        const ids = this.instances.map((i) => String(i.id));
+        if (this.filter.instance && this.filter.instance !== '*' && !ids.includes(String(this.filter.instance))) {
+          this.filter.instance = '*';
+        }
+      }
+      this.applyFilter();
+    },
+    /** 切换实例：重新拉取数据（v3.0.0 R5：不再记忆上次选择，默认「全部实例」） */
+    onInstanceChange() {
+      this.applyFilter();
+    },
+    /**
+     * 文件所属实例名：
+     *  · 后端补上实例字段后优先读记录（metadata.InstanceName / instanceId）；
+     *  · 数据里没有实例信息时回退为「当前所选实例」—— 即默认实例。
+     */
+    instanceNameOf(item) {
+      const metaName = item?.metadata?.InstanceName;
+      if (metaName) return metaName;
+      const id = item?.instanceId || item?.metadata?.InstanceId;
+      const hit = id ? this.instances.find((i) => i.id === id) : null;
+      if (hit) return hit.name;
+      // v3.0.0（R5）：只有明确选中某个实例时才回退成该实例名；「全部 / 默认」都按默认实例展示
+      if (this.filter.instance && this.filter.instance !== '*') {
+        return this.instances.find((i) => i.id === this.filter.instance)?.name || this.$t('history.defaultInstance');
+      }
+      return this.$t('history.defaultInstance');
+    },
     /** 时间范围起点（毫秒时间戳）；0 表示不限 */
     rangeStart() {
       const now = new Date();
@@ -353,6 +451,13 @@ export default {
       if (!item?.name) return '';
       const ext = item.metadata?.FileExt ? `.${item.metadata.FileExt}` : '';
       return fileLink(item.name, ext);
+    },
+    /**
+     * v3.0.0（R10）：历史记录缩略图 —— 本站 /file 代理 + thumb 参数
+     * （网格用 320、列表用 240，统一按 320 出图，浏览器按显示尺寸再压）。
+     */
+    thumbOf(item) {
+      return thumbUrl(this.urlOf(item), 320);
     },
     isImage(item) {
       if (item?.metadata?.FileType === 'image') return true;
@@ -411,6 +516,8 @@ export default {
         params.set('count', String(PAGE_SIZE));
         if (this.filter.search) params.set('search', this.filter.search.trim());
         if (this.filter.user && this.filter.user !== 'all') params.set('user', this.filter.user);
+        // v3.0.0（R5）：实例过滤恒带参数 —— '*'=全部实例、''=默认实例、其它=具体实例
+        params.set('instanceId', this.filter.instance === '*' ? '*' : (this.filter.instance || ''));
         // 文件类型走服务端筛选：普通用户/管理员都可用的合法取值
         const typeMap = { image: 'image', video: 'video', audio: 'audio', other: 'other' };
         if (typeMap[this.filter.fileType]) params.set('fileType', typeMap[this.filter.fileType]);
@@ -439,10 +546,12 @@ export default {
         this.loadingMore = false;
       }
     },
-    /** 滚动到底部：先补渲染，渲染完了再向服务端续页 */
-    async handleScroll(e) {
-      const el = e.target;
-      if (el.scrollHeight - el.scrollTop - el.clientHeight > 240) return;
+    /**
+     * v3.0.0：手动「加载更多」—— 点一次加载一次。
+     * 先补渲染窗口（本地已取到的记录），本地渲染完了再向服务端续一页。
+     */
+    async loadMore() {
+      if (this.loadingMore) return;
       if (this.renderedCount < this.filteredItems.length) {
         this.renderedCount += RENDER_STEP;
         return;
@@ -818,13 +927,43 @@ export default {
   opacity: 0.65;
 }
 
+.upload-user-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 4px;
+  font-size: 12px;
+}
+
 .upload-user {
   display: inline-flex;
   align-items: center;
   gap: 4px;
   font-size: 12px;
   opacity: 0.7;
-  margin-top: 4px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* v3.0.0：文件所属实例名（卡片视图靠左 / 列表视图独立一行） */
+.upload-instance,
+.file-instance {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  opacity: 0.7;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.list-info .file-instance {
+  opacity: 0.6;
 }
 
 /* 列表视图 */
@@ -875,13 +1014,7 @@ export default {
   min-width: 0;
 }
 
-.file-url {
-  font-size: 12px;
-  opacity: 0.6;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
+/* v3.0.0：原「文件链接」行样式由 .file-instance 取代（见 upload-instance 段） */
 
 .list-meta {
   display: flex;

@@ -737,6 +737,8 @@ export class AuthController {
     let canDelete = true;
     let totpEnabled = !!session?.t2;
     let totpRequired = false;
+    // v3.0.0：对外分享权限（管理员默认拥有；普通用户由后台「管理员操作 → 分享权限」开启）
+    let shareEnabled = role === 'admin' || role === 'super';
     let profile: Record<string, unknown> = {};
     if (session) {
       const u = await prisma.user.findUnique({ where: { username: session.user } });
@@ -745,6 +747,7 @@ export class AuthController {
         canDelete = u.canDelete ?? true;
         totpEnabled = u.totpEnabled;
         totpRequired = u.totpEnabled && !totpValid(session);
+        shareEnabled = u.role === 'admin' || u.role === 'super' ? true : !!u.shareEnabled;
         profile = {
           username: u.username,
           nickname: u.nickname || u.username,
@@ -756,6 +759,7 @@ export class AuthController {
           frontSessionDays: u.frontSessionDays ?? DEFAULT_SESSION_DAYS,
           backSessionDays: u.backSessionDays ?? DEFAULT_SESSION_DAYS,
           recoveryCount: countRecoveryCodes(u.recoveryHashes),
+          shareEnabled,
         };
       }
     }
@@ -770,6 +774,8 @@ export class AuthController {
       username: session?.user ?? null,
       canEdit,
       canDelete,
+      // v3.0.0：对外分享权限（前端据此决定是否显示「对外分享」相关入口）
+      shareEnabled,
       // 已启用 2FA 且当前会话未通过验证 → 前端进后台前弹动态码输入框
       totpEnabled,
       totpRequired,
@@ -782,6 +788,7 @@ export class AuthController {
         role,
         canEdit,
         canDelete,
+        shareEnabled,
         adminRequired,
         userRequired,
         valid,

@@ -28,6 +28,29 @@
                     <span class="filter-tab-label">{{ $t('filter.tabFilter') }}<i v-if="tabHasValue.filter" class="filter-tab-dot"></i></span>
                 </template>
                 <div class="filter-dialog-body">
+                    <!-- v3.0.0：「文件类型」调整到「访问状态」之前 -->
+                    <div class="filter-section">
+                        <div class="filter-title">{{ $t('filter.fileType') }}</div>
+                        <div class="filter-options">
+                            <el-checkbox-group v-model="draft.fileType">
+                                <el-checkbox v-for="option in fileTypeOptions" :key="'fileType-' + option.value" :label="option.value">{{ option.label }}</el-checkbox>
+                            </el-checkbox-group>
+                        </div>
+                    </div>
+                    <!--
+                        v3.0.0：用户共享（放在「文件类型」与「访问状态」之间）
+                        「我共享的」= shareScope=mine，「共享给我的」= shareScope=tome；
+                        单选语义：同时勾选时按 tome 优先并提示只支持单选，都不勾则不传。
+                    -->
+                    <div class="filter-section">
+                        <div class="filter-title">{{ $t('filter.shareScope') }}</div>
+                        <div class="filter-options">
+                            <el-checkbox-group v-model="draft.shareScope">
+                                <el-checkbox label="mine">{{ $t('filter.shareScopeMine') }}</el-checkbox>
+                                <el-checkbox label="tome">{{ $t('filter.shareScopeTome') }}</el-checkbox>
+                            </el-checkbox-group>
+                        </div>
+                    </div>
                     <div class="filter-section">
                         <div class="filter-title">{{ $t('filter.accessStatus') }}</div>
                         <div class="filter-options">
@@ -49,14 +72,6 @@
                         <div class="filter-options">
                             <el-checkbox-group v-model="draft.label">
                                 <el-checkbox v-for="option in labelOptions" :key="'label-' + option.value" :label="option.value">{{ option.label }}</el-checkbox>
-                            </el-checkbox-group>
-                        </div>
-                    </div>
-                    <div class="filter-section">
-                        <div class="filter-title">{{ $t('filter.fileType') }}</div>
-                        <div class="filter-options">
-                            <el-checkbox-group v-model="draft.fileType">
-                                <el-checkbox v-for="option in fileTypeOptions" :key="'fileType-' + option.value" :label="option.value">{{ option.label }}</el-checkbox>
                             </el-checkbox-group>
                         </div>
                     </div>
@@ -168,45 +183,102 @@
                         <div v-if="draft.tagNames.length > 1" class="filter-hint">
                             {{ draft.tagMode === 'or' ? $t('dashboard.tagModeOrHint') : $t('dashboard.tagModeAndHint') }}
                         </div>
+                        <!-- v3.0.0：「且」在前、「或」在后，默认「且」（tagMode=and） -->
                         <el-radio-group v-if="draft.tagNames.length > 1" v-model="draft.tagMode" size="small" class="tag-mode-group">
-                            <el-radio-button label="or">{{ $t('dashboard.tagModeOr') }}</el-radio-button>
                             <el-radio-button label="and">{{ $t('dashboard.tagModeAnd') }}</el-radio-button>
+                            <el-radio-button label="or">{{ $t('dashboard.tagModeOr') }}</el-radio-button>
                         </el-radio-group>
                     </div>
                 </div>
             </el-tab-pane>
 
-            <!-- ───── 标签页（v2.9.0 新增）：按「上传用户」筛选 ───── -->
-            <el-tab-pane name="user" v-if="userOptions.length > 0">
+
+            <!-- ───── 标签页 6：评级（v3.0.0 R8 新增；评分快捷项 + 评分/等级范围） ───── -->
+            <el-tab-pane name="rating">
                 <template #label>
-                    <span class="filter-tab-label">{{ $t('filter.tabUser') }}<i v-if="tabHasValue.user" class="filter-tab-dot"></i></span>
+                    <span class="filter-tab-label">{{ $t('filter.tabRating') }}<i v-if="tabHasValue.rating" class="filter-tab-dot"></i></span>
                 </template>
                 <div class="filter-dialog-body">
                     <div class="filter-section">
-                        <div class="filter-title">{{ $t('filter.userNames') }}</div>
-                        <div class="filter-options tag-name-options">
+                        <div class="filter-title">{{ $t('filter.ratingQuick') }}</div>
+                        <div class="quick-chip-row">
                             <button
-                                v-for="u in visibleUserOptions"
-                                :key="'user-' + u.username"
+                                v-for="p in ratingQuickOptions"
+                                :key="'rate-' + p.value"
                                 type="button"
                                 class="quick-chip"
-                                :class="{ 'is-active': draft.userNames.includes(u.username) }"
-                                :title="u.username"
-                                @click="toggleUserName(u.username)"
-                            >{{ u.nickname || u.username }}</button>
-                            <span v-if="userOptions.length === 0" class="filter-hint">{{ $t('filter.userFilterEmpty') }}</span>
+                                :class="{ 'is-active': isRatingQuickActive(p) }"
+                                @click="applyRatingQuick(p)"
+                            >{{ p.label }}</button>
                         </div>
-                        <!-- 与「标签」页一致：默认最近创建的 30 个，多余的折叠到「加载更多」 -->
-                        <div v-if="userOptions.length > userVisibleCount" class="filter-load-more-row">
-                            <el-button size="small" text type="primary" @click="loadMoreUsers">
-                                {{ $t('filter.loadMore') }}
-                                <span class="filter-load-more-count">(+{{ userOptions.length - userVisibleCount }})</span>
-                            </el-button>
+                    </div>
+                    <div class="filter-section">
+                        <div class="filter-title">{{ $t('filter.levelQuick') }}</div>
+                        <div class="quick-chip-row">
+                            <button
+                                v-for="p in levelQuickOptions"
+                                :key="'lv-' + p.value"
+                                type="button"
+                                class="quick-chip"
+                                :class="{ 'is-active': isLevelQuickActive(p) }"
+                                @click="applyLevelQuick(p)"
+                            >{{ p.label }}</button>
                         </div>
-                        <div class="filter-hint">{{ $t('filter.userFilterHint') }}</div>
+                    </div>
+                    <div class="filter-section">
+                        <div class="filter-title">{{ $t('filter.ratingRange') }}</div>
+                        <div class="dim-input-row">
+                            <span class="dim-row-label">{{ $t('filter.ratingLabel') }}</span>
+                            <el-input-number
+                                v-model="draft.ratingMin"
+                                :min="0"
+                                :max="5"
+                                :step="0.5"
+                                :controls="false"
+                                :placeholder="$t('filter.rangeMin')"
+                                class="size-input"
+                            />
+                            <span class="size-sep">—</span>
+                            <el-input-number
+                                v-model="draft.ratingMax"
+                                :min="0"
+                                :max="5"
+                                :step="0.5"
+                                :controls="false"
+                                :placeholder="$t('filter.rangeMax')"
+                                class="size-input"
+                            />
+                            <span class="dim-unit">★</span>
+                        </div>
+                        <div class="dim-input-row">
+                            <span class="dim-row-label">{{ $t('filter.levelLabel') }}</span>
+                            <el-input-number
+                                v-model="draft.levelMin"
+                                :min="0"
+                                :max="5"
+                                :step="1"
+                                :controls="false"
+                                :placeholder="$t('filter.rangeMin')"
+                                class="size-input"
+                            />
+                            <span class="size-sep">—</span>
+                            <el-input-number
+                                v-model="draft.levelMax"
+                                :min="0"
+                                :max="5"
+                                :step="1"
+                                :controls="false"
+                                :placeholder="$t('filter.rangeMax')"
+                                class="size-input"
+                            />
+                            <span class="dim-unit">♥</span>
+                        </div>
+                        <div class="filter-hint">{{ $t('filter.ratingHint') }}</div>
                     </div>
                 </div>
             </el-tab-pane>
+
+            <!-- v3.0.0：「用户」筛选页签已按需求移除（历史已保存的 userNames 条件在打开弹窗时一并清空） -->
 
             <!-- ───── 标签页 3：日期（按上传日期） ───── -->
             <el-tab-pane name="date">
@@ -366,22 +438,23 @@
         </el-tabs>
         <template #footer>
             <div class="filter-dialog-footer">
+                <!--
+                    v3.0.0：底部布局重排 ——
+                    「同时 / 任意」移到「清除」之前并靠左（不再带问号提示）；
+                    「清除 / 确定」靠右。选了 2 个及以上条件时才出现组合方式开关。
+                    标签页自己的「且 / 或」只作用于标签名称，不受这里影响。
+                -->
                 <div class="filter-footer-left">
-                    <el-button size="default" @click="clearAll" :disabled="draftCount === 0">{{ $t('filter.clearFilters') }}</el-button>
-                    <!-- v2.9.0：选了 2 个及以上条件时，出现全局「同时 / 任意」组合方式。
-                         「同时」= 所有条件都满足；「任意」= 满足任一条件即可。
-                         标签页自己的「或 / 且」只作用于标签名称，不受这里影响。 -->
-                    <template v-if="draftCount >= 2">
-                        <el-radio-group v-model="draft.matchMode" size="small" class="match-mode-group">
-                            <el-radio-button label="all">{{ $t('filter.matchModeAll') }}</el-radio-button>
-                            <el-radio-button label="any">{{ $t('filter.matchModeAny') }}</el-radio-button>
-                        </el-radio-group>
-                        <el-tooltip :content="$t('filter.matchModeTooltip')" placement="top" raw-content>
-                            <font-awesome-icon icon="question-circle" class="match-mode-help"/>
-                        </el-tooltip>
-                    </template>
+                    <!-- v3.0.0：「同时 / 任意」→「且 / 或」（值仍是 and / or） -->
+                    <el-radio-group v-if="draftCount >= 2" v-model="draft.matchMode" size="small" class="match-mode-group">
+                        <el-radio-button label="and">{{ $t('filter.matchModeAnd') }}</el-radio-button>
+                        <el-radio-button label="or">{{ $t('filter.matchModeOr') }}</el-radio-button>
+                    </el-radio-group>
                 </div>
-                <el-button size="default" type="primary" @click="apply">{{ $t('filter.apply') }}</el-button>
+                <div class="filter-footer-right">
+                    <el-button size="default" @click="clearAll" :disabled="draftCount === 0">{{ $t('fileManager.clear') }}</el-button>
+                    <el-button size="default" type="primary" @click="apply">{{ $t('filter.apply') }}</el-button>
+                </div>
             </div>
         </template>
     </el-dialog>
@@ -406,10 +479,13 @@ const EMPTY_FILTERS = {
     nameChanged: [],
     tags: [],
     tagNames: [],
-    tagMode: 'or',
-    /* v2.9.0：用户页筛选 + 全局条件组合方式（all 同时 / any 任意） */
+    /* v3.0.0：用户共享（mine = 我共享的 / tome = 共享给我的；单选，空数组 = 不筛） */
+    shareScope: [],
+    /* v3.0.0：标签模式默认「且」（and），与后端 tagMode 口径一致 */
+    tagMode: 'and',
+    /* v2.9.0：用户页筛选 + 全局条件组合方式（and 同时 / or 任意） */
     userNames: [],
-    matchMode: 'all',
+    matchMode: 'and',
     /* v2.8.7：日期 / 大小筛选（与快捷筛选联动） */
     datePreset: '',
     dateFrom: '',
@@ -424,7 +500,12 @@ const EMPTY_FILTERS = {
     widthMin: 0,
     widthMax: 0,
     heightMin: 0,
-    heightMax: 0
+    heightMax: 0,
+    /* v3.0.0（R8）：评级筛选（null = 该侧不限；「未评分 / 未设等级」= 0 与 0） */
+    ratingMin: null,
+    ratingMax: null,
+    levelMin: null,
+    levelMax: null
 };
 
 export default {
@@ -483,6 +564,8 @@ export default {
             return [
                 { label: this.$t('filter.normal'), value: 'normal' },
                 { label: this.$t('filter.blocked'), value: 'blocked' },
+                // v3.0.0：已加密（后端 encryptedOnly=1），可与其它筛选叠加
+                { label: this.$t('filter.encrypted'), value: 'encrypted' },
                 // v2.9.0：已删除（回收站）—— 勾选后页面切到回收站视图并按条件筛选
                 { label: this.$t('filter.deleted'), value: 'deleted' }
             ];
@@ -506,14 +589,20 @@ export default {
                 { label: this.$t('filter.image'), value: 'image' },
                 { label: this.$t('filter.video'), value: 'video' },
                 { label: this.$t('filter.audio'), value: 'audio' },
+                // v3.0.0（R14）：文本 / PDF 从「其他」里拆出来单独筛选
+                { label: this.$t('filter.txt'), value: 'txt' },
+                { label: this.$t('filter.pdf'), value: 'pdf' },
                 { label: this.$t('filter.other'), value: 'other' }
             ];
         },
         channelOptions() {
-            return CHANNEL_TYPES.map((t) => ({
-                label: t.label,
-                value: CHANNEL_SHORT_LABEL[t.value] || t.value
-            }));
+            // v3.0.0（R8）：「本地文件」不是存储渠道，渠道类型筛选里不出现
+            return CHANNEL_TYPES
+                .filter((t) => t.value !== 'localfiles')
+                .map((t) => ({
+                    label: t.label,
+                    value: CHANNEL_SHORT_LABEL[t.value] || t.value
+                }));
         },
         backupOptions() {
             return [
@@ -528,7 +617,9 @@ export default {
                 { label: this.$t('filter.uploadSourceFetch'), value: 'Fetch' },
                 { label: this.$t('filter.uploadSourceWebdav'), value: 'WebDAV' },
                 { label: this.$t('filter.uploadSourceApiWeb'), value: 'API-Web' },
-                { label: this.$t('filter.uploadSourceApiS3'), value: 'API-S3' }
+                { label: this.$t('filter.uploadSourceApiS3'), value: 'API-S3' },
+                // v3.0.0：「登记文件」来源（与后端 uploadSource=Record 一致）
+                { label: this.$t('fileManager.uploadSourceRecord'), value: 'Record' }
             ];
         },
         redirectOptions() {
@@ -575,6 +666,31 @@ export default {
                 { label: this.$t('filter.noTags'), value: 'none' }
             ];
         },
+        /**
+         * v3.0.0（R9）：评级快捷选项改六档 —— 五星 / 四星及以上 / 三星 / 两星 / 一星 / 未评分。
+         * min/max 为「该快捷项对应的范围」；null = 该侧不限；「未评分」= 0 与 0（评分必须等于 0）。
+         */
+        ratingQuickOptions() {
+            return [
+                { label: this.$t('filter.rateFive'), value: 'five', min: 5, max: 5 },
+                { label: this.$t('filter.rateFourUp'), value: 'fourUp', min: 4, max: null },
+                { label: this.$t('filter.rateThree'), value: 'three', min: 3, max: 3 },
+                { label: this.$t('filter.rateTwo'), value: 'two', min: 2, max: 2 },
+                { label: this.$t('filter.rateOne'), value: 'one', min: 1, max: 1 },
+                { label: this.$t('filter.rateNone'), value: 'none', min: 0, max: 0 }
+            ];
+        },
+        /** 等级（爱心）快捷选项改六档 —— 五级 / 四级及以上 / 三级 / 两级 / 一级 / 未评级 */
+        levelQuickOptions() {
+            return [
+                { label: this.$t('filter.levelFive'), value: 'five', min: 5, max: 5 },
+                { label: this.$t('filter.levelFourUp'), value: 'fourUp', min: 4, max: null },
+                { label: this.$t('filter.levelThree'), value: 'three', min: 3, max: 3 },
+                { label: this.$t('filter.levelTwo'), value: 'two', min: 2, max: 2 },
+                { label: this.$t('filter.levelOne'), value: 'one', min: 1, max: 1 },
+                { label: this.$t('filter.levelNone'), value: 'none', min: 0, max: 0 }
+            ];
+        },
         /** v2.8.7：日期快捷选项（相对今天计算）；v2.8.7b 新增「本年内」 */
         datePresetOptions() {
             return [
@@ -611,7 +727,7 @@ export default {
         tabHasValue() {
             const d = this.draft;
             return {
-                filter: ['accessStatus', 'listType', 'label', 'fileType', 'channel', 'channelName', 'uploadSource', 'backup', 'redirect', 'validity', 'nameChanged']
+                filter: ['accessStatus', 'listType', 'label', 'fileType', 'channel', 'channelName', 'uploadSource', 'backup', 'redirect', 'validity', 'nameChanged', 'shareScope']
                     .some((k) => (d[k] || []).length > 0),
                 tags: (d.tags || []).length > 0 || (d.tagNames || []).length > 0,
                 user: (d.userNames || []).length > 0,
@@ -620,14 +736,20 @@ export default {
                 dimension:
                     !!d.dimPreset ||
                     (Number(d.widthMin) || 0) > 0 || (Number(d.widthMax) || 0) > 0 ||
-                    (Number(d.heightMin) || 0) > 0 || (Number(d.heightMax) || 0) > 0
+                    (Number(d.heightMin) || 0) > 0 || (Number(d.heightMax) || 0) > 0,
+                // v3.0.0（R8）：评级页（任一侧非 null 即有值）
+                rating:
+                    d.ratingMin !== null && d.ratingMin !== undefined ||
+                    d.ratingMax !== null && d.ratingMax !== undefined ||
+                    d.levelMin !== null && d.levelMin !== undefined ||
+                    d.levelMax !== null && d.levelMax !== undefined
             };
         },
         /** 草稿里的有效条件数（弹窗内实时统计，供「清除筛选」按钮禁用态 / 同时任意按钮显隐） */
         draftCount() {
             const d = this.draft;
             let n = 0;
-            for (const k of ['accessStatus', 'listType', 'label', 'fileType', 'channel', 'channelName', 'uploadSource', 'backup', 'redirect', 'validity', 'nameChanged', 'tags', 'tagNames', 'userNames']) {
+            for (const k of ['accessStatus', 'listType', 'label', 'fileType', 'channel', 'channelName', 'uploadSource', 'backup', 'redirect', 'validity', 'nameChanged', 'tags', 'tagNames', 'userNames', 'shareScope']) {
                 n += (d[k] || []).length;
             }
             /*
@@ -643,6 +765,8 @@ export default {
                 d.dimPreset ||
                 d.widthMin > 0 || d.widthMax > 0 || d.heightMin > 0 || d.heightMax > 0
             ) n += 1;
+            // v3.0.0（R8）：评级（评分范围 / 等级范围）合计一个条件
+            if (this.tabHasValue.rating) n += 1;
             return n;
         }
     },
@@ -661,10 +785,16 @@ export default {
                 redirect: Array.isArray(s.redirect) ? [...s.redirect] : [],
                 tags: Array.isArray(s.tags) ? [...s.tags] : [],
                 tagNames: Array.isArray(s.tagNames) ? [...s.tagNames] : [],
-                tagMode: s.tagMode === 'and' ? 'and' : 'or',
+                // v3.0.0：用户共享（父组件存的是字符串，草稿里用数组承载两个复选项）
+                shareScope: Array.isArray(s.shareScope)
+                    ? [...s.shareScope]
+                    : (s.shareScope ? [String(s.shareScope)] : []),
+                tagMode: s.tagMode === 'or' ? 'or' : 'and',
                 // v2.9.0
-                userNames: Array.isArray(s.userNames) ? [...s.userNames] : [],
-                matchMode: s.matchMode === 'any' ? 'any' : 'all',
+                // v3.0.0：用户筛选已移除，历史保存的条件不再生效（恒为空）
+                userNames: [],
+                // v3.0.0：and（同时）/ or（任意）—— 直接透传给列表接口
+                matchMode: s.matchMode === 'or' ? 'or' : 'and',
                 datePreset: s.datePreset || '',
                 dateFrom: s.dateFrom || '',
                 dateTo: s.dateTo || '',
@@ -682,7 +812,12 @@ export default {
                 widthMin: Number(s.widthMin) || 0,
                 widthMax: Number(s.widthMax) || 0,
                 heightMin: Number(s.heightMin) || 0,
-                heightMax: Number(s.heightMax) || 0
+                heightMax: Number(s.heightMax) || 0,
+                // v3.0.0（R8）：评级（null = 不限）
+                ratingMin: s.ratingMin === null || s.ratingMin === undefined ? null : Number(s.ratingMin),
+                ratingMax: s.ratingMax === null || s.ratingMax === undefined ? null : Number(s.ratingMax),
+                levelMin: s.levelMin === null || s.levelMin === undefined ? null : Number(s.levelMin),
+                levelMax: s.levelMax === null || s.levelMax === undefined ? null : Number(s.levelMax)
             };
         },
         bytesToValue(bytes) {
@@ -712,6 +847,32 @@ export default {
         /** v2.9.0：「加载更多」—— 每次多展示 30 个用户 */
         loadMoreUsers() {
             this.userVisibleCount += 30;
+        },
+        /** v3.0.0（R8）：评级快捷项是否命中当前草稿范围 */
+        isRatingQuickActive(p) {
+            return this.draft.ratingMin === p.min && this.draft.ratingMax === p.max;
+        },
+        isLevelQuickActive(p) {
+            return this.draft.levelMin === p.min && this.draft.levelMax === p.max;
+        },
+        /** v3.0.0（R8）：点评级快捷项 → 写入范围（再点同一个取消） */
+        applyRatingQuick(p) {
+            if (this.isRatingQuickActive(p)) {
+                this.draft.ratingMin = null;
+                this.draft.ratingMax = null;
+                return;
+            }
+            this.draft.ratingMin = p.min;
+            this.draft.ratingMax = p.max;
+        },
+        applyLevelQuick(p) {
+            if (this.isLevelQuickActive(p)) {
+                this.draft.levelMin = null;
+                this.draft.levelMax = null;
+                return;
+            }
+            this.draft.levelMin = p.min;
+            this.draft.levelMax = p.max;
         },
         /** 弹窗打开时：以父组件已应用的 filters 重置草稿 */
         syncDraft() {
@@ -828,6 +989,18 @@ export default {
         },
         /** 确定：把草稿应用到父组件（所有条件一起提交后端联合查询） */
         apply() {
+            /*
+             * v3.0.0：用户共享是单选语义 ——
+             * 两个都勾选时按 tome（共享给我的）优先，并提示只支持单选。
+             */
+            const scopeRaw = [...(this.draft.shareScope || [])];
+            let shareScope = '';
+            if (scopeRaw.length > 1) {
+                shareScope = 'tome';
+                this.$message.info(this.$t('filter.shareScopeSingle'));
+            } else if (scopeRaw.length === 1) {
+                shareScope = scopeRaw[0] === 'mine' ? 'mine' : 'tome';
+            }
             const out = {
                 accessStatus: [...this.draft.accessStatus],
                 listType: [...this.draft.listType],
@@ -841,10 +1014,12 @@ export default {
                 redirect: [...this.draft.redirect],
                 tags: [...this.draft.tags],
                 tagNames: [...(this.draft.tagNames || [])],
-                tagMode: this.draft.tagMode || 'or',
-                // v2.9.0：用户页 + 全局「同时 / 任意」
+                tagMode: this.draft.tagMode === 'or' ? 'or' : 'and',
+                // v3.0.0：用户共享（'mine' | 'tome' | ''）
+                shareScope,
+                // v2.9.0：用户页 + 全局「同时 / 任意」（v3.0.0：and / or）
                 userNames: [...(this.draft.userNames || [])],
-                matchMode: this.draft.matchMode === 'any' ? 'any' : 'all',
+                matchMode: this.draft.matchMode === 'or' ? 'or' : 'and',
                 datePreset: this.draft.datePreset,
                 dateFrom: this.draft.dateFrom,
                 dateTo: this.draft.dateTo,
@@ -860,7 +1035,12 @@ export default {
                 widthMin: Number(this.draft.widthMin) || 0,
                 widthMax: Number(this.draft.widthMax) || 0,
                 heightMin: Number(this.draft.heightMin) || 0,
-                heightMax: Number(this.draft.heightMax) || 0
+                heightMax: Number(this.draft.heightMax) || 0,
+                // v3.0.0（R8）：评级（null 原样透传 = 不限）
+                ratingMin: this.draft.ratingMin === undefined ? null : (this.draft.ratingMin === null || this.draft.ratingMin === '' ? null : Number(this.draft.ratingMin)),
+                ratingMax: this.draft.ratingMax === undefined ? null : (this.draft.ratingMax === null || this.draft.ratingMax === '' ? null : Number(this.draft.ratingMax)),
+                levelMin: this.draft.levelMin === undefined ? null : (this.draft.levelMin === null || this.draft.levelMin === '' ? null : Number(this.draft.levelMin)),
+                levelMax: this.draft.levelMax === undefined ? null : (this.draft.levelMax === null || this.draft.levelMax === '' ? null : Number(this.draft.levelMax))
             };
             this.$emit('update:filters', out);
             this.$emit('change', { type: 'dialog', filters: out });
@@ -870,8 +1050,10 @@ export default {
         clearAll() {
             this.draft = this.buildDraft(null);
             this.draftDateRange = null;
-            this.$emit('update:filters', { ...EMPTY_FILTERS });
-            this.$emit('change', { type: 'clear', filters: { ...EMPTY_FILTERS } });
+            // v3.0.0：shareScope 在父组件里是字符串，清空时统一给 ''
+            const empty = { ...EMPTY_FILTERS, shareScope: '' };
+            this.$emit('update:filters', empty);
+            this.$emit('change', { type: 'clear', filters: { ...empty } });
         }
     },
     watch: {
@@ -1074,10 +1256,12 @@ export default {
 .match-mode-group :deep(.el-radio-button__inner) {
     padding: 5px 12px;
 }
-.match-mode-help {
-    font-size: 13px;
-    opacity: 0.55;
-    cursor: help;
+/* v3.0.0：右侧「清除 / 确定」按钮组 */
+.filter-footer-right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-left: auto;
 }
 
 /* 底部按钮 */
@@ -1086,6 +1270,36 @@ export default {
     align-items: center;
     justify-content: space-between;
     gap: 10px;
+    /*
+     * v3.0.0（R14）：footer 容器必须占满整行 ——
+     * Element Plus 的 .el-dialog__footer 在窄屏下会把块级子元素按内容宽度居中，
+     * 没有这条时「且 / 或」整组被挤到中间（实测左偏约 90px）。
+     */
+    width: 100%;
+}
+/*
+ * v3.0.0（R7）：移动端底部「且 / 或」固定贴在最左侧
+ * （弹窗底部内边距较宽 + 右侧按钮组 margin-left:auto，之前视觉上像是被居中）。
+ */
+@media (max-width: 768px) {
+    .filter-dialog-footer {
+        flex-wrap: nowrap;
+        justify-content: flex-start;
+        gap: 8px;
+        padding-left: 0;
+    }
+    .filter-footer-left {
+        flex: 0 0 auto;
+        margin-right: auto;
+        justify-content: flex-start;
+    }
+    .filter-footer-right {
+        flex: 0 0 auto;
+        margin-left: 0;
+    }
+    .match-mode-group :deep(.el-radio-button__inner) {
+        padding: 5px 10px;
+    }
 }
 </style>
 
@@ -1114,6 +1328,16 @@ export default {
 }
 .filter-dialog .el-dialog__footer {
     flex: 0 0 auto;
+}
+/*
+ * v3.0.0（R14）：移动端底部「且 / 或」真正贴左 ——
+ * el-dialog__footer 自带 20px 左右内边距，导致按钮组虽然 flex-start 仍显得被内缩。
+ * 这里把底部左内边距去掉（右侧保留，保持「清除 / 确定」与内容对齐）。
+ */
+@media (max-width: 768px) {
+    .filter-dialog .el-dialog__footer {
+        padding-left: 0;
+    }
 }
 /* 标签页撑满弹窗主体：tabs → content → pane → body 全链路高度 */
 .filter-dialog .filter-dialog-tabs {

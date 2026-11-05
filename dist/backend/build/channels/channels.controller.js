@@ -45,8 +45,9 @@ var __param = (this && this.__param) || function (paramIndex, decorator) {
     return function (target, key) { decorator(target, key, paramIndex); }
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.ChannelAllowedController = exports.ChannelManageController = exports.StorageSettingsController = exports.ChannelsController = exports.parseAuthorizedUsers = exports.channelVisibleTo = exports.ChannelsService = exports.CHANNEL_ORDER_BY = exports.CHANNEL_TYPE_CODE = exports.LEGACY_LOCAL_CHANNEL_CODE = exports.LOCAL_CHANNEL_CODE = exports.BUILTIN_CHANNEL_TYPES = exports.CHANNEL_TYPES = void 0;
+exports.ChannelAllowedController = exports.ChannelManageController = exports.StorageSettingsController = exports.ChannelsController = exports.parseAuthorizedUsers = exports.channelVisibleTo = exports.ChannelsService = exports.CHANNEL_ORDER_BY = exports.CUSTOM_LOCAL_TYPE_CODE = exports.CHANNEL_TYPE_CODE = exports.LEGACY_LOCAL_CHANNEL_CODE = exports.LOCAL_FILES_CHANNEL_CODE = exports.LOCAL_CHANNEL_CODE = exports.BUILTIN_CHANNEL_TYPES = exports.CHANNEL_TYPES = void 0;
 exports.channelTypeCode = channelTypeCode;
+const local_adapter_1 = require("../adapters/local.adapter");
 const common_1 = require("@nestjs/common");
 const prisma_1 = require("../common/prisma");
 const crypto_service_1 = require("../common/crypto.service");
@@ -55,6 +56,7 @@ const settings_service_1 = require("../settings/settings.service");
 const adapter_factory_1 = require("../adapters/adapter.factory");
 const storage_channel_service_1 = require("../storage/storage-channel.service");
 const app_log_1 = require("../common/app-log");
+const channel_domain_1 = require("../common/channel-domain");
 const SECRET_FIELDS = {
     local: [],
     cos: ['secretId', 'secretKey'],
@@ -67,9 +69,10 @@ const SECRET_FIELDS = {
     immich: ['apiKey'],
     custom: ['tokenValue'],
 };
-exports.CHANNEL_TYPES = ['cos', 'minio', 'r2', 's3', 'aliyun', 'easyimages', 'lsky', 'webdav', 'immich', 'custom'];
+exports.CHANNEL_TYPES = ['cos', 'minio', 'r2', 's3', 'aliyun', 'easyimages', 'lsky', 'webdav', 'immich', 'custom', 'local', 'localfiles'];
 exports.BUILTIN_CHANNEL_TYPES = ['local'];
 exports.LOCAL_CHANNEL_CODE = '999999';
+exports.LOCAL_FILES_CHANNEL_CODE = '999990';
 exports.LEGACY_LOCAL_CHANNEL_CODE = '100000';
 exports.CHANNEL_TYPE_CODE = {
     easyimages: 100,
@@ -82,9 +85,13 @@ exports.CHANNEL_TYPE_CODE = {
     aliyun: 170,
     webdav: 180,
     custom: 190,
+    localfiles: 1000,
     local: 999,
 };
-function channelTypeCode(type) {
+exports.CUSTOM_LOCAL_TYPE_CODE = 995;
+function channelTypeCode(type, code) {
+    if (type === 'local' && code !== undefined && code !== exports.LOCAL_CHANNEL_CODE)
+        return exports.CUSTOM_LOCAL_TYPE_CODE;
     return exports.CHANNEL_TYPE_CODE[type] ?? 998;
 }
 exports.CHANNEL_ORDER_BY = [{ typeCode: 'asc' }, { name: 'asc' }];
@@ -111,6 +118,7 @@ const IDENTITY_FIELDS = {
     webdav: ['baseUri', 'username'],
     immich: ['serverUrl', 'apiKey'],
     custom: ['apiUrl', 'tokenValue'],
+    local: ['rootPath'],
 };
 function channelIdentity(type, cfg) {
     const fields = IDENTITY_FIELDS[type] || [];
@@ -127,7 +135,7 @@ let ChannelsService = class ChannelsService {
         for (const [k, v] of Object.entries(cfg)) {
             out[k] = SECRET_FIELDS[type]?.includes(k) ? crypto_service_1.CryptoService.decrypt(String(v)) : String(v);
         }
-        return out;
+        return (0, channel_domain_1.normalizeBucketDomain)(type, out);
     }
     maskConfig(type, configJson) {
         const cfg = JSON.parse(configJson || '{}');
@@ -158,9 +166,9 @@ let ChannelsService = class ChannelsService {
                 await prisma_1.prisma.channel.update({ where: { id: legacy.id }, data: { code: exports.LOCAL_CHANNEL_CODE } });
             }
         }
-        const all = await prisma_1.prisma.channel.findMany({ select: { id: true, type: true, typeCode: true } });
+        const all = await prisma_1.prisma.channel.findMany({ select: { id: true, type: true, typeCode: true, code: true } });
         for (const c of all) {
-            const want = channelTypeCode(c.type);
+            const want = channelTypeCode(c.type, c.code);
             if (c.typeCode !== want) {
                 await prisma_1.prisma.channel.update({ where: { id: c.id }, data: { typeCode: want } });
             }
@@ -188,7 +196,9 @@ let ChannelsService = class ChannelsService {
         }
         let name = '本地存储';
         if (await prisma_1.prisma.channel.findUnique({ where: { name } }))
-            name = '本地存储（系统）';
+            name = '本地存储-系统';
+        if (await prisma_1.prisma.channel.findUnique({ where: { name } }))
+            name = '本地存储_系统';
         const hasMain = await prisma_1.prisma.channel.count({ where: { isMain: true } });
         await prisma_1.prisma.channel.create({
             data: {
@@ -201,6 +211,53 @@ let ChannelsService = class ChannelsService {
                 isBackup: false,
                 sortOrder: 9999,
                 config: JSON.stringify({ quotaEnabled: 'false', quotaLimitGB: '10', quotaThreshold: '95' }),
+            },
+        });
+    }
+    async ensureBuiltinLocalFilesChannel() {
+        const root = local_adapter_1.LocalAdapter.root();
+        const existing = await prisma_1.prisma.channel.findUnique({ where: { code: exports.LOCAL_FILES_CHANNEL_CODE } });
+        if (existing) {
+            let cfg = {};
+            try {
+                cfg = JSON.parse(existing.config || '{}');
+            }
+            catch {
+                cfg = {};
+            }
+            const current = Array.isArray(cfg.rootPaths) ? cfg.rootPaths : [];
+            const patch = {};
+            if (existing.type !== 'localfiles')
+                patch.type = 'localfiles';
+            if (!existing.enabled)
+                patch.enabled = true;
+            const wantCode = channelTypeCode('localfiles');
+            if (existing.typeCode !== wantCode)
+                patch.typeCode = wantCode;
+            if (current.length !== 1 || String(current[0]) !== root) {
+                patch.config = JSON.stringify({ ...cfg, rootPaths: [root] });
+            }
+            if (Object.keys(patch).length) {
+                await prisma_1.prisma.channel.update({ where: { id: existing.id }, data: patch });
+            }
+            return;
+        }
+        let name = '本地文件';
+        if (await prisma_1.prisma.channel.findUnique({ where: { name } }))
+            name = '本地文件-系统';
+        if (await prisma_1.prisma.channel.findUnique({ where: { name } }))
+            name = '本地文件_系统';
+        await prisma_1.prisma.channel.create({
+            data: {
+                code: exports.LOCAL_FILES_CHANNEL_CODE,
+                name,
+                type: 'localfiles',
+                typeCode: channelTypeCode('localfiles'),
+                enabled: true,
+                isMain: false,
+                isBackup: false,
+                sortOrder: 9998,
+                config: JSON.stringify({ rootPaths: [root] }),
             },
         });
     }
@@ -365,8 +422,6 @@ let ChannelManageController = class ChannelManageController {
         const addable = [...exports.CHANNEL_TYPES].sort((a, b) => channelTypeCode(a) - channelTypeCode(b));
         for (const type of addable)
             grouped[type] = [];
-        for (const type of exports.BUILTIN_CHANNEL_TYPES)
-            grouped[type] = [];
         for (const c of channels) {
             const config = this.svc.maskConfig(c.type, c.config);
             (grouped[c.type] ||= []).push({
@@ -424,13 +479,48 @@ let ChannelManageController = class ChannelManageController {
     async nextCode() {
         for (let i = 0; i < 60; i++) {
             const code = String(100000 + Math.floor(Math.random() * 899000));
-            if (code === exports.LOCAL_CHANNEL_CODE)
+            if (code === exports.LOCAL_CHANNEL_CODE || code === exports.LOCAL_FILES_CHANNEL_CODE)
                 continue;
             if (!(await prisma_1.prisma.channel.findUnique({ where: { code } })))
                 return code;
         }
         const fallback = String(Date.now()).slice(-6);
-        return fallback === exports.LOCAL_CHANNEL_CODE ? '100001' : fallback;
+        return fallback === exports.LOCAL_CHANNEL_CODE || fallback === exports.LOCAL_FILES_CHANNEL_CODE ? '100001' : fallback;
+    }
+    async nextLocalCode() {
+        for (let n = 990000; n <= 999998; n++) {
+            const code = String(n);
+            if (code === exports.LOCAL_CHANNEL_CODE || code === exports.LOCAL_FILES_CHANNEL_CODE)
+                continue;
+            if (!(await prisma_1.prisma.channel.findUnique({ where: { code } })))
+                return code;
+        }
+        return this.nextCode();
+    }
+    validateLocalRootPath(raw) {
+        const s = String(raw || '').trim();
+        if (!s)
+            return { ok: false, message: '自定义本地渠道必须填写 rootPath（容器内存储地址）' };
+        if (s.includes('..'))
+            return { ok: false, message: 'rootPath 禁止包含 ".."' };
+        return { ok: true, rootPath: s };
+    }
+    validateLocalRootPaths(raw) {
+        let list = [];
+        if (Array.isArray(raw)) {
+            list = raw.map((v) => String(v || '').trim());
+        }
+        else if (typeof raw === 'string') {
+            list = raw.split(/\r?\n/).map((v) => v.trim());
+        }
+        list = list.filter(Boolean);
+        if (!list.length) {
+            return { ok: false, message: '本地文件渠道必须填写「浏览目录」（容器内绝对路径，一行一个）' };
+        }
+        const bad = list.find((p) => p.includes('..'));
+        if (bad)
+            return { ok: false, message: `浏览目录禁止包含 ".."：${bad}` };
+        return { ok: true, rootPaths: list.join('\n') };
     }
     async create(body) {
         if (!exports.CHANNEL_TYPES.includes(body.type)) {
@@ -445,7 +535,25 @@ let ChannelManageController = class ChannelManageController {
         const dup = await prisma_1.prisma.channel.findFirst({ where: { name: body.name } });
         if (dup)
             return { success: false, message: `渠道名称「${body.name}」已存在` };
-        const raw = body.config || {};
+        if (body.type === 'localfiles' && (body.isMain || body.isBackup)) {
+            return { success: false, message: '本地文件渠道只用于浏览本地目录，不能设为主渠道或备份渠道' };
+        }
+        const raw = (0, channel_domain_1.normalizeBucketDomain)(body.type, body.config || {});
+        let rootPath = '';
+        if (body.type === 'local') {
+            const check = this.validateLocalRootPath(raw.rootPath);
+            if (!check.ok)
+                return { success: false, message: check.message };
+            rootPath = check.rootPath;
+        }
+        else if (body.type === 'localfiles') {
+            const check = this.validateLocalRootPaths(raw.rootPaths ?? raw.rootPath);
+            if (!check.ok)
+                return { success: false, message: check.message };
+            raw.rootPaths = check.rootPaths;
+            if (!String(raw.hostPath || '').trim())
+                delete raw.hostPath;
+        }
         if (body.isBackup) {
             const err = await this.sameAccountAsMain(body.type, null, channelIdentity(body.type, raw));
             if (err)
@@ -455,18 +563,20 @@ let ChannelManageController = class ChannelManageController {
         for (const [k, v] of Object.entries(raw)) {
             encrypted[k] = SECRET_FIELDS[body.type]?.includes(k) ? crypto_service_1.CryptoService.encrypt(String(v)) : String(v);
         }
+        const isLocal = body.type === 'local';
         const ch = await prisma_1.prisma.channel.create({
             data: {
                 name: body.name,
                 type: body.type,
-                typeCode: channelTypeCode(body.type),
+                typeCode: isLocal ? exports.CUSTOM_LOCAL_TYPE_CODE : channelTypeCode(body.type),
                 config: JSON.stringify(encrypted),
                 isMain: !!body.isMain,
                 isBackup: !!body.isBackup,
-                code: await this.nextCode(),
+                code: isLocal ? await this.nextLocalCode() : await this.nextCode(),
             },
         });
         await this.enforceUniqueFlags(ch.id, body.isMain, body.isBackup);
+        app_log_1.appLog.info('channel', `新增渠道：${body.name}（${body.type}${isLocal ? `，rootPath=${rootPath}` : ''}）`, `code=${ch.code}`);
         return { success: true, data: { id: ch.id, code: ch.code } };
     }
     async update(id, body) {
@@ -475,6 +585,9 @@ let ChannelManageController = class ChannelManageController {
             return { success: false, message: '渠道不存在' };
         if (body.isMain && body.isBackup) {
             return { success: false, message: '同一条渠道不能同时作为主渠道和备份渠道' };
+        }
+        if (ch.type === 'localfiles' && (body.isMain || body.isBackup)) {
+            return { success: false, message: '本地文件渠道只用于浏览本地目录，不能设为主渠道或备份渠道' };
         }
         if (body.name !== undefined && String(body.name).trim() !== ch.name) {
             const name = String(body.name).trim();
@@ -491,13 +604,31 @@ let ChannelManageController = class ChannelManageController {
                 continue;
             merged[k] = v;
         }
+        if (ch.code === exports.LOCAL_FILES_CHANNEL_CODE) {
+            merged.rootPaths = JSON.stringify([local_adapter_1.LocalAdapter.root()]);
+            delete merged.rootPath;
+        }
+        if (!['local', 'localfiles'].includes(ch.type)) {
+            const pd = String(merged.publicDomain || '').trim();
+            if (!pd) {
+                const ep = String(merged.endpoint || merged.apiUrl || merged.serverUrl || merged.baseUri || merged.domain || '').trim();
+                if (ep) {
+                    try {
+                        merged.publicDomain = new URL(/^https?:\/\//i.test(ep) ? ep : `https://${ep}`).origin;
+                    }
+                    catch {
+                        merged.publicDomain = ep;
+                    }
+                }
+            }
+        }
         if (body.isBackup) {
             const err = await this.sameAccountAsMain(ch.type, id, channelIdentity(ch.type, merged));
             if (err)
                 return { success: false, message: err };
         }
         const encrypted = {};
-        for (const [k, v] of Object.entries(merged)) {
+        for (const [k, v] of Object.entries((0, channel_domain_1.normalizeBucketDomain)(ch.type, merged))) {
             encrypted[k] = SECRET_FIELDS[ch.type]?.includes(k) ? crypto_service_1.CryptoService.encrypt(v) : v;
         }
         await prisma_1.prisma.channel.update({
@@ -534,6 +665,10 @@ let ChannelManageController = class ChannelManageController {
         if (!exports.CHANNEL_TYPES.includes(type)) {
             return { success: false, message: `不支持的渠道类型: ${type || '(空)'}` };
         }
+        if (type === 'localfiles') {
+            return { success: false, message: '本地文件渠道只用于浏览本地目录，不支持上传测试' };
+        }
+        cfg = (0, channel_domain_1.normalizeBucketDomain)(type, cfg);
         const info = { id: body.id || 'channel-test', name: '连接测试', type, config: cfg, metas: {} };
         const key = `go-imgbed-test-${Date.now()}.png`;
         const png = await makeTestPng();
@@ -593,6 +728,8 @@ let ChannelManageController = class ChannelManageController {
         const ch = await prisma_1.prisma.channel.findUnique({ where: { id } });
         if (!ch)
             return { success: false, message: '渠道不存在' };
+        if (ch.type === 'localfiles')
+            return { success: false, message: '本地文件渠道不支持授权（仅管理员可用）' };
         const wanted = Array.isArray(body.usernames) ? body.usernames.map((x) => String(x || '').trim()).filter(Boolean) : [];
         const exists = await prisma_1.prisma.user.findMany({
             where: { username: { in: wanted } },
@@ -604,12 +741,24 @@ let ChannelManageController = class ChannelManageController {
     }
     async remove(id) {
         const target = await prisma_1.prisma.channel.findUnique({ where: { id } });
-        if (target && exports.BUILTIN_CHANNEL_TYPES.includes(target.type)) {
-            return { success: false, message: '本地存储是系统内置渠道，不能删除（可以禁用以停用）' };
+        if (target && target.code === exports.LOCAL_CHANNEL_CODE) {
+            return { success: false, message: '内置本地存储是系统渠道，不能删除（可以禁用以停用）' };
+        }
+        if (target && target.code === exports.LOCAL_FILES_CHANNEL_CODE) {
+            return { success: false, message: '内置本地文件浏览渠道是系统渠道，不能删除' };
         }
         const copies = await prisma_1.prisma.fileCopy.count({ where: { channelId: id } });
         if (copies > 0) {
-            return { success: false, message: `该渠道仍有 ${copies} 个文件副本，请先迁移或清理` };
+            const [trash, registered] = await Promise.all([
+                prisma_1.prisma.fileCopy.count({ where: { channelId: id, file: { status: 'deleted' } } }),
+                prisma_1.prisma.fileCopy.count({ where: { channelId: id, file: { uploadSource: 'Record' } } }),
+            ]);
+            const detail = [
+                `${copies} 个文件副本`,
+                trash ? `其中回收站 ${trash} 个` : '',
+                registered ? `登记文件 ${registered} 个` : '',
+            ].filter(Boolean).join('，');
+            return { success: false, message: `该渠道仍有 ${detail}，请先删除这些文件（含回收站与登记文件）后再删除渠道` };
         }
         await prisma_1.prisma.channel.delete({ where: { id } });
         return { success: true };

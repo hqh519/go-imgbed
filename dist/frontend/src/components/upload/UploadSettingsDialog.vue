@@ -51,9 +51,60 @@
                         class="setting-input"
                     />
                 </div>
+                <!--
+                    v3.0.0（R8）：归属实例 —— 位于「备份渠道」下方。
+                    选择后本次会话的上传（含分块 / 链接转存）都存入所选实例：
+                      '' = 跟随当前实例（左上角头像切换的实例）；
+                      '__default__' = 默认实例；其它 = 具体实例。
+                    仅本次会话生效（刷新/重进页面自动回到「跟随当前实例」）。
+                -->
+                <div class="setting-item">
+                    <span class="setting-label">
+                        {{ $t('uploadSettings.ownerInstance') }}
+                        <el-tooltip :content="$t('uploadSettings.ownerInstanceTooltip')" placement="top" raw-content>
+                            <font-awesome-icon icon="question-circle" class="inline-help-icon"/>
+                        </el-tooltip>
+                    </span>
+                    <el-select
+                        :model-value="uploadInstanceId"
+                        @update:model-value="$emit('update:uploadInstanceId', $event)"
+                        class="setting-input"
+                    >
+                        <el-option :label="$t('uploadSettings.ownerInstanceFollow')" value="" />
+                        <el-option :label="$t('instancePicker.defaultInstance')" value="__default__" />
+                        <el-option v-for="inst in instances" :key="inst.id" :label="inst.name" :value="String(inst.id)" />
+                    </el-select>
+                </div>
                 <div class="setting-item">
                     <span class="setting-label">{{ $t('uploadSettings.uploadDirectory') }}</span>
-                    <el-input :model-value="uploadFolder" @update:model-value="handleUploadFolderInput" :placeholder="$t('uploadSettings.uploadDirectoryPlaceholder')" class="setting-input"></el-input>
+                    <!--
+                        v3.0.0（R12）：原来在首页右下角快捷栏的「目录树选择」按钮迁到这里 ——
+                        直接摆在「上传目录」输入框前面，不再占用首页悬浮按钮（用户要求）。
+                        只在后台开启「上传目录选项」时出现（与后端 showDirectorySuggestions 同口径）。
+                    -->
+                    <div class="folder-input-row">
+                        <DirectoryTreePicker
+                            v-if="directoryPickerEnabled"
+                            :current-directory="uploadFolder"
+                            source="upload"
+                            @select="handleDirectorySelect"
+                        >
+                            <template #trigger>
+                                <el-tooltip :content="$t('upload.selectFromDirectoryTree')" placement="top" :hide-after="0" :show-after="600">
+                                    <el-button class="folder-picker-button">
+                                        <font-awesome-icon icon="folder-tree" />
+                                    </el-button>
+                                </el-tooltip>
+                            </template>
+                        </DirectoryTreePicker>
+                        <el-input
+                            :model-value="uploadFolder"
+                            @update:model-value="handleUploadFolderInput"
+                            :placeholder="$t('uploadSettings.uploadDirectoryPlaceholder')"
+                            autocomplete="on"
+                            class="setting-input"
+                        ></el-input>
+                    </div>
                 </div>
                 <!--
                     v2.8.8：「自动重试」开关已迁到后台（其他设置 → 上传相关配置），
@@ -90,6 +141,27 @@
                         <el-option :label="$t('uploadSettings.transcodeInherit')" value="" />
                         <el-option :label="$t('uploadSettings.transcodeOff')" value="off" />
                         <el-option :label="$t('uploadSettings.transcodeOn')" value="on" />
+                    </el-select>
+                </div>
+                <!--
+                    v3.0.0：WebP 转换模式 —— 位于「视频兼容转码」选项下一行；
+                    仅当后台 WebP 总开关（webpEnabled）开启时显示。
+                    值持久化在 localStorage（goimgbed_webp_mode）：
+                      follow   = 跟随全局（用后台 webpMode，缺失按 lossless）
+                      lossless = 无损转换（quality = 1）
+                      lossy    = 有损压缩（quality ≈ 0.8）
+                -->
+                <div class="setting-item" v-if="webpEnabled">
+                    <span class="setting-label">
+                        {{ $t('uploadSettings.webpMode') }}
+                        <el-tooltip :content="$t('uploadSettings.webpModeTooltip')" placement="top" raw-content>
+                            <font-awesome-icon icon="question-circle" class="inline-help-icon"/>
+                        </el-tooltip>
+                    </span>
+                    <el-select v-model="webpMode" class="setting-input">
+                        <el-option :label="$t('uploadSettings.webpModeFollow')" value="follow" />
+                        <el-option :label="$t('uploadSettings.webpModeLossless')" value="lossless" />
+                        <el-option :label="$t('uploadSettings.webpModeLossy')" value="lossy" />
                     </el-select>
                 </div>
                 <!-- 文件压缩总开关关闭时，压缩相关设置整体不显示（后台「文件压缩」） -->
@@ -195,20 +267,28 @@
 
 <script>
 import ChannelSelect from '@/components/config/ChannelSelect.vue';
+import DirectoryTreePicker from '@/components/DirectoryTreePicker.vue';
 import { resolveChannelLabel, invalidateStorageChannels } from '@/utils/storageChannels';
 import { COMPRESSIBLE_EXTENSIONS } from '@/utils/upload/compressExtensions';
 
 export default {
     name: 'UploadSettingsDialog',
     components: {
-        ChannelSelect
+        ChannelSelect,
+        DirectoryTreePicker
     },
     props: {
         modelValue: { type: Boolean, default: false },
+        /** v3.0.0（R12）：后台是否开启「上传目录选项」—— 关闭时目录树按钮一并隐藏 */
+        directoryPickerEnabled: { type: Boolean, default: true },
         /** 存储渠道 ID（'' = 默认 / 跟随全局设置） */
         channelName: { type: String, default: '' },
         /** 备份渠道 ID（'' = 跟随全局；'none' = 不备份） */
         backupChannel: { type: String, default: '' },
+        /** v3.0.0（R8）：归属实例（'' = 跟随当前实例；'__default__' = 默认实例；其它 = 实例 ID） */
+        uploadInstanceId: { type: String, default: '' },
+        /** v3.0.0（R8）：实例列表（GET /api/instances，不含默认实例）—— 供归属实例下拉 */
+        instances: { type: Array, default: () => [] },
         /** 当前生效的默认主存储渠道（{ id, code, name, type }）—— 仅用于展示落点 */
         defaultChannel: { type: Object, default: null },
         /** 当前生效的默认备份渠道（{ id, code, name, type }）—— 仅用于展示落点 */
@@ -231,12 +311,15 @@ export default {
         /** v2.8.9：后台「失败自动重试」总开关 —— 关闭时「其他」模块整体不显示 */
         autoRetryEnabled: { type: Boolean, default: true },
         /** v2.8.9：前台「失败自动重试」开关（只管前台上传 / 链接转存） */
-        localAutoRetry: { type: Boolean, default: true }
+        localAutoRetry: { type: Boolean, default: true },
+        /** v3.0.0：后台「WebP转换」总开关 —— 开启时才显示「WebP转换模式」下拉 */
+        webpEnabled: { type: Boolean, default: false }
     },
     emits: [
         'update:modelValue',
         'update:channelName',
         'update:backupChannel',
+        'update:uploadInstanceId',
         'update:uploadFolder',
         'update:customerCompress',
         'update:compressBar',
@@ -253,7 +336,14 @@ export default {
              * 每次打开弹窗 +1，配合 ChannelSelect 的 :key 让下拉重新挂载、
              * 重新拉一次 /api/channels —— 后台刚停用的渠道不会残留在这个下拉里。
              */
-            channelRefreshKey: 0
+            channelRefreshKey: 0,
+            /*
+             * v3.0.0：WebP 转换模式（follow / lossless / lossy）。
+             * 持久化在 localStorage（goimgbed_webp_mode），默认 follow = 跟随全局。
+             */
+            webpMode: (() => {
+                try { return localStorage.getItem('goimgbed_webp_mode') || 'follow' } catch (e) { return 'follow' }
+            })()
         };
     },
     watch: {
@@ -273,12 +363,18 @@ export default {
          */
         channelName() { this.notifySaved() },
         backupChannel() { this.notifySaved() },
+        uploadInstanceId() { this.notifySaved() },
         uploadFolder() { this.notifySaved() },
         customerCompress() { this.notifySaved() },
         compressBar() { this.notifySaved() },
         compressPercent() { this.notifySaved() },
         limitCompressExts() { this.notifySaved() },
-        transcodeChoice() { this.notifySaved() }
+        transcodeChoice() { this.notifySaved() },
+        // v3.0.0：WebP 转换模式变化 → 写回 localStorage（跟随全局/无损/有损）
+        webpMode(val) {
+            try { localStorage.setItem('goimgbed_webp_mode', val) } catch (e) { /* 隐私模式忽略 */ }
+            this.notifySaved()
+        }
     },
     methods: {
         /** 防抖弹出「保存成功」提示（600ms 内的连续变更只弹一次）；
@@ -298,6 +394,11 @@ export default {
             if (val && !val.startsWith('/')) {
                 val = '/' + val
             }
+            this.$emit('update:uploadFolder', val)
+        },
+        /** v3.0.0（R12）：目录树选择 → 直接写入上传目录（与首页原快捷栏行为一致） */
+        handleDirectorySelect(path) {
+            const val = path ? `/${String(path).replace(/^\/+/, '')}` : '';
             this.$emit('update:uploadFolder', val)
         }
     },
@@ -335,6 +436,40 @@ export default {
 
 <style src="@/styles/settings-dialog.css"></style>
 <style scoped>
+/* v3.0.0（R12）：上传目录行 —— 目录树按钮在输入框前面并排 */
+.folder-input-row {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    /* v3.0.0（R14）：桌面端「目录树按钮 + 输入框」整组靠右对齐（与其它设置项输入框右边缘对齐） */
+    flex: 0 0 auto;
+    margin-left: auto;
+    max-width: 290px;
+}
+.folder-input-row .folder-picker-button {
+    flex: 0 0 auto;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+.folder-input-row .setting-input {
+    flex: 1 1 auto;
+    width: 250px;
+    max-width: 250px;
+    min-width: 0;
+}
+/* v3.0.0（R14）：手机端设置项改为上下结构，目录行恢复整行宽度 */
+@media (max-width: 768px) {
+    .folder-input-row {
+        width: 100%;
+        max-width: none;
+        margin-left: 0;
+    }
+}
 .channel-option-row {
     display: flex;
     align-items: center;

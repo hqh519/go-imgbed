@@ -30,7 +30,7 @@
  */
 const CHANNEL_BADGE = {
     cos: 'COS',
-    aliyun: 'ALI',
+    aliyun: 'OSS',
     minio: 'MI',
     r2: 'R2',
     s3: 'S3',
@@ -39,7 +39,9 @@ const CHANNEL_BADGE = {
     webdav: 'WD',
     immich: 'IM',
     custom: 'DIY',
-    local: 'LCL'
+    local: 'LCL',
+    // v3.0.0（R7）：本地文件渠道的简称统一用「File」
+    localfiles: 'File'
 };
 
 const CHANNEL_LABEL = {
@@ -53,7 +55,8 @@ const CHANNEL_LABEL = {
     webdav: 'WebDAV',
     immich: 'Immich',
     custom: '自定义 Web 存储',
-    local: '本地存储'
+    local: '本地存储',
+    localfiles: '本地文件'
 };
 
 export default {
@@ -127,4 +130,8 @@ export default {
 .channel-icon-wrapper.channel-brand-webdav { color: #14b8a6; }
 .channel-icon-wrapper.channel-brand-immich { color: #4250af; }
 .channel-icon-wrapper.channel-brand-custom { color: #8c939d; }
+/* v3.0.0（R8）：本地存储此前没有品牌色，徽标底色随 currentColor ——
+   夜间模式下继承浅色文字 → 白底白字看不见，这里固定为双模式都可读的深灰蓝 */
+.channel-icon-wrapper.channel-brand-local { color: #475569; }
+.channel-icon-wrapper.channel-brand-localfiles { color: #6b7280; }
 </style>

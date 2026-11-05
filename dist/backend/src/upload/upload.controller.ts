@@ -1,3 +1,4 @@
+import { signOrigin } from '../common/request-origin';
 import { Body, Controller, Get, HttpCode, Post, Query, UseGuards, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { UploadedFile, Req, Res } from '@nestjs/common';
@@ -129,7 +130,7 @@ export class UploadController {
    * 外链始终是 `/file/<File_ID>`，扩展名只作直观提示。
    */
   private async signedSrc(id: string, req: Request): Promise<string> {
-    const origin = `${req.protocol}://${req.get('host')}`;
+    const origin = signOrigin(req);
     const prefix = await this.settings.getLinkPrefix(origin);
     return `${prefix}${encodeURIComponent(id)}`;
   }
@@ -209,6 +210,8 @@ export class UploadController {
       channelId?: string;
       folder?: string;
       note?: string;
+      /** v3.0.0：归属实例 ID（空串 = 默认实例） */
+      instanceId?: string;
     },
     @Req() req: Request & { session?: { user: string } },
     @Res() res: Response,
@@ -226,6 +229,8 @@ export class UploadController {
       note: String(body.note || ''),
       uploader,
       ip: this.clientIp(req),
+      // v3.0.0：登记文件同样支持归属实例（空串 = 默认实例）
+      instanceId: String(body.instanceId || '').trim(),
     });
     if (result.error) return res.status(400).json({ success: false, message: result.error });
     return res.json({
@@ -265,6 +270,13 @@ export class UploadController {
       failReason?: string;
       /** v2.8.9：WebP 未转换原因（前端本地转换时判定，如格式不支持 / 超时 / 转换失败） */
       webpSkip?: string;
+      /**
+       * v3.0.0：文件归属实例 ID（空串 = 默认实例）。
+       * 分块上传的每片请求都带同一个值，合并时以此为准写进 FileRecord。
+       */
+      instanceId?: string;
+      /** v3.0.0：前端 WebP 转换模式（lossless / lossy），只进「文件处理事件」展示 */
+      webpMode?: string;
       uploadFolder?: string;
       /** 初始（压缩前）大小 —— 前端本地压缩后仍把原始字节数带上来，供详情页展示「初始 / 当前」 */
       originalSize?: string;
@@ -304,6 +316,11 @@ export class UploadController {
        * 只接受这两个值（防止伪造 WebDAV / API-* 来源），未传时按 Default（老客户端）。
        */
       uploadSource?: string;
+      /**
+       * v3.0.0（R14）：调用方追加的自动标签（逗号分隔，最多 10 个、每个截断 20 字符）。
+       * 视频抓拍前端传「视频抓拍」；其余调用方可按需传（如「本地上传」由后端本地文件通道直接写）。
+       */
+      extraTags?: string;
     },
     @Body() body: Record<string, string>,
     @Req() req: Request & { session?: { user: string } },
@@ -403,10 +420,24 @@ export class UploadController {
       retryRound: Math.max(0, Number(q.retryRound) || 0),
       failReason: String(q.failReason || '').slice(0, 300),
       webpSkip: String(q.webpSkip || '').slice(0, 120),
+      /*
+       * v3.0.0：文件归属实例（query 优先，兼容 body；空串 = 默认实例）。
+       * 分块合并 / 链接暂存 / 常规直传共用这一份 opts，归属校验在 UploadService 内做
+       * （uploader 不是该实例的创建者/成员 → 回退默认实例并记 warn）。
+       */
+      instanceId: String(q.instanceId ?? body.instanceId ?? '').trim(),
+      // v3.0.0：前端 WebP 转换模式（仅 lossless / lossy 合法，其它值视为未启用）
+      webpMode: q.webpMode === 'lossless' || q.webpMode === 'lossy' ? q.webpMode : '',
       // 账户关闭了「类型和大小限制」→ 跳过白名单与大小上限
       skipFileLimits: !enforceLimits,
       // 上传渠道：前端「文件」模式 = Upload，「链接」模式转存 = Fetch，其它入口 = Default
       uploadSource,
+      // v3.0.0（R14）：调用方追加的自动标签（逗号分隔；截断防滥用，与 #号提取合并去重在 autoTag 内）
+      extraTags: String(q.extraTags || '')
+        .split(',')
+        .map((t) => t.trim().slice(0, 20))
+        .filter(Boolean)
+        .slice(0, 10),
       // 上传开始时间（请求到达时刻）→ 详情页「上传时长 / 上传速度」
       uploadStartedAt: new Date(arrivedAt),
       // 前端临时指定的格式/大小限制（空值表示沿用后台全局设置）

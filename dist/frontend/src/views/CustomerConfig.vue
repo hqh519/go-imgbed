@@ -83,13 +83,18 @@
                             </el-tooltip>
                         </template>
                     </el-table-column>
-                    <el-table-column v-if="isAdminRole" :label="$t('userManage.enforceLimits')" width="130" align="center">
+                    <!--
+                        v3.0.0（第三轮）：原「类型和大小限制」列移除，换成「分享权限」——
+                        控制该账户能否创建对外分享（文件 / 标签）；管理员恒为开启。
+                        单个账户仍可在「编辑账户」页里设置上传类型与大小限制。
+                    -->
+                    <el-table-column v-if="isAdminRole" :label="$t('userManage.sharePermission')" width="110" align="center">
                         <template #default="{ row }">
-                            <el-tooltip :content="$t('userManage.enforceLimitsTooltip')" placement="top" :show-after="600">
+                            <el-tooltip :content="$t('userManage.sharePermissionTooltip')" placement="top" :show-after="600">
                                 <el-switch
-                                    v-model="row.enforceLimits"
+                                    v-model="row.shareEnabled"
                                     :disabled="row.role === 'admin' || row.orphan"
-                                    @change="toggleField(row, 'enforceLimits', $event)"
+                                    @change="toggleField(row, 'shareEnabled', $event)"
                                 />
                             </el-tooltip>
                         </template>
@@ -110,7 +115,7 @@
                     <el-table-column :label="$t('userManage.actions')" :width="isAdminRole ? 130 : 90" :fixed="isMobile ? false : 'right'" align="center">
                         <template #default="{ row }">
                             <template v-if="isAdminRole">
-                                <el-button link type="primary" size="small" :disabled="row.orphan" @click="openEditDialog(row)">{{ $t('common.edit') }}</el-button>
+                                <el-button link type="primary" size="small" :disabled="row.orphan" @click="openEditDialog(row)">{{ $t('userManage.manage') }}</el-button>
                                 <el-button
                                     link
                                     type="danger"
@@ -121,7 +126,7 @@
                             </template>
                             <!-- 普通用户：只留「编辑」（进用户编辑页，可改昵称/密码/邮箱/2FA 等） -->
                             <template v-else>
-                                <el-button link type="primary" size="small" :disabled="row.orphan" @click="openEditDialog(row)">{{ $t('common.edit') }}</el-button>
+                                <el-button link type="primary" size="small" :disabled="row.orphan" @click="openEditDialog(row)">{{ $t('userManage.manage') }}</el-button>
                             </template>
                         </template>
                     </el-table-column>
@@ -249,6 +254,18 @@
                     <!-- 「上传渠道」不在汇总行显示（改到展开后的每个文件行，见内层表格） -->
                     <el-table-column :label="$t('userManage.lastUpload')" min-width="170">
                         <template #default="{ row }">{{ row.lastAt ? formatTimeStamp(row.lastAt) : '—' }}</template>
+                    </el-table-column>
+                    <!-- v3.0.0：「查看记录」—— 新标签打开历史记录页，并只加载该用户的上传记录 -->
+                    <el-table-column :label="$t('userManage.viewRecords')" width="112" align="center">
+                        <template #default="{ row }">
+                            <el-button
+                                v-if="row.username"
+                                link
+                                type="primary"
+                                size="small"
+                                @click="viewUserRecords(row.username)"
+                            >{{ $t('userManage.viewRecords') }}</el-button>
+                        </template>
                     </el-table-column>
                 </el-table>
 
@@ -515,6 +532,16 @@ export default {
         },
     },
     methods: {
+    /**
+     * v3.0.0：按用户收集 →「查看记录」
+     * 新标签打开历史记录页，用 ?user= 只加载该账户的上传记录
+     * （历史记录页已移除用户下拉框，这是管理员查看他人记录的唯一入口）。
+     */
+    viewUserRecords(username) {
+      if (!username) return;
+      const { href } = this.$router.resolve({ path: '/manage/history', query: { user: username } });
+      window.open(href, '_blank', 'noopener');
+    },
         typeLabel(t) { return CHANNEL_TYPE_LABELS[t] || t; },
         formatSize(bytes) {
             if (!bytes) return '0 B';

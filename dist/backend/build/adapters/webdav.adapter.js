@@ -5,6 +5,7 @@ const fs_1 = require("fs");
 const stream_1 = require("stream");
 const adapter_interface_1 = require("./adapter.interface");
 const endpoint_1 = require("../common/endpoint");
+const asset_url_1 = require("../common/asset-url");
 class WebdavAdapter {
     authHeader(channel) {
         const { username, password } = channel.config;
@@ -17,6 +18,11 @@ class WebdavAdapter {
         const base = this.baseOf(channel);
         const dir = (channel.config.directory || '').replace(/^\/+|\/+$/g, '');
         return `${base}/${dir ? dir + '/' : ''}${key}`;
+    }
+    objectPathOf(key, channel) {
+        const dir = (channel.config.directory || '').replace(/^\/+|\/+$/g, '');
+        const k = String(key || '').replace(/^\/+/, '');
+        return dir ? `${dir}/${k}` : k;
     }
     async ensureKeyDirs(key, channel) {
         const base = this.baseOf(channel);
@@ -51,7 +57,7 @@ class WebdavAdapter {
             });
             if (!resp.ok)
                 throw new adapter_interface_1.AdapterError(`WebDAV PUT 失败: HTTP ${resp.status}`, channel.type);
-            return { remoteKey: key };
+            return { remoteKey: key, objectPath: this.objectPathOf(key, channel) };
         }
         catch (err) {
             if (err instanceof adapter_interface_1.AdapterError)
@@ -83,7 +89,7 @@ class WebdavAdapter {
             });
             if (!resp.ok)
                 throw new adapter_interface_1.AdapterError(`WebDAV PUT 失败: HTTP ${resp.status}`, channel.type);
-            return { remoteKey: key };
+            return { remoteKey: key, objectPath: this.objectPathOf(key, channel) };
         }
         catch (err) {
             if (err instanceof adapter_interface_1.AdapterError)
@@ -105,6 +111,14 @@ class WebdavAdapter {
     }
     buildDirectUrl(copy, channel, preferInternal) {
         const domainRaw = (preferInternal && channel.config.internalDomain) || channel.config.publicDomain;
+        if (copy.objectPath) {
+            const base = domainRaw
+                ? (0, endpoint_1.ensureProtocol)(domainRaw).replace(/\/+$/, '')
+                : this.baseOf(channel);
+            if (!base)
+                return null;
+            return (0, asset_url_1.buildAssetUrl)({ base, objectPath: copy.objectPath, urlQuery: copy.urlQuery });
+        }
         if (domainRaw) {
             const domain = (0, endpoint_1.ensureProtocol)(domainRaw).replace(/\/+$/, '');
             const dir = (channel.config.directory || '').replace(/^\/+|\/+$/g, '');

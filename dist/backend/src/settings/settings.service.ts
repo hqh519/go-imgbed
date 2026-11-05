@@ -1,3 +1,4 @@
+import { primeSignOrigin } from '../common/request-origin';
 import { Injectable } from '@nestjs/common';
 import { prisma } from '../common/prisma';
 
@@ -39,7 +40,10 @@ export class SettingsService {
 
   /** 服务器域名：外链签发的基准；未设置时由调用方回退请求 Host */
   async getServerDomain(): Promise<string> {
-    return (await this.get('serverDomain', '')).replace(/\/+$/, '');
+    const v = (await this.get('serverDomain', '')).replace(/\/+$/, '');
+    // v3.0.0（R10）：顺带刷新「外链访问域名」内存缓存，供同步签发点使用
+    primeSignOrigin(v);
+    return v;
   }
 
   /**

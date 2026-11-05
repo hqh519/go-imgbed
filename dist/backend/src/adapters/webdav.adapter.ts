@@ -2,6 +2,7 @@ import { createReadStream } from 'fs';
 import { Readable } from 'stream';
 import { AdapterError, ChannelInfo, CopyInfo, StorageAdapter, UploadResult } from './adapter.interface';
 import { ensureProtocol } from '../common/endpoint';
+import { buildAssetUrl } from '../common/asset-url';
 
 /**
  * WebDAV 适配器 —— 接入他人的 WebDAV 网盘当存储（PUT/DELETE/MKCOL）。
@@ -28,6 +29,17 @@ export class WebdavAdapter implements StorageAdapter {
     const base = this.baseOf(channel);
     const dir = (channel.config.directory || '').replace(/^\/+|\/+$/g, '');
     return `${base}/${dir ? dir + '/' : ''}${key}`;
+  }
+
+  /**
+   * v3.0.0（R10）：固化地址 = `<存储目录>/<对象键>`（不含域名）。
+   * 存储目录在 UI 上已与「自定义存储前缀」合并展示，但落盘路径语义不变，
+   * 老数据的 remoteKey 不动，因此存量文件不会失效。
+   */
+  private objectPathOf(key: string, channel: ChannelInfo): string {
+    const dir = (channel.config.directory || '').replace(/^\/+|\/+$/g, '');
+    const k = String(key || '').replace(/^\/+/, '');
+    return dir ? `${dir}/${k}` : k;
   }
 
   /** 逐级 MKCOL 建目录（PUT 对不存在的父目录会 409） */
@@ -61,7 +73,7 @@ export class WebdavAdapter implements StorageAdapter {
         signal: ctrl.signal,
       });
       if (!resp.ok) throw new AdapterError(`WebDAV PUT 失败: HTTP ${resp.status}`, channel.type);
-      return { remoteKey: key };
+      return { remoteKey: key, objectPath: this.objectPathOf(key, channel) };
     } catch (err) {
       if (err instanceof AdapterError) throw err;
       throw new AdapterError(`WebDAV 请求失败: ${(err as Error).message}`, channel.type);
@@ -97,7 +109,7 @@ export class WebdavAdapter implements StorageAdapter {
         signal: ctrl.signal,
       } as RequestInit);
       if (!resp.ok) throw new AdapterError(`WebDAV PUT 失败: HTTP ${resp.status}`, channel.type);
-      return { remoteKey: key };
+      return { remoteKey: key, objectPath: this.objectPathOf(key, channel) };
     } catch (err) {
       if (err instanceof AdapterError) throw err;
       throw new AdapterError(`WebDAV 请求失败: ${(err as Error).message}`, channel.type);
@@ -119,6 +131,17 @@ export class WebdavAdapter implements StorageAdapter {
   buildDirectUrl(copy: CopyInfo, channel: ChannelInfo, preferInternal?: boolean): string | null {
     // v2.8.7：preferInternal 时优先「内网通信域名」，其次公开域名，否则就是 WebDAV 自身地址
     const domainRaw = (preferInternal && channel.config.internalDomain) || channel.config.publicDomain;
+    /*
+     * v3.0.0（R10）：新数据「动态域名 + 固化地址」——
+     * 改域名/内网地址立即生效；改为存储目录或前缀不影响已落库文件。
+     */
+    if (copy.objectPath) {
+      const base = domainRaw
+        ? ensureProtocol(domainRaw).replace(/\/+$/, '')
+        : this.baseOf(channel);
+      if (!base) return null;
+      return buildAssetUrl({ base, objectPath: copy.objectPath, urlQuery: copy.urlQuery });
+    }
     if (domainRaw) {
       // 同样支持不写协议的内网地址（如 nas.local:5005）
       const domain = ensureProtocol(domainRaw).replace(/\/+$/, '');

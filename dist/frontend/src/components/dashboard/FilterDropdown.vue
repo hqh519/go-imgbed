@@ -234,6 +234,9 @@ export default {
                 { label: this.$t('filter.image'), value: 'image' },
                 { label: this.$t('filter.video'), value: 'video' },
                 { label: this.$t('filter.audio'), value: 'audio' },
+                // v3.0.0（R14）：文本 / PDF 从「其他」里拆出来单独筛选
+                { label: this.$t('filter.txt'), value: 'txt' },
+                { label: this.$t('filter.pdf'), value: 'pdf' },
                 { label: this.$t('filter.other'), value: 'other' }
             ];
         },

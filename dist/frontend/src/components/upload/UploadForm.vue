@@ -6,11 +6,18 @@
             tabindex="-1"
             aria-hidden="true"
         ></textarea>
-        <div 
+        <!--
+            v3.0.0：移动端（hover:none 触屏设备）在操作区左右滑动可切换「文件 / 链接」模式：
+            向右滑 = 文件模式、向左滑 = 链接模式；桌面端不绑定手势、行为不变。
+        -->
+        <div
             class="upload-card-wrapper"
+            :class="{ 'swipe-fade': swipeFeedback }"
             @mousemove="handleUploadCardMouseMove"
             @mouseleave="handleUploadCardMouseLeave"
             @drop.capture.stop.prevent="handleDrop"
+            @touchstart.passive="handleMethodSwipeStart"
+            @touchend.passive="handleMethodSwipeEnd"
         >
             <div class="upload-card-glow" ref="uploadCardGlow"></div>
             <!-- 默认上传模式：结构与「链接」模式一一对应
@@ -24,7 +31,7 @@
             >
                 <div
                     class="default-card"
-                    :class="{'is-uploading': uploading, 'upload-card-busy': fileList.length}"
+                    :class="{'is-uploading': uploading, 'upload-card-busy': fileList.length, 'swipe-fade': swipeFeedback}"
                 >
                     <el-upload
                         class="default-upload-dragger"
@@ -104,10 +111,15 @@
                 @change="handleFolderSelection"
             />
         </div>
-        <div v-if="uploadMethod === 'paste'" class="upload-card">
-            <el-card 
+        <div
+            v-if="uploadMethod === 'paste'"
+            class="upload-card"
+            @touchstart.passive="handleMethodSwipeStart"
+            @touchend.passive="handleMethodSwipeEnd"
+        >
+            <el-card
                 class="paste-card"
-                :class="{'is-uploading': uploading, 'upload-card-busy': fileList.length}"
+                :class="{'is-uploading': uploading, 'upload-card-busy': fileList.length, 'swipe-fade': swipeFeedback}"
             >
                 <el-input
                     v-model="pastedUrls"
@@ -346,6 +358,8 @@ import { fileLink, getLinkPrefix } from '@/utils/fileLink'
 // v2.5.0（v20261023-2）：链接模式输入框自动从脏文本中提取有效 URL
 import { extractUrlsFromText } from '@/utils/urlExtract'
 import { parseExtList } from '@/utils/upload/compressExtensions'
+// v3.0.0：上传前刷新配置时失效渠道列表缓存
+import { invalidateStorageChannels } from '@/utils/storageChannels'
 
 const COPY_FORMATS = [
     { value: 'url', label: 'URL', initial: 'Url', icon: 'link' },
@@ -422,6 +436,15 @@ props: {
         required: false
     },
     /**
+     * v3.0.0（R11）：前端并发数（后台「其他设置 → 上传相关配置 → 前端并发数」）。
+     * 浏览器同时上传的文件数；留空默认 3，后端已夹在 1~10。
+     */
+    uploadConcurrency: {
+        type: Number,
+        default: 3,
+        required: false
+    },
+    /**
      * v2.8.9：前台上传设置「其他 → 失败自动重试」开关（只管前台上传 / 链接转存）。
      * 仅在后台总开关开启时才可见；后台关闭时忽略该值（整条链路都不自动重试）。
      */
@@ -492,6 +515,17 @@ props: {
         default: '',
         required: false
     },
+    /**
+     * v3.0.0（R8）：归属实例（来自上传设置弹窗「归属实例」下拉）——
+     *   ''            = 跟随当前实例（localStorage goimgbed_instance_id）
+     *   '__default__' = 强制默认实例（instanceId 参数传 ''）
+     *   其它值        = 强制上传到该实例（instanceId 参数传该值）
+     */
+    instanceId: {
+        type: String,
+        default: '',
+        required: false
+    },
     /** 压缩期望：压到原体积的百分比（10-100） */
     compressPercent: {
         type: Number,
@@ -522,7 +556,7 @@ props: {
         required: false
     }
 },
-emits: ['update:autoUpload', 'update:customerCompress', 'update:convertToWebp', 'update:localAutoRetry'],
+emits: ['update:autoUpload', 'update:customerCompress', 'update:convertToWebp', 'update:localAutoRetry', 'changeMethod'],
 data() {
     return {
         fileList: [],
@@ -546,10 +580,10 @@ data() {
         retryLoopActive: false, // 失败重试循环是否正在进行
         // 每轮重试开始前重新解析出的「生效上传参数」，null = 直接用 props/默认值
         liveParams: null,
-        // 批量上传并发控制
+        // 批量上传并发控制（v3.0.0 R11：由后台「前端并发数」动态控制，默认 3）
         uploadQueue: [], // 等待上传的文件队列
         activeUploads: 0, // 当前正在上传的文件数
-        maxConcurrentUploads: 6, // 最大并发上传数
+        maxConcurrentUploads: 3, // 最大并发上传数
         // 取消上传控制
         abortControllers: new Map(), // 存储每个文件的 AbortController
         pasteFocusTarget: null,
@@ -561,6 +595,11 @@ data() {
         // 裁剪（v2.3.0）：手动上传模式下，点待上传图片右侧剪刀按钮打开裁剪页
         showCrop: false,
         cropTarget: null,
+        // v3.0.0：移动端滑动切换模式后的淡入反馈（短暂置位触发 CSS 动画）
+        swipeFeedback: false,
+        // v3.0.0：当前是否为触屏设备（hover:none）—— 仅移动端启用滑动切换
+        isTouchDevice: typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+            && window.matchMedia('(hover: none)').matches,
     }
 },
 watch: {
@@ -615,6 +654,16 @@ watch: {
             this.observeUploadList()
             this.updateUploadListHeight()
         })
+    },
+    // v3.0.0：以下两个监听原先在文件里第二个重复的 watch 块中 ——
+    // JS 对象字面量重复键后者覆盖前者，导致第一个 watch 块（fileList /
+    // liveParams 重置等）整体失效。合并进同一块恢复全部监听。
+    // v2.8.9：前台上传设置里的「失败自动重试」开关 → 立即影响本页的重试循环
+    localAutoRetry(val) {
+        this.autoReUpload = this.autoRetry !== false && val !== false
+    },
+    autoRetry(val) {
+        this.autoReUpload = val !== false && this.localAutoRetry !== false
     }
 },
 computed: {
@@ -743,21 +792,19 @@ created() {
     // 非响应式的内部句柄（放 data 里会被 Proxy 包一层，没必要）
     this._heightRaf = null
     this._listRO = null
+    // v3.0.0：滑动切换 / 上传前刷新参数的内部句柄
+    this._swipeStart = null
+    this._swipeFeedbackTimer = null
+    this._refreshControlsInFlight = false
 },
-watch: {
-    // v2.8.9：前台上传设置里的「失败自动重试」开关 → 立即影响本页的重试循环
-    localAutoRetry(val) {
-        this.autoReUpload = this.autoRetry !== false && val !== false
-    },
-    autoRetry(val) {
-        this.autoReUpload = val !== false && this.localAutoRetry !== false
-    }
-},
+// v3.0.0：原第二个重复的 watch 块已合并进上方唯一的 watch（见 listSignature 之后的说明）
 mounted() {
     document.addEventListener('paste', this.handlePaste)
     document.addEventListener('keydown', this.handlePasteShortcut)
     // v2.8.9：后台总开关（autoRetry）与前台开关（localAutoRetry）同时开启才自动重试
     this.autoReUpload = this.autoRetry !== false && this.localAutoRetry !== false
+    // v3.0.0（R11）：并发数由后台配置下发（留空 3，范围 1~10）
+    this.maxConcurrentUploads = Math.min(10, Math.max(1, Number(this.uploadConcurrency) || 3))
     window.addEventListener('resize', this.updateUploadListHeight)
     // 高度自适应：先挂观察器，再量一次（列表可能是带着历史文件重新挂载的）
     this.$nextTick(() => {
@@ -773,6 +820,11 @@ beforeUnmount() {
     if (this._heightRaf) {
         cancelAnimationFrame(this._heightRaf)
         this._heightRaf = null
+    }
+    // v3.0.0：清理滑动反馈定时器
+    if (this._swipeFeedbackTimer) {
+        clearTimeout(this._swipeFeedbackTimer)
+        this._swipeFeedbackTimer = null
     }
     // 清理状态
     if (this.roundTimer) {
@@ -832,11 +884,53 @@ methods: {
         const webpSkip = item?.webpSkip
             ? '&webpSkip=' + encodeURIComponent(String(item.webpSkip).slice(0, 100))
             : ''
+        /*
+         * v3.0.0：
+         *   instanceId —— 实例隔离：来自 localStorage（goimgbed_instance_id），'' = 默认实例；
+         *   webpMode   —— 最终 WebP 编码模式（follow 展开为后台全局值，缺失按 lossless），
+         *                 由后端记录到处理事件（FileRecord.metas.ProcessEvent）。
+         * v3.0.0 修复：webpMode 只对图片文件携带 —— 非图片（视频/音频/文档）不传，
+         * 后端据此不会把「WebP 已转换」记到非图片文件上，也不会因 WebP 标记忽略压缩。
+         */
+        const itemFile = item?.file || item?.rawFile || null
+        const itemExt = String(itemFile?.name || item?.name || '').split('.').pop()?.toLowerCase() || ''
+        const itemIsImage = String(itemFile?.type || '').startsWith('image/') ||
+            ['jpg', 'jpeg', 'jfif', 'png', 'gif', 'webp', 'bmp', 'avif'].includes(itemExt)
         return '&compressPercent=' + (p.compressPercent || 0) +
             '&backupChannel=' + encodeURIComponent(p.backupChannel || '') +
+            '&instanceId=' + encodeURIComponent(this.getCurrentInstanceId()) +
+            (itemIsImage ? '&webpMode=' + this.getFinalWebpMode() : '') +
             '&originalSize=' + originalSize +
             '&uploadSource=' + source + transcode +
             '&retryRound=' + retryRound + failReason + webpSkip
+    },
+    /**
+     * v3.0.0：当前实例 ID（localStorage goimgbed_instance_id；'' = 默认实例）。
+     * 单文件上传 / 分块 init+merge / 链接转存暂存提交（uploadStagedItem）统一经过
+     * extraUploadParams，自动全部带上。
+     * v3.0.0（R8）：上传设置「归属实例」选中非空值时覆盖 localStorage：
+     * '__default__' = 强制默认实例；其它 = 强制该实例。
+     */
+    getCurrentInstanceId() {
+        const owner = String(this.instanceId || '')
+        if (owner === '__default__') return ''
+        if (owner) return owner
+        try {
+            return localStorage.getItem('goimgbed_instance_id') || ''
+        } catch (e) {
+            return ''
+        }
+    },
+    /**
+     * v3.0.0：本次上传实际生效的 WebP 编码模式。
+     * 上传设置里选「跟随全局」（follow）→ 用后台 webpMode（缺失按 lossless）；
+     * 本地选择了 lossless / lossy → 覆盖后台值。
+     */
+    getFinalWebpMode() {
+        let pref = 'follow'
+        try { pref = localStorage.getItem('goimgbed_webp_mode') || 'follow' } catch (e) { /* 忽略 */ }
+        if (pref === 'lossless' || pref === 'lossy') return pref
+        return this.userConfig?.webpMode === 'lossy' ? 'lossy' : 'lossless'
     },
     /**
      * 列表区高度自适应（v2.0.0 重新设计）：
@@ -906,6 +1000,99 @@ methods: {
     toggleAutoUpload() {
         this.$emit('update:autoUpload', !this.autoUpload)
     },
+        /* ────────────── v3.0.0：移动端左右滑动切换「文件 / 链接」模式 ──────────────
+         * 仅触屏设备（matchMedia('(hover: none)')）启用。
+         * v3.0.0（R15）：改为「轮回切换」—— 每次水平滑动都切到下一个模式，
+         * 同方向连续滑动会一直循环（文件 → 链接 → 文件 …），不再因「已经是目标模式」而失效。
+         * 阈值 60px；滑动期间垂直位移大于水平位移视为页面滚动，不触发切换。
+         * 切换通过 changeMethod 事件交给父组件 setUploadMethod（同步标签页/store/i18n 文案），
+         * 并给一张短促的淡入动画作视觉反馈。桌面端完全不绑定逻辑，行为不变。
+         */
+        handleMethodSwipeStart(e) {
+            if (!this.isTouchDevice) return
+            const t = e.changedTouches && e.changedTouches[0]
+            if (!t) return
+            this._swipeStart = { x: t.clientX, y: t.clientY }
+        },
+        handleMethodSwipeEnd(e) {
+            if (!this.isTouchDevice) return
+            const start = this._swipeStart
+            this._swipeStart = null
+            if (!start) return
+            const t = e.changedTouches && e.changedTouches[0]
+            if (!t) return
+            const SWIPE_THRESHOLD = 60
+            const dx = t.clientX - start.x
+            const dy = t.clientY - start.y
+            // 水平位移不够、或垂直位移更大（在滚动页面）→ 不切换，避免与页面滚动冲突
+            if (Math.abs(dx) < SWIPE_THRESHOLD || Math.abs(dy) > Math.abs(dx)) return
+            // 轮回：无论向左还是向右，都切到「另一个」模式
+            const target = this.uploadMethod === 'default' ? 'paste' : 'default'
+            this.$emit('changeMethod', target)
+            // 轻量视觉反馈：卡片淡入一下
+            this.swipeFeedback = false
+            this.$nextTick(() => {
+                this.swipeFeedback = true
+                if (this._swipeFeedbackTimer) clearTimeout(this._swipeFeedbackTimer)
+                this._swipeFeedbackTimer = setTimeout(() => { this.swipeFeedback = false }, 450)
+            })
+        },
+    /**
+     * v3.0.0：点击「上传 / 转存」前重新拉取一遍所有可能影响上传的控制参数。
+     *
+     * 覆盖范围（一次点击只刷一次，_refreshControlsInFlight 防重入）：
+     *   · GET /api/userConfig（store fetchUserConfig）—— 服务端按最新配置实时解析：
+     *     文件压缩开关/阈值/百分比（defaultCustomerCompress/defaultCompressBar/defaultCompressQuality）、
+     *     禁止压缩格式、存储渠道（channelName 留空时由后端按最新主渠道解析）、备份渠道、
+     *     允许上传格式、单文件大小上限（maxUploadSizeMB）、失败自动重试（autoRetry/retryTimes）、
+     *     WebP 转换开关（webpEnabled）与全局模式（webpMode）、链接格式（defaultUrlForm/urlPrefix）、
+     *     视频转码（videoTranscode* 与账户级 transcodePolicy）、默认命名方式、默认上传目录；
+     *     刷新后本组件的 allowedExtensions / maxUploadSizeMB 等 computed 与父组件的
+     *     compressEnabled / webpEnabled / transcodePolicy 等 computed 会自动跟随更新。
+     *   · 渠道列表缓存失效（invalidateStorageChannels）—— 下次渠道下拉重新拉取；
+     *     用户已选渠道（channelName/backupChannel props）不重置。
+     *   · liveParams 回写：命名方式 / 外链前缀取最新值；上传目录以用户当前输入为准，
+     *     仅当用户没输入且后台 defaultUploadFolder 有值时才采用最新默认目录。
+     *   · 用户已选的文件列表、压缩开关等本地会话设置一律不动。
+     * 失败（断网等）不阻断上传：console.warn 后沿用现有值继续。
+     */
+    async refreshUploadControls() {
+        if (this._refreshControlsInFlight) return
+        this._refreshControlsInFlight = true
+        try {
+            let cfg = this.userConfig
+            await this.$store.dispatch('fetchUserConfig')
+            cfg = this.$store.getters.userConfig || cfg
+            // 渠道列表缓存失效：下次打开渠道下拉时重新拉 /api/channels
+            invalidateStorageChannels()
+            // v3.0.0（R11）：并发数跟随后台最新配置（管理员改了不用等用户刷新页面）
+            if (cfg) {
+                const n = Number(cfg.uploadConcurrency)
+                this.maxConcurrentUploads = Number.isFinite(n) && n > 0 ? Math.min(10, Math.max(1, Math.floor(n))) : 3
+            }
+            // 用户没输入目录、且后台配置了默认上传目录 → 本次采用最新默认目录
+            const latestFolder = this.uploadFolder ||
+                (cfg && cfg.defaultUploadFolder ? String(cfg.defaultUploadFolder) : '')
+            this.liveParams = {
+                // 渠道相关保留用户本次会话的选择（空串 = 后端按最新配置解析）
+                uploadChannel: this.uploadChannel,
+                channelName: this.channelName,
+                backupChannel: this.backupChannel,
+                uploadFolder: latestFolder,
+                uploadNameType:
+                    this.$store.getters.storeUploadNameType ||
+                    (cfg && cfg.defaultUploadNameType) ||
+                    'default',
+                compressPercent: this.compressPercent,
+                autoRetry: cfg ? cfg.autoRetry !== false : this.autoRetry,
+                linkPrefix: getLinkPrefix()
+            }
+        } catch (e) {
+            console.warn('[upload] 上传前刷新配置失败，沿用当前设置继续上传:', e)
+        } finally {
+            this._refreshControlsInFlight = false
+        }
+    },
     /** 手动上传：把列表里所有等待中的文件一次性发出（可先改过文件名） */
     /**
      * 手动上传：把列表里所有等待中的文件发出。
@@ -913,7 +1100,9 @@ methods: {
      *   · 文件模式：此时才做压缩（用户已改好名 / 裁好图）；
      *   · 链接模式：转存条目直接提交（可能是 rawFile，也可能是服务端暂存 stagingId）。
      */
-    startManualUpload() {
+    async startManualUpload() {
+        // v3.0.0：上传前先重新拉取一遍全部上传控制参数（一次点击只刷一次，失败不阻断）
+        await this.refreshUploadControls()
         const pending = this.fileList.filter(item => item.status === 'waiting' && (item.rawFile || item.stagedId))
         if (!pending.length) {
             this.$message({ type: 'info', message: this.$t('uploadForm.noPendingFiles') })
@@ -966,7 +1155,8 @@ methods: {
         const uploadChannel = item.uploadChannel || this.effParams.uploadChannel
         // v2.8.9：不再覆盖后端「自动切换」策略 —— 传 autoSwitch 会使后台配置失效，统一交由后台决定
         const uploadNameType = this.effParams.uploadNameType
-        const targetUploadFolder = item.uploadFolder ?? this.uploadFolder
+        // v3.0.0（R14）：转存条目也按点击上传时的最新目录提交
+        const targetUploadFolder = this.liveUploadFolder(item)
         const formData = new FormData()
         formData.append('stagingId', item.stagedId)
         formData.append('originalFileName', item.name)
@@ -1012,7 +1202,18 @@ methods: {
     },
     getFileUploadFolder(file) {
         const fileItem = this.fileList.find(item => item.uid === file.file.uid)
-        return fileItem?.uploadFolder ?? file.file.uploadFolder ?? this.effParams.uploadFolder
+        return this.liveUploadFolder(fileItem || file.file)
+    },
+    /**
+     * v3.0.0（R14）：目标目录一律按「当前」右上角目录输入框实时计算。
+     * 场景：用户先选好文件、再改右上角目录，点「上传」时应按最新目录分类
+     * （原实现用的是入列时缓存的 item.uploadFolder，改目录后不生效）。
+     * 拖入文件夹时保留其相对层级（子目录仍挂在新目录下面）。
+     */
+    liveUploadFolder(item) {
+        const rel = String(item?.uploadRelativePath || '').replace(/\\/g, '/').replace(/^\/+/, '')
+        const base = this.uploadFolder || this.effParams.uploadFolder || ''
+        return rel ? joinUploadFolder(base, getRelativeDirectory(rel)) : base
     },
     createUploadRequest(file) {
         return {
@@ -2061,19 +2262,23 @@ methods: {
                 message: `不支持的格式 .${ext}，允许的格式：${this.allowedExtensions.join(' / ')}`
             }
         }
-        const expected = await this.signatureMatches(file, ext)
-        if (expected === false) {
-            /*
-             * v2.8.2：图片格式互串放行 —— 网页保存的图片常被按 URL 命名成 .jpg 实际是 PNG。
-             * 声明扩展名与真实内容同为图片格式时不拦截（后端同规则放行并记日志）；
-             * 跨大类（如 exe 改名 .jpg）仍然拒绝。
-             */
-            const realExt = await this.detectImageSignature(file)
-            if (realExt && ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'].includes(ext) && ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'].includes(realExt)) {
-                console.warn(`[upload] 图片格式互串放行：${name} 声明 .${ext}，实际内容为 .${realExt}`)
-                return { ok: true, message: '' }
+        /*
+         * v3.0.0：只校验扩展名（+ 后端的大小/白名单），不再用魔数拒绝。
+         * 背景：MP3 常见以 0xFFFB 帧同步开头（没有 ID3 头）、VBR / 转封装过的
+         * mp3 / m4a / mov 头部也常被判成「不符」，导致明明允许的格式被拒。
+         * 这里保留一次签名探测，仅在控制台留痕，便于排查，绝不阻断上传。
+         */
+        try {
+            const expected = await this.signatureMatches(file, ext)
+            if (expected === false) {
+                const realExt = await this.detectImageSignature(file)
+                console.warn(
+                    `[upload] 扩展名与签名不一致（仅记录，已放行）：${name} 声明 .${ext}` +
+                    (realExt ? `，实际内容疑似 .${realExt}` : ''),
+                )
             }
-            return { ok: false, message: `文件内容与扩展名不符（.${ext}），已拒绝上传：${name}` }
+        } catch (e) {
+            /* 读取文件头失败同样放行 */
         }
         return { ok: true, message: '' }
     },
@@ -2208,6 +2413,12 @@ methods: {
      * 返回 { file, serverCompress }，失败一律降级为原文件，绝不阻断上传。
      */
     async prepareUploadFile(file) {
+        /*
+         * v3.0.0：压缩与 WebP 的先后顺序（保持现有「先 WebP → 已转则跳过压缩」不变）：
+         * WebP 是专用图片编码，通常比 image-conversion 的通用重编码（JPEG）更省体积，
+         * 且一步到位 —— 先转 WebP 可避免「压完再转」的二次画质损失与重复计算；
+         * 只有当 WebP 被放弃（产物更大 / 转换失败 / 不支持的格式）时才走压缩路径。
+         */
         let processed = file
         let convertedToWebp = false
         const canConvertToWebp = this.convertToWebp &&
@@ -2219,11 +2430,13 @@ methods: {
             /*
              * v2.8.9：WebP 转换失败或超过 300 秒 → 自动放弃本次转换，仍用原文件上传；
              * 放弃原因记到条目上，随上传请求带给后端写进「处理事件」，详情页可见。
+             * v3.0.0：转换模式取「上传设置 → WebP转换模式」展开后的最终值
+             * （follow = 后台 webpMode，缺省 lossless）。
              */
             let webpTimer = null
             try {
                 const convertedFile = await Promise.race([
-                    this.convertImageToWebp(file),
+                    this.convertImageToWebp(file, this.getFinalWebpMode()),
                     new Promise((_, reject) => {
                         webpTimer = setTimeout(
                             () => reject(new Error(this.$t('uploadForm.webpTimeout'))),
@@ -2232,8 +2445,17 @@ methods: {
                     })
                 ])
                 if (convertedFile) {
-                    processed = convertedFile
-                    convertedToWebp = true
+                    /*
+                     * v3.0.0：WebP 回退 —— 产物比原文件更大时放弃 WebP，
+                     * 继续用原文件（转换本身失败了不如不转），并记录跳过原因。
+                     */
+                    if (convertedFile.size > file.size) {
+                        console.warn('[upload] WebP 产物比原文件更大，放弃转换、保留原文件:', file.name)
+                        this.markWebpSkip(file, this.$t('uploadForm.webpLarger'))
+                    } else {
+                        processed = convertedFile
+                        convertedToWebp = true
+                    }
                 } else {
                     this.markWebpSkip(file, this.$t('uploadForm.webpUnsupported'))
                 }
@@ -2264,6 +2486,11 @@ methods: {
                             const pct = Math.min(100, Math.max(10, Number(this.compressPercent) || 80))
                             const targetKB = Math.max(1, Math.round((processed.size / 1024) * (pct / 100)))
                             const res = await imageConversion.compressAccurately(processed, targetKB)
+                            /*
+                             * v3.0.0：只接受「压得更小」的结果 —— res.size < processed.size
+                             * 保留现有逻辑；压缩产物反而更大时（低质量重编码不划算）不替换，
+                             * 继续用原文件上传。
+                             */
                             if (res && res.size < processed.size && this.allowedExtensions.includes('jpg')) {
                                 // image-conversion 固定输出 JPEG：扩展名必须同步成 .jpg，
                                 // 否则后端魔数校验会判「内容与扩展名不符」
@@ -2557,6 +2784,8 @@ methods: {
      * 校验不通过（类型不允许/拉取失败）的条目不会留在列表里。
      */
     async handlePasteSave() {
+        // v3.0.0：转存（拉取后待上传/直接提交）前先刷新一遍上传控制参数
+        await this.refreshUploadControls()
         this.pasteUploadMethod = 'save';
         const validUrls = extractUrlsFromText(this.pastedUrls);
         if (!validUrls.length) {
@@ -2673,6 +2902,12 @@ methods: {
      * v2.8.0：新增 onlyExternal 参数 —— 外链按钮自动完成时只处理外链条目。
      */
     startPasteUpload(onlyExternal = false) {
+        // v3.0.0：链接模式「上传」前先刷新一遍上传控制参数（一次点击只刷一次，失败不阻断）
+        this.refreshUploadControls().then(() => {
+            this._doStartPasteUpload(onlyExternal)
+        })
+    },
+    async _doStartPasteUpload(onlyExternal = false) {
         const pending = this.fileList.filter(item => item.status === 'waiting'
             && (item.uploadChannel === 'external' || (!onlyExternal && item.isRemoteUrl)));
         if (!pending.length) {
@@ -2776,7 +3011,8 @@ methods: {
      * 成功 resolve(File)；失败 reject(Error(detail))，detail 已解出后端 JSON 错误信息。
      */
     fetchRemoteFile(pastedUrl, uidSeed) {
-        return axios.post('/api/fetchRes', { url: pastedUrl }, {
+        // v3.0.0：链接转存（服务端拉取/暂存）同样带上当前实例 ID（'' = 默认实例）
+        return axios.post('/api/fetchRes?instanceId=' + encodeURIComponent(this.getCurrentInstanceId()), { url: pastedUrl }, {
             responseType: 'blob',
             withAuthCode: true
         }).then(async response => {
@@ -2912,8 +3148,15 @@ methods: {
             this.retryLoopActive = false
         }
     },
-    // 将图片转换为 WebP 格式
-    async convertImageToWebp(file) {
+    /**
+     * 将图片转换为 WebP 格式。
+     * v3.0.0：新增 mode 参数 ——
+     *   'lossless' 无损转换：quality = 1（canvas.toBlob('image/webp', 1)，画质不变）；
+     *   'lossy'    有损压缩：quality ≈ 0.8（沿用现有压缩质量思路，体积更小）。
+     * 其余取值按 lossless 处理。
+     */
+    async convertImageToWebp(file, mode = 'lossless') {
+        const webpQuality = mode === 'lossy' ? 0.8 : 1
         return new Promise((resolve, reject) => {
             // 不支持转换的格式直接返回 null
             if (file.type.includes('gif') || file.type.includes('svg') || file.type.includes('webp')) {
@@ -2949,7 +3192,7 @@ methods: {
                     
                     // 清理
                     URL.revokeObjectURL(img.src)
-                }, 'image/webp', 0.92) // 0.92 质量参数，平衡质量和大小
+                }, 'image/webp', webpQuality) // v3.0.0：无损=1 / 有损=0.8
             }
             
             img.onerror = () => {
@@ -4377,7 +4620,6 @@ html.dark .el-upload__text :deep(em) {
     .upload-list-dashboard {
         padding: 0 12px;
     }
-
     .modern-action-group,
     .upload-list-dashboard-title {
         height: 34px;
@@ -4401,6 +4643,15 @@ html.dark .el-upload__text :deep(em) {
         border-radius: 10px;
         font-size: 13px;
     }
+}
+
+/* ── v3.0.0：移动端滑动切换模式后的轻量视觉反馈（淡入一次） ── */
+.swipe-fade {
+    animation: swipeFadeIn 0.45s ease;
+}
+@keyframes swipeFadeIn {
+    from { opacity: 0.35; }
+    to { opacity: 1; }
 }
 
 </style>

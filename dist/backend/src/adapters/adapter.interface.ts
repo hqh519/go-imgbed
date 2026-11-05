@@ -8,6 +8,12 @@
  */
 export interface ChannelInfo {
   id: string;
+  /**
+   * v3.0.0（R11）：6 位业务渠道 ID（code）。
+   * 存储路径占位符 {ID} 用它渲染 —— 适配器只拿到 id 时会渲染成一长串主键，
+   * 于是「自动切换渠道」上传的文件目录与正常上传不一致。
+   */
+  code?: string;
   name: string;
   type: string;
   /** 已解密的配置（服务端内部使用） */
@@ -17,7 +23,11 @@ export interface ChannelInfo {
 
 export interface CopyInfo {
   remoteKey: string;
-  remoteUrl: string; // 仅 custom 渠道兜底用
+  remoteUrl: string; // 仅「非本渠道上传」的外部地址（登记文件/外链）用
+  /** v3.0.0：固化寻址路径（不含域名、不含 query，未编码原文） */
+  objectPath?: string;
+  /** v3.0.0：文件级查询串（不含 ?，原样），如 immich 的 key=<shareKey> */
+  urlQuery?: string;
   metas: Record<string, unknown>;
 }
 
@@ -25,7 +35,22 @@ export interface UploadResult {
   remoteKey: string;
   /** 仅当渠道无法用 key 构造 URL 时填写（custom 渠道兜底） */
   remoteUrl?: string;
+  /** v3.0.0：固化寻址路径（URL 去掉 origin 的 path）—— 域名永不落库 */
+  objectPath?: string;
+  /** v3.0.0：文件级查询串（不含 ?） */
+  urlQuery?: string;
+  /** v3.0.0：附带落库的渠道侧凭证（远端删除用），会并入 copy.metas */
   metas?: Record<string, unknown>;
+}
+
+export interface UploadContext {
+  /** 上传者用户名（本地渠道按此归档目录） */
+  owner?: string;
+  /**
+   * v3.0.0 多实例：归属实例 ID。空串/缺省 → 'default'（默认实例）。
+   * 仅本地存储渠道用于落盘路径分段（uploads/<用户名>/<实例ID>/…），其它渠道忽略。
+   */
+  instanceId?: string;
 }
 
 export interface StorageAdapter {
@@ -38,7 +63,7 @@ export interface StorageAdapter {
     file: { buffer: Buffer; mime: string; originalName: string },
     key: string,
     channel: ChannelInfo,
-    ctx?: { owner?: string },
+    ctx?: UploadContext,
   ): Promise<UploadResult>;
   /**
    * v2.8.3：从磁盘路径流式写入（大文件专用，避免整份读进内存）。
@@ -50,7 +75,7 @@ export interface StorageAdapter {
     file: { mime: string; originalName: string },
     key: string,
     channel: ChannelInfo,
-    ctx?: { owner?: string },
+    ctx?: UploadContext,
   ): Promise<UploadResult>;
   /** 删除渠道内资源 */
   delete(copy: CopyInfo, channel: ChannelInfo): Promise<void>;

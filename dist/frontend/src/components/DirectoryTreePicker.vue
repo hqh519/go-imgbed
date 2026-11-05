@@ -54,11 +54,18 @@
             <span class="drawer-trigger-wrapper" @click="openDrawer">
                 <slot name="trigger"></slot>
             </span>
+            <!--
+                移动端居中弹窗。
+                v3.0.0（R17）修复「目录选择弹窗被上传设置 / 登记文件弹窗盖住」：
+                这里原来写死 :z-index="3000"。Element Plus 的弹窗是 nextZIndex() 递增分配，
+                外层弹窗在这个会话里开过几次之后早就累积到 3000 以上，
+                固定值反而被压在下面。去掉固定值，交给 EP 按打开顺序分配 ——
+                后打开的目录弹窗必然高于先打开的外层弹窗。
+            -->
             <el-dialog
                 v-model="drawerVisible"
                 width="86%"
                 append-to-body
-                :z-index="3000"
                 align-center
                 :title="$t('directoryTree.selectDirectory')"
                 class="directory-tree-dialog"
@@ -190,43 +197,71 @@ export default {
         openDrawer() {
             this.drawerVisible = true;
         },
+        /**
+         * v3.0.0（R14）：单次请求目录树 —— 失败时抛错（带 status，便于上层区分 401）。
+         * 移动端弹窗模式与桌面端 Popover 模式共用同一份实现，避免两份逻辑不一致。
+         */
+        async requestDirectoryTree() {
+            if (this.source === 'admin') {
+                const response = await fetchWithAuth('/api/directoryTree', { method: 'GET' });
+                if (!response.ok) {
+                    const err = new Error(`HTTP ${response.status}`);
+                    err.status = response.status;
+                    throw err;
+                }
+                return await response.json();
+            }
+            const response = await axios.get('/api/directoryTree', {
+                // 移动端弱网：请求超时 20s（默认无超时，容易一直转圈）
+                timeout: 20000,
+            });
+            return response.data;
+        },
         async fetchDirectoryTree() {
             this.loading = true;
             this.error = '';
 
             try {
                 let data;
-                
-                if (this.source === 'admin') {
-                    const response = await fetchWithAuth('/api/directoryTree', {
-                        method: 'GET'
-                    });
-                    
-                    if (!response.ok) {
-                        if (response.status === 401) {
-                            this.error = this.$t('directoryTree.authFailed');
-                        } else {
-                            this.error = this.$t('directoryTree.serverError');
-                        }
-                        return;
-                    }
-                    data = await response.json();
-                } else {
-                    const response = await axios.get('/api/directoryTree', {
-                        withAuthCode: true
-                    });
-                    data = response.data;
+                try {
+                    data = await this.requestDirectoryTree();
+                } catch (first) {
+                    /*
+                     * v3.0.0（R14）：移动端偶发「加载目录树失败」——
+                     * 弱网/切后台回来时首个请求容易直接失败（Network Error），
+                     * 这里等待 400ms 自动重试一次，再失败才提示；401 不重试。
+                     */
+                    const status = first?.status ?? first?.response?.status;
+                    if (status === 401) throw first;
+                    await new Promise((resolve) => setTimeout(resolve, 400));
+                    data = await this.requestDirectoryTree();
                 }
 
-                if (data.tree) {
+                if (data && data.tree) {
                     this.treeData = [data.tree];
                 } else {
                     this.treeData = [];
                 }
+                /*
+                 * v3.0.0（R14）：根节点默认展开 ——
+                 * 之前在移动端打开弹窗只看到一个「/」，容易被误认为没加载出来。
+                 */
+                this.$nextTick(() => {
+                    const tree = this.$refs.treeRef || this.$refs.treeRefMobile;
+                    if (!tree || !this.treeData.length) return;
+                    const rootPath = this.treeData[0].path ?? '';
+                    const rootNode = typeof tree.getNode === 'function' ? tree.getNode(rootPath) : null;
+                    if (rootNode) rootNode.expanded = true;
+                    if (this.currentDirectory) tree.setCurrentKey(this.currentDirectory);
+                });
             } catch (err) {
-                console.error('Failed to fetch directory tree:', err);
-                if (err.response?.status === 401) {
+                const status = err?.status ?? err?.response?.status;
+                // v3.0.0（R14）：失败原因进控制台（移动端可在远程调试里看到），便于定位
+                console.error(`[directoryTree] 加载失败 status=${status || 'network'}`, err);
+                if (status === 401) {
                     this.error = this.$t('directoryTree.authFailed');
+                } else if (status) {
+                    this.error = `${this.$t('directoryTree.serverError')}（HTTP ${status}）`;
                 } else {
                     this.error = this.$t('directoryTree.loadFailed');
                 }

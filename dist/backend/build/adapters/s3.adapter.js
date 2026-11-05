@@ -5,6 +5,7 @@ const client_s3_1 = require("@aws-sdk/client-s3");
 const fs_1 = require("fs");
 const adapter_interface_1 = require("./adapter.interface");
 const endpoint_1 = require("../common/endpoint");
+const asset_url_1 = require("../common/asset-url");
 var endpoint_2 = require("../common/endpoint");
 Object.defineProperty(exports, "looksInternalHost", { enumerable: true, get: function () { return endpoint_2.looksInternalHost; } });
 function resolveEndpoint(type, cfg) {
@@ -71,7 +72,7 @@ class S3Adapter {
                 Body: file.buffer,
                 ContentType: file.mime,
             }));
-            return { remoteKey: fullKey };
+            return { remoteKey: fullKey, objectPath: this.objectPathFor(fullKey) };
         }
         catch (err) {
             throw new adapter_interface_1.AdapterError(`上传失败: ${err.message}`, channel.type);
@@ -122,7 +123,7 @@ class S3Adapter {
                 UploadId: uploadId,
                 MultipartUpload: { Parts: parts },
             }));
-            return { remoteKey: fullKey };
+            return { remoteKey: fullKey, objectPath: this.objectPathFor(fullKey) };
         }
         catch (err) {
             if (uploadId) {
@@ -141,12 +142,55 @@ class S3Adapter {
             throw new adapter_interface_1.AdapterError(`删除失败: ${err.message}`, channel.type);
         }
     }
+    baseUrlOf(preferInternal) {
+        const cfg = this.channel.config;
+        const raw = preferInternal && cfg.internalDomain ? cfg.internalDomain : cfg.publicDomain || '';
+        const domain = (0, endpoint_1.ensureProtocol)(raw || '').replace(/\/+$/, '');
+        if (domain)
+            return domain;
+        const endpoint = resolveEndpoint(this.channel.type, cfg).replace(/\/+$/, '');
+        if (!endpoint)
+            return '';
+        const pathStyle = cfg.pathStyle === 'true' || this.channel.type === 'minio';
+        if (pathStyle)
+            return endpoint;
+        try {
+            const u = new URL(endpoint);
+            return `${u.protocol}//${this.bucket}.${u.host}${u.pathname.replace(/\/+$/, '')}`;
+        }
+        catch {
+            return `${endpoint}/${this.bucket}`;
+        }
+    }
+    objectPathFor(key) {
+        const cfg = this.channel.config;
+        const pathStyle = cfg.pathStyle === 'true' || this.channel.type === 'minio';
+        if (!pathStyle)
+            return key;
+        const domain = String(cfg.publicDomain || cfg.internalDomain || '').trim();
+        if (domain) {
+            try {
+                const segs = new URL((0, endpoint_1.ensureProtocol)(domain)).pathname.split('/').filter(Boolean);
+                if (segs[segs.length - 1] === this.bucket)
+                    return key;
+            }
+            catch {
+            }
+        }
+        return `${this.bucket}/${key}`;
+    }
     buildDirectUrl(copy, channel, preferInternal) {
         const cfg = channel.config;
         const key = copy.remoteKey;
         const suffix = (cfg.suffix || '').trim();
         const withSuffix = (u) => (suffix ? u + (suffix.startsWith('?') ? suffix : `?${suffix}`) : u);
         const pathStyle = cfg.pathStyle === 'true' || channel.type === 'minio';
+        if (copy.objectPath) {
+            const base = this.baseUrlOf(!!preferInternal);
+            if (!base)
+                return null;
+            return (0, asset_url_1.buildAssetUrl)({ base, objectPath: copy.objectPath, urlQuery: copy.urlQuery, suffix });
+        }
         const domain = (0, endpoint_1.ensureProtocol)((preferInternal && cfg.internalDomain) || cfg.publicDomain || '').replace(/\/+$/, '');
         if (domain) {
             if (pathStyle) {

@@ -7,7 +7,7 @@
  */
 import type { Channel, FileCopy, FileRecord } from '@prisma/client';
 
-export type FileTypeName = 'image' | 'video' | 'audio' | 'other';
+export type FileTypeName = 'image' | 'video' | 'audio' | 'txt' | 'pdf' | 'other';
 
 /**
  * 「上传渠道」—— 文件是从哪个入口传上来的（落库 FileRecord.uploadSource）。
@@ -77,11 +77,12 @@ export const CHANNEL_LABEL: Record<string, string> = {
   immich: 'Immich',
   custom: 'External',
   local: 'Local',
+  localfiles: 'File',
 };
 
 /**
  * 渠道类型 → 简称（全站唯一来源）。
- *   腾讯云 COS = COS ｜ 阿里云 OSS = ALI ｜ 简单图床 = EI ｜ 兰空图床 = LS
+ *   腾讯云 COS = COS ｜ 阿里云 OSS = OSS ｜ 简单图床 = EI ｜ 兰空图床 = LS
  *   Immich = IM ｜ MinIO = MI ｜ R2 = R2 ｜ S3 = S3 ｜ WebDAV = WD ｜ 自定义 Web = DIY
  *   本地存储 = LOCAL
  * 文件管理卡片左上角角标、上传后自动标签、元数据 ChannelShort 均调用 channelShort()，
@@ -91,7 +92,7 @@ export const CHANNEL_SHORT: Record<string, string> = {
   easyimages: 'EI',
   lsky: 'LS',
   cos: 'COS',
-  aliyun: 'ALI',
+  aliyun: 'OSS',
   immich: 'IM',
   minio: 'MI',
   r2: 'R2',
@@ -99,6 +100,7 @@ export const CHANNEL_SHORT: Record<string, string> = {
   webdav: 'WD',
   custom: 'DIY',
   local: 'LCL',
+  localfiles: 'File',
 };
 
 /**
@@ -116,11 +118,33 @@ export function channelShort(typeOrLabel?: string | null): string {
   return raw.slice(0, 4).toUpperCase();
 }
 
+/**
+ * v3.0.0（R14）：从「图片/视频/音频/其他」四分类升级为六分类 ——
+ * 新增 txt（text/plain，纯文本）与 pdf（application/pdf）；
+ * 「其他」不再包含这两类（md/csv/html 等 text/* 仍归「其他」）。
+ * 注意：autoTag 会用本函数的返回值打「文件类型」标签，txt/pdf 文件今后
+ * 会打 txt / pdf 标签而不是 other（随本需求一并生效）。
+ */
 export function fileTypeOf(mime: string): FileTypeName {
-  if (!mime) return 'other';
-  if (mime.startsWith('image/')) return 'image';
-  if (mime.startsWith('video/')) return 'video';
-  if (mime.startsWith('audio/')) return 'audio';
+  const m = String(mime || '').toLowerCase().split(';')[0].trim();
+  if (!m) return 'other';
+  if (m.startsWith('image/')) return 'image';
+  if (m.startsWith('video/')) return 'video';
+  if (m.startsWith('audio/')) return 'audio';
+  if (m === 'application/pdf') return 'pdf';
+  /*
+   * v3.0.0（R15）：所有「能用文本方式打开」的类型统一归 txt ——
+   * 之前只认 text/plain，导致 html / php / js / yaml / jsonl / 各类源码
+   * 落到「其他」，既不能在 TXT 灯箱里看，也筛不出来。
+   * 判定按 MIME 的通用族来（text/* + 常见脚本/配置类 application/*），
+   * 不靠扩展名，避免各渠道上传时 MIME 缺失导致口径不一致。
+   */
+  if (
+    m.startsWith('text/') ||
+    /^application\/(json|ld\+json|ndjson|x-ndjson|json5|javascript|ecmascript|x-javascript|x-httpd-php|php|x-sh|x-csh|x-yaml|yaml|x-toml|toml|x-properties|sql|x-python|x-ruby|x-perl|x-lua|x-php|x-httpd-php-source|graphql|xml|xhtml\+xml|x-latex|rtf)$/.test(m)
+  ) {
+    return 'txt';
+  }
   return 'other';
 }
 
@@ -220,6 +244,28 @@ export function buildDirectoryTree(directories: string[]): DirectoryTreeNode {
   return root;
 }
 
+/**
+ * v3.0.0（R6）：该记录是否为「登记文件」。
+ *
+ * 两类文件的 remoteKey 语义不同，取流 / 直链构造必须分开：
+ *   · 普通上传：key 相对【存储桶根 / 渠道根】，例如 MinIO 的 `2026/10/x.png`
+ *     → 直链 = 域名 + 桶名 + key（桶名由适配器拼接，绝不能把桶名烤进 key ——
+ *       S3 的 PutObject 本身就要单独传 Bucket，key 再带一遍会存成 bucket/bucket/…）；
+ *   · 登记文件：key 是【剔除渠道域名后剩下的完整路径】，MinIO 已含桶名，
+ *     例如 `test/2026/10/x.png` → 直链 = 域名 + key（再补桶名会变成 bucket/bucket）。
+ */
+export function isRecordFile(
+  rec?: { uploadSource?: string | null; metas?: unknown } | null,
+): boolean {
+  if (!rec) return false;
+  if (String(rec.uploadSource || '') === 'Record') return true;
+  const metas =
+    typeof rec.metas === 'string'
+      ? safeParse(rec.metas)
+      : (rec.metas as Record<string, unknown> | undefined);
+  return !!(metas && (metas as Record<string, unknown>).Registered === true);
+}
+
 export type CopyWithChannel = FileCopy & { channel?: Channel | null };
 
 export interface SerializeOptions {
@@ -229,7 +275,18 @@ export interface SerializeOptions {
    * 由控制器注入（需要适配器），file-view 本身不依赖 adapters 以免循环依赖。
    * 返回 null/空串表示无法构造（前端会回退到本站代理地址）。
    */
-  resolveDirectUrl?: (copy: CopyWithChannel) => string | null;
+  /**
+   * v3.0.0（R6）：第二个参数传入所属文件记录 ——
+   * 解析器需要区分「普通上传副本」（key 相对桶根，必须由适配器补 bucket）
+   * 与「登记文件副本」（key 已含桶名/完整路径，只能拼域名）。
+   */
+  resolveDirectUrl?: (copy: CopyWithChannel, rec?: FileRecord) => string | null;
+  /**
+   * v3.0.0（R10）：文件「加载地址」解析器（详情页「源」用）。
+   * 与 resolveDirectUrl 的区别：这里走「文件加载域名」—— 代理模式下优先内网通信域名，
+   * 也就是服务端真正去取流的那条地址；resolveDirectUrl 给的是对外公开地址。
+   */
+  resolveLoadUrl?: (copy: CopyWithChannel, rec?: FileRecord) => string | null;
 }
 
 /**
@@ -258,11 +315,19 @@ export function buildMetadata(
       short: channelShort(c.channel!.type),
       name: c.channel!.name,
       // 该副本在备份渠道内的真实直链（如 WebDAV 上的真实地址）
-      url: (opts.resolveDirectUrl ? opts.resolveDirectUrl(c) : '') || '',
+      url: (opts.resolveDirectUrl ? opts.resolveDirectUrl(c, rec) : '') || '',
     }));
 
-  // 主渠道（存储渠道）副本在渠道内的真实直链
-  const storageUrl = (primary && opts.resolveDirectUrl ? opts.resolveDirectUrl(primary) : '') || '';
+  // 主渠道（存储渠道）副本在渠道内的真实直链（对外公开地址：公开访问域名 + 固化地址）
+  const storageUrl = (primary && opts.resolveDirectUrl ? opts.resolveDirectUrl(primary, rec) : '') || '';
+  /*
+   * v3.0.0（R10）：文件「源」地址 —— 用「文件加载域名」拼（代理模式=内网通信域名）。
+   * 用途是排查/校验「服务端到底从哪取流」，因此允许是内网地址；对外分享仍用 StorageUrl。
+   */
+  const loadUrl =
+    (primary && (opts.resolveLoadUrl || opts.resolveDirectUrl)
+      ? (opts.resolveLoadUrl || opts.resolveDirectUrl)!(primary, rec)
+      : '') || '';
 
   // 初始大小（压缩前）：未记录或与当前大小相同时，回退为当前大小
   const size = Number(rec.size) || 0;
@@ -297,6 +362,9 @@ export function buildMetadata(
       ? (rec as unknown as { linkExpiresAt: Date }).linkExpiresAt.getTime()
       : 0,
     ListType: (metas.ListType as string) || 'None',
+    // 评分 / 等级（v3.0.0 R8）：详情页展示 + 编辑；独立列存库
+    Rating: Number((rec as unknown as { rating?: number }).rating) || 0,
+    Level: Number((rec as unknown as { level?: number }).level) || 0,
     TimeStamp: rec.createdAt.getTime(),
     Label: (metas.Label as string) || 'None',
     Directory: rec.folder ? `${rec.folder.replace(/\/+$/, '')}/` : '',
@@ -312,6 +380,8 @@ export function buildMetadata(
     ChannelName: primary?.channel?.name || '',
     // 该文件在「存储渠道」内的真实直链（S3 地址 / WebDAV 地址 …），无法构造时为空
     StorageUrl: storageUrl,
+    // 「源」：加载域名 + 固化地址（代理模式优先内网通信域名）
+    LoadUrl: loadUrl || storageUrl,
     BackupChannels: backupChannels,
     FileHash: rec.hash || '',
   };

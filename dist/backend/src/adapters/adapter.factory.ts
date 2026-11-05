@@ -37,8 +37,27 @@ export function createAdapter(channel: ChannelInfo): StorageAdapter {
 }
 
 /** Prisma 副本行 → 适配器 CopyInfo（metas 为 JSON 字符串，适配器不需要解析它） */
-export function toCopyInfo(c: { remoteKey: string; remoteUrl: string }): CopyInfo {
-  return { remoteKey: c.remoteKey, remoteUrl: c.remoteUrl, metas: {} };
+export function toCopyInfo(c: {
+  remoteKey: string;
+  remoteUrl: string;
+  objectPath?: string | null;
+  urlQuery?: string | null;
+  metas?: string | null;
+}): CopyInfo {
+  let metas: Record<string, unknown> = {};
+  try {
+    const parsed = c.metas ? JSON.parse(c.metas) : null;
+    if (parsed && typeof parsed === 'object') metas = parsed as Record<string, unknown>;
+  } catch {
+    metas = {};
+  }
+  return {
+    remoteKey: c.remoteKey,
+    remoteUrl: c.remoteUrl,
+    objectPath: c.objectPath || '',
+    urlQuery: c.urlQuery || '',
+    metas,
+  };
 }
 
 /** 各渠道的敏感配置字段（用于脱敏/加密判定，与 channels.controller 保持一致） */

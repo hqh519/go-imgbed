@@ -4,6 +4,7 @@ exports.ImmichAdapter = void 0;
 const crypto_1 = require("crypto");
 const adapter_interface_1 = require("./adapter.interface");
 const endpoint_1 = require("../common/endpoint");
+const asset_url_1 = require("../common/asset-url");
 class ImmichAdapter {
     headers(channel) {
         return { 'x-api-key': channel.config.apiKey, Accept: 'application/json' };
@@ -12,12 +13,18 @@ class ImmichAdapter {
         return (0, endpoint_1.ensureProtocol)(channel.config.serverUrl || '').replace(/\/+$/, '') + path;
     }
     linkBase(channel) {
-        const base = (0, endpoint_1.ensureProtocol)(channel.config.domain || channel.config.serverUrl || '').replace(/\/+$/, '');
+        const base = (0, endpoint_1.ensureProtocol)(channel.config.publicDomain || channel.config.domain || '').replace(/\/+$/, '');
         return base;
     }
     internalLinkBase(channel) {
-        const base = (0, endpoint_1.ensureProtocol)(channel.config.internalDomain || channel.config.domain || channel.config.serverUrl || '').replace(/\/+$/, '');
+        const base = (0, endpoint_1.ensureProtocol)(channel.config.internalDomain || channel.config.publicDomain || channel.config.domain || channel.config.serverUrl || '').replace(/\/+$/, '');
         return base;
+    }
+    pathsOf(assetId, shareKey) {
+        return {
+            objectPath: `api/assets/${assetId}/original`,
+            urlQuery: shareKey ? `key=${shareKey}` : '',
+        };
     }
     async upload(file, key, channel) {
         const cfg = channel.config;
@@ -79,8 +86,13 @@ class ImmichAdapter {
             }
         }
         const fixedKey = (cfg.shareLinkId || '').trim();
-        if (fixedKey)
-            return { remoteKey: `${assetId}|${fixedKey}`, metas: { assetId, shareKey: fixedKey } };
+        if (fixedKey) {
+            return {
+                remoteKey: `${assetId}|${fixedKey}`,
+                ...this.pathsOf(assetId, fixedKey),
+                metas: { assetId, shareKey: fixedKey, albumId: cfg.albumId || '' },
+            };
+        }
         const shareResp = await fetch(this.api(channel, '/api/shared-links'), {
             method: 'POST',
             headers: { ...this.headers(channel), 'Content-Type': 'application/json' },
@@ -100,7 +112,11 @@ class ImmichAdapter {
         const shareKey = shareJson.key || shareJson.slug;
         if (!shareKey)
             throw new adapter_interface_1.AdapterError('分享响应中未找到 key/slug', channel.type);
-        return { remoteKey: `${assetId}|${shareKey}`, metas: { assetId, shareKey } };
+        return {
+            remoteKey: `${assetId}|${shareKey}`,
+            ...this.pathsOf(assetId, shareKey),
+            metas: { assetId, shareKey, albumId: cfg.albumId || '' },
+        };
     }
     async delete(copy, channel) {
         const assetId = copy.remoteKey.split('|')[0];
@@ -113,11 +129,17 @@ class ImmichAdapter {
             throw new adapter_interface_1.AdapterError(`删除失败: HTTP ${resp.status}`, channel.type);
     }
     buildDirectUrl(copy, channel, preferInternal) {
-        const [assetId, shareKey] = copy.remoteKey.split('|');
-        if (!assetId)
-            return null;
         const base = preferInternal ? this.internalLinkBase(channel) : this.linkBase(channel);
         if (!base)
+            return null;
+        if (copy.objectPath) {
+            return (0, asset_url_1.buildAssetUrl)({ base, objectPath: copy.objectPath, urlQuery: copy.urlQuery });
+        }
+        if (copy.remoteKey.includes('/')) {
+            return `${base.replace(/\/+$/, '')}/${copy.remoteKey.replace(/^\/+/, '')}`;
+        }
+        const [assetId, shareKey] = copy.remoteKey.split('|');
+        if (!assetId)
             return null;
         if (!shareKey)
             return `${base}/api/assets/${assetId}/original`;

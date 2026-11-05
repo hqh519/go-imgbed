@@ -14,6 +14,7 @@ var __param = (this && this.__param) || function (paramIndex, decorator) {
 var UploadController_1;
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.UploadController = void 0;
+const request_origin_1 = require("../common/request-origin");
 const common_1 = require("@nestjs/common");
 const platform_express_1 = require("@nestjs/platform-express");
 const common_2 = require("@nestjs/common");
@@ -87,7 +88,7 @@ let UploadController = class UploadController {
         (0, upload_session_1.startUploadSweeper)();
     }
     async signedSrc(id, req) {
-        const origin = `${req.protocol}://${req.get('host')}`;
+        const origin = (0, request_origin_1.signOrigin)(req);
         const prefix = await this.settings.getLinkPrefix(origin);
         return `${prefix}${encodeURIComponent(id)}`;
     }
@@ -140,6 +141,7 @@ let UploadController = class UploadController {
             note: String(body.note || ''),
             uploader,
             ip: this.clientIp(req),
+            instanceId: String(body.instanceId || '').trim(),
         });
         if (result.error)
             return res.status(400).json({ success: false, message: result.error });
@@ -193,8 +195,15 @@ let UploadController = class UploadController {
             retryRound: Math.max(0, Number(q.retryRound) || 0),
             failReason: String(q.failReason || '').slice(0, 300),
             webpSkip: String(q.webpSkip || '').slice(0, 120),
+            instanceId: String(q.instanceId ?? body.instanceId ?? '').trim(),
+            webpMode: q.webpMode === 'lossless' || q.webpMode === 'lossy' ? q.webpMode : '',
             skipFileLimits: !enforceLimits,
             uploadSource,
+            extraTags: String(q.extraTags || '')
+                .split(',')
+                .map((t) => t.trim().slice(0, 20))
+                .filter(Boolean)
+                .slice(0, 10),
             uploadStartedAt: new Date(arrivedAt),
             limitsOverride: {
                 exts: overrideExts.length ? overrideExts : undefined,

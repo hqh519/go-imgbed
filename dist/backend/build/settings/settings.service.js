@@ -7,6 +7,7 @@ var __decorate = (this && this.__decorate) || function (decorators, target, key,
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.SettingsService = void 0;
+const request_origin_1 = require("../common/request-origin");
 const common_1 = require("@nestjs/common");
 const prisma_1 = require("../common/prisma");
 let SettingsService = class SettingsService {
@@ -42,7 +43,9 @@ let SettingsService = class SettingsService {
         await this.set(key, JSON.stringify(obj));
     }
     async getServerDomain() {
-        return (await this.get('serverDomain', '')).replace(/\/+$/, '');
+        const v = (await this.get('serverDomain', '')).replace(/\/+$/, '');
+        (0, request_origin_1.primeSignOrigin)(v);
+        return v;
     }
     async getCustomDomain() {
         return (await this.get('customDomain', '')).trim().replace(/\/+$/, '');

@@ -541,6 +541,7 @@ let AuthController = class AuthController {
         let canDelete = true;
         let totpEnabled = !!session?.t2;
         let totpRequired = false;
+        let shareEnabled = role === 'admin' || role === 'super';
         let profile = {};
         if (session) {
             const u = await prisma_1.prisma.user.findUnique({ where: { username: session.user } });
@@ -549,6 +550,7 @@ let AuthController = class AuthController {
                 canDelete = u.canDelete ?? true;
                 totpEnabled = u.totpEnabled;
                 totpRequired = u.totpEnabled && !(0, auth_guard_1.totpValid)(session);
+                shareEnabled = u.role === 'admin' || u.role === 'super' ? true : !!u.shareEnabled;
                 profile = {
                     username: u.username,
                     nickname: u.nickname || u.username,
@@ -560,6 +562,7 @@ let AuthController = class AuthController {
                     frontSessionDays: u.frontSessionDays ?? DEFAULT_SESSION_DAYS,
                     backSessionDays: u.backSessionDays ?? DEFAULT_SESSION_DAYS,
                     recoveryCount: (0, recovery_1.countRecoveryCodes)(u.recoveryHashes),
+                    shareEnabled,
                 };
             }
         }
@@ -573,6 +576,7 @@ let AuthController = class AuthController {
             username: session?.user ?? null,
             canEdit,
             canDelete,
+            shareEnabled,
             totpEnabled,
             totpRequired,
             profile,
@@ -584,6 +588,7 @@ let AuthController = class AuthController {
                 role,
                 canEdit,
                 canDelete,
+                shareEnabled,
                 adminRequired,
                 userRequired,
                 valid,

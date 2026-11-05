@@ -128,7 +128,17 @@ export class AccessService {
       return row.id;
     } catch (err) {
       // 访问记录是旁路功能，任何异常都不该冒泡到业务
-      console.warn('[access] 写入访问记录失败:', (err as Error).message);
+      /*
+       * v3.0.0（R11）：打印 err.name / err.code / stack —— 只打 message 时，
+       * 数据库类错误（Prisma P2002/P2022、连接池超时 ECONNRESET 等）
+       * 往往只留一句「写入访问记录失败」，排查时完全黑盒。
+       */
+      const e = err as Error & { code?: string; meta?: unknown };
+      console.warn(
+        `[access] 写入访问记录失败: ${e?.name || 'Error'}${e?.code ? ` (${e.code})` : ''} ${e?.message || err}`,
+        e?.meta ? `meta=${JSON.stringify(e.meta)}` : '',
+        `\n${e?.stack || '(无 stack)'}`,
+      );
       return '';
     }
   }

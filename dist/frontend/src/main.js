@@ -18,6 +18,8 @@ import { setupAccessTracker } from './utils/accessTracker'
 import { setupBackGuard } from './utils/backGuard'
 // 主题模式 Cookie（v2.8.5：跨页面主题同步走 Cookie，页面刷新时生效）
 import { readThemeCookie } from './utils/themeCookie'
+// v3.0.0：长时间闲置 / 标签页被回收后重新访问时的「自动复活」守护
+import { setupPageRevive } from './utils/page-revive'
 
 import * as ElementPlusIconsVue from '@element-plus/icons-vue'
 import 'element-plus/theme-chalk/dark/css-vars.css'
@@ -29,6 +31,9 @@ import 'overlayscrollbars/overlayscrollbars.css'
 
 
 library.add(...fontAwesomeIcons);
+
+// v3.0.0：必须在挂载之前装好 —— 入口请求挂死导致始终没挂载时也要能自愈
+setupPageRevive();
 
 // 保留首条消息的顶部间距，同时允许 Element Plus 动态计算后续消息的位置。
 messageConfig.offset = 30;
@@ -120,7 +125,18 @@ const presetSiteIcon = (isDarkMode, userConfig) => {
     document.head.appendChild(maskIconLink);
 };
 
-store.dispatch('fetchUserConfig').then(() => {
+/*
+ * v3.0.0：入口配置请求加上「兜底超时」。
+ * 原先 store.dispatch('fetchUserConfig') 一旦挂住（长时间闲置后网络未就绪、
+ * 服务端连接池繁忙），.then 永远不执行 → 应用永远不挂载 → 整页空白。
+ * 现在 8 秒拿不到配置就先用默认配置挂载，后续真实配置回来会响应式更新。
+ */
+const bootConfig = store.dispatch('fetchUserConfig');
+const bootTimeout = new Promise((resolve) => {
+    window.setTimeout(() => resolve('boot-timeout'), 6000);
+});
+
+Promise.race([bootConfig, bootTimeout]).then(() => {
     // 优先恢复用户选择；没有持久化选择时使用网页默认语言
     initializeLocale(store.getters.userConfig?.defaultLanguage);
 
@@ -177,7 +193,10 @@ store.dispatch('fetchUserConfig').then(() => {
         if (!document.hidden) refreshThemeByTime();
     });
 
-    app.use(store).use(router).use(ElementPlus).use(i18n).mount('#app');
+    // v3.0.0（R9-F）：EP 全局 zIndex 基准提到 3210 —— 媒体灯箱固定 z-index 3200，
+    // 弹层（详情弹窗 / MessageBox / message）从 3211 起递增，才能叠在灯箱上层
+    // （详情按钮开详情不关灯箱、抓拍上传确认框都依赖这一点）。
+    app.use(store).use(router).use(ElementPlus, { zIndex: 3210 }).use(i18n).mount('#app');
 
     /*
      * 访问记录上报（v2.3.0）。
@@ -194,6 +213,6 @@ store.dispatch('fetchUserConfig').then(() => {
 }).catch(error => {
     console.error('Failed to load user configuration:', error);
     initializeLocale();
-    app.use(store).use(router).use(ElementPlus).use(i18n).use(head).mount('#app');
+    app.use(store).use(router).use(ElementPlus, { zIndex: 3210 }).use(i18n).use(head).mount('#app');
     setupBackGuard();
 })

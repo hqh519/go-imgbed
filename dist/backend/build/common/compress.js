@@ -36,6 +36,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.VIDEO_CODEC_INCOMPATIBLE = exports.MEDIA_POST_MAX_SECONDS = void 0;
 exports.ffmpegAvailable = ffmpegAvailable;
 exports.probeMediaDurationFile = probeMediaDurationFile;
+exports.probeAudioBitrateFile = probeAudioBitrateFile;
 exports.probeVideoSizeFile = probeVideoSizeFile;
 exports.compressMedia = compressMedia;
 exports.readDimensions = readDimensions;
@@ -102,6 +103,22 @@ async function probeMediaDurationFile(srcPath) {
         if (!m)
             return 0;
         return Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]);
+    }
+}
+async function probeAudioBitrateFile(srcPath) {
+    if (!ffmpegAvailable())
+        return 0;
+    try {
+        await run(ffmpegPath, ['-hide_banner', '-i', srcPath], { timeout: 15000, maxBuffer: 4 * 1024 * 1024 });
+        return 0;
+    }
+    catch (err) {
+        const stderr = String(err.stderr || '');
+        const audioLine = stderr.split(/\r?\n/).find((l) => l.includes('Audio:'));
+        if (!audioLine)
+            return 0;
+        const m = audioLine.match(/(\d{2,6})\s*kb\/s/);
+        return m ? Number(m[1]) : 0;
     }
 }
 async function probeVideoSizeFile(srcPath) {
@@ -217,11 +234,16 @@ async function compressAudio(buffer, ext, percent) {
     if (!AUDIO_OK.has(ext))
         return keep(`${ext} 不是可压缩的音频格式`);
     const p = clampQuality(percent);
-    const bitrate = Math.round(Math.min(320, Math.max(48, p * 2)));
     const outExt = ext === 'mp3' ? '.mp3' : '.m4a';
     try {
         return await withTempFiles([`.${ext}`, outExt], async ([src, dst]) => {
             await fs_1.promises.writeFile(src, buffer);
+            const sourceKbps = await probeAudioBitrateFile(src);
+            if (sourceKbps && sourceKbps <= 64)
+                return keep(`源码率仅 ${sourceKbps}k，再压缩收益过低，保留原文件`);
+            const bitrate = sourceKbps
+                ? Math.min(320, Math.max(48, Math.round((sourceKbps * p) / 100)))
+                : Math.round(Math.min(320, Math.max(48, p * 2)));
             const args = outExt === '.mp3'
                 ? ['-y', '-i', src, '-vn', '-c:a', 'libmp3lame', '-b:a', `${bitrate}k`, dst]
                 : ['-y', '-i', src, '-vn', '-c:a', 'aac', '-b:a', `${bitrate}k`, '-movflags', '+faststart', dst];
@@ -406,7 +428,14 @@ async function compressAudioFile(srcPath, e, percent, original, maxSeconds = 30 
     if (!AUDIO_OK.has(e))
         return keep(`${e} 不是可压缩的音频格式`);
     const p = clampQuality(percent);
-    const bitrate = Math.round(Math.min(320, Math.max(48, p * 2)));
+    const sourceKbps = await probeAudioBitrateFile(srcPath);
+    if (sourceKbps && sourceKbps <= 64) {
+        return keep(`源码率仅 ${sourceKbps}k，再压缩收益过低，保留原文件`);
+    }
+    const targetKbps = sourceKbps
+        ? Math.min(320, Math.max(48, Math.round((sourceKbps * p) / 100)))
+        : Math.round(Math.min(320, Math.max(48, p * 2)));
+    const bitrate = targetKbps;
     const outExt = e === 'mp3' ? '.mp3' : '.m4a';
     const out = `${srcPath}.cmp${outExt}`;
     const args = outExt === '.mp3'

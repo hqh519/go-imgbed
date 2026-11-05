@@ -25,6 +25,30 @@
                                 </el-tooltip>
                             </div>
                         </div>
+                        <div class="tag-select-section">
+                            <div class="tag-select-label">{{ $t('batchTag.existingTags') }}</div>
+                            <!-- v3.0.0：待添加标签多选区 —— 打开时由 /api/tags/manage 填充已存在标签，可多选、可搜索、可新建 -->
+                            <el-select
+                                v-model="tagsToAdd"
+                                multiple
+                                filterable
+                                allow-create
+                                default-first-option
+                                clearable
+                                class="batch-tag-select"
+                                :loading="tagOptionsLoading"
+                                :disabled="loading || aiBusy"
+                                :placeholder="$t('batchTag.selectPlaceholder')"
+                            >
+                                <el-option v-for="opt in tagOptions" :key="opt.name" :label="opt.name" :value="opt.name">
+                                    <span class="batch-tag-option">
+                                        <span class="batch-tag-option-name">{{ opt.name }}</span>
+                                        <span class="batch-tag-option-count">{{ opt.count }}</span>
+                                    </span>
+                                </el-option>
+                            </el-select>
+                            <div class="tag-select-hint">{{ $t('batchTag.selectHint') }}</div>
+                        </div>
                         <div class="input-section">
                             <div class="tag-input-row">
                                 <el-input v-model="inputTag" :disabled="loading || aiBusy" :placeholder="$t('batchTag.inputPlaceholder')" @keyup.enter="handleAddInputTag" @input="handleInputChange" clearable>
@@ -36,10 +60,7 @@
                                 <button v-for="tag in suggestions" :key="tag" type="button" class="suggestion-item" :disabled="loading || aiBusy" @click="selectSuggestion(tag)"><font-awesome-icon icon="hashtag" /><span>{{ tag }}</span></button>
                             </div>
                         </div>
-                        <div v-if="tagsToAdd.length" class="tags-container">
-                            <el-tag v-for="tag in tagsToAdd" :key="tag" :closable="!loading && !aiBusy" @close="removeFromToAdd(tag)" class="tag-chip" round>{{ tag }}</el-tag>
-                        </div>
-                        <div v-else class="empty-message"><font-awesome-icon icon="tag" /><span>{{ $t('batchTag.noPendingTags') }}</span></div>
+                        <div v-if="!tagsToAdd.length" class="empty-message"><font-awesome-icon icon="tag" /><span>{{ $t('batchTag.noPendingTags') }}</span></div>
                         <div class="action-buttons"><el-button type="primary" @click="executeAddTags" :loading="loading" :disabled="!tagsToAdd.length || !fileCount"><font-awesome-icon v-if="!loading" icon="plus" />{{ $t('batchTag.addToAllFiles') }}</el-button></div>
                     </section>
                 </el-tab-pane>
@@ -114,7 +135,10 @@ export default {
             loading: false,
             pendingIndexIds: [],
             aiBusy: false,
-            debounceTimer: null
+            debounceTimer: null,
+            // v3.0.0：已存在标签（/api/tags/manage），用于「待添加标签」多选
+            tagOptions: [],
+            tagOptionsLoading: false
         };
     },
     computed: {
@@ -144,6 +168,7 @@ export default {
         visible(newVal) {
             if (newVal) {
                 this.loadCommonTags();
+                this.loadTagOptions();
             } else {
                 this.resetData();
             }
@@ -171,13 +196,29 @@ export default {
             this.loadCommonTags(results);
         },
         finishTagOperation(data, successKey) {
-            this.updateSavedTags(data.results);
-            if (data.success) ElMessage.success(this.$t(successKey, { count: data.updated }));
-            else ElMessage.warning(this.$t('batchTag.partialSave', {
-                saved: data.results.filter(result => result.saved && !result.indexPending).length,
-                total: data.results.length
-            }));
-            return data.success;
+            /*
+             * v3.0.0（R17）：后端返回结构做兜底。
+             * 曾出现「提示失败、实际已经加上标签」：接口返回 { success, count } 没有 results，
+             * updateSavedTags(undefined) 里 for...of 抛 TypeError → 被上层 catch 当成失败。
+             * 现在后端已按约定返回 results；这里再补一层防御，任何缺字段都不再抛异常。
+             */
+            const results = Array.isArray(data?.results) ? data.results : [];
+            const updatedRaw = Number(data?.updated);
+            const updated = Number.isFinite(updatedRaw)
+                ? updatedRaw
+                : results.filter(result => result && result.saved).length;
+            this.updateSavedTags(results);
+            // v3.0.0：标签使用数变化后刷新「已存在标签」列表
+            this.loadTagOptions();
+            if (data && data.success) {
+                ElMessage.success(this.$t(successKey, { count: updated }));
+            } else {
+                ElMessage.warning(this.$t('batchTag.partialSave', {
+                    saved: results.filter(result => result.saved && !result.indexPending).length,
+                    total: results.length
+                }));
+            }
+            return !!(data && data.success);
         },
         async repairIndex() {
             if (this.loading || this.aiBusy) return;
@@ -204,6 +245,27 @@ export default {
             const updates = new Map(results.filter(result => result.saved).map(result => [result.fileId, result.tags]));
             const allTags = this.selectedFilesOnly.map(file => updates.get(file.name) || file.metadata?.Tags || []);
             this.commonTags = allTags.length ? allTags[0].filter(tag => allTags.every(tags => tags.includes(tag))) : [];
+        },
+
+        /**
+         * v3.0.0：加载「已存在标签」—— 修复「待添加标签」加载不到的问题。
+         * 数据源 GET /api/tags/manage?instanceId=（当前实例的全部标签 + 使用数）。
+         */
+        async loadTagOptions() {
+            this.tagOptionsLoading = true;
+            try {
+                const res = await fetchWithAuth('/api/tags/manage?instanceId=');
+                const json = await res.json().catch(() => ({}));
+                const list = Array.isArray(json?.data) ? json.data : [];
+                this.tagOptions = list
+                    .filter((t) => t && t.name)
+                    .map((t) => ({ name: String(t.name), count: Number(t.count) || 0, encrypted: !!t.encrypted }));
+            } catch (error) {
+                console.error('Error loading tag options:', error);
+                this.tagOptions = [];
+            } finally {
+                this.tagOptionsLoading = false;
+            }
         },
 
         handleInputChange() {
@@ -398,3 +460,46 @@ export default {
 </script>
 
 <style scoped src="@/styles/tag-dialog.css"></style>
+<style scoped>
+/* v3.0.0：「待添加标签」多选区 */
+.tag-select-section {
+    margin-bottom: 14px;
+}
+.tag-select-label {
+    margin-bottom: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--el-text-color-primary);
+}
+.batch-tag-select {
+    width: 100%;
+}
+.batch-tag-select :deep(.el-select__wrapper) {
+    min-height: 36px;
+    border-radius: 9px;
+    background: var(--dialog-control-bg-color, var(--el-bg-color));
+}
+.tag-select-hint {
+    margin-top: 4px;
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--el-text-color-secondary);
+}
+.batch-tag-option {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+.batch-tag-option-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.batch-tag-option-count {
+    flex: 0 0 auto;
+    font-size: 12px;
+    color: var(--el-text-color-secondary);
+    font-variant-numeric: tabular-nums;
+}
+</style>

@@ -488,7 +488,7 @@
           >
             <img
               v-if="isImageFile(file) && !loadErrors['recent-' + file.id]"
-              :src="'/file/' + file.id + '?from=admin'"
+              :src="thumbUrl('/file/' + file.id + '?from=admin', 320)"
               loading="lazy"
               @error="handleImageError('recent-' + file.id)"
             />
@@ -600,6 +600,7 @@
 </template>
 
 <script>
+import { thumbUrl } from '../../utils/thumb';
 import fetchWithAuth from '@/utils/fetchWithAuth'
 import packageInfo from '../../../package.json'
 import { Doughnut, Line } from 'vue-chartjs'
@@ -1109,6 +1110,12 @@ export default {
     }
   },
   methods: {
+    /**
+     * v3.0.0（R11）：模板里直接调用注入的 thumbUrl ——
+     * Options API 模板只能访问组件实例上的成员，模块作用域里的函数必须挂到 methods，
+     * 否则渲染时报 "thumbUrl is not a function"（图片全挂）。
+     */
+    thumbUrl,
     // 获取渠道图表颜色
     getChartColor(index) {
       return this.channelColors[index % this.channelColors.length]
@@ -1135,13 +1142,15 @@ export default {
       }
       return map[key] ? this.$t(map[key]) : key || this.$t('sysStatus.unknown')
     },
-    /** 上传类型展示名（image / video / audio / other → 图片 / 视频 / 音频 / 其他） */
+    /** 上传类型展示名（image / video / audio / txt / pdf / other） */
     fileTypeLabel(raw) {
       const key = String(raw || '')
       const map = {
         image: 'filter.image',
         video: 'filter.video',
         audio: 'filter.audio',
+        txt: 'filter.txt',
+        pdf: 'filter.pdf',
         other: 'filter.other'
       }
       return map[key] ? this.$t(map[key]) : key || this.$t('sysStatus.unknown')

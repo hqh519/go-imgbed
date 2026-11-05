@@ -505,6 +505,17 @@
                         <el-input v-model="newToken.defaultCategory" :placeholder="$t('sysSecurity.defaultCategoryPlaceholder')">
                             <template #prepend>{{ $t('sysSecurity.defaultCategory') }}</template>
                         </el-input>
+                        <!-- v3.0.0（R18）：默认分类目录支持占位符，点击直接插入 -->
+                        <div class="token-folder-tip">
+                            <span class="token-folder-tip-label">{{ $t('sysSecurity.folderPlaceholderTip') }}</span>
+                            <code
+                                v-for="ph in folderPlaceholders"
+                                :key="'new-' + ph.text"
+                                class="token-folder-chip"
+                                :title="ph.hint"
+                                @click="insertFolderPlaceholder('new', ph.text)"
+                            >{{ ph.text }}</code>
+                        </div>
                         <div class="token-default-field">
                             <span class="token-default-label">{{ $t('sysSecurity.defaultBucket') }}</span>
                             <ChannelSelect v-model="newToken.defaultBucket" kind="main"/>
@@ -576,6 +587,17 @@
                         <el-input v-model="editingToken.defaultCategory" :placeholder="$t('sysSecurity.defaultCategoryPlaceholder')">
                             <template #prepend>{{ $t('sysSecurity.defaultCategory') }}</template>
                         </el-input>
+                        <!-- v3.0.0（R18）：默认分类目录支持占位符，点击直接插入 -->
+                        <div class="token-folder-tip">
+                            <span class="token-folder-tip-label">{{ $t('sysSecurity.folderPlaceholderTip') }}</span>
+                            <code
+                                v-for="ph in folderPlaceholders"
+                                :key="'edit-' + ph.text"
+                                class="token-folder-chip"
+                                :title="ph.hint"
+                                @click="insertFolderPlaceholder('edit', ph.text)"
+                            >{{ ph.text }}</code>
+                        </div>
                         <div class="token-default-field">
                             <span class="token-default-label">{{ $t('sysSecurity.defaultBucket') }}</span>
                             <ChannelSelect v-model="editingToken.defaultBucket" kind="main"/>
@@ -821,6 +843,19 @@ data() {
     };
 },
 computed: {
+    /**
+     * v3.0.0（R18）：Token「默认分类目录」支持的占位符。
+     * text 是原样插入输入框的占位符字面量（不走 i18n，避免被当成插值变量）。
+     */
+    folderPlaceholders() {
+        return [
+            { text: '{tokenName}', hint: this.$t('sysSecurity.phTokenName') },
+            { text: '{user}', hint: this.$t('sysSecurity.phUser') },
+            { text: '{y}', hint: this.$t('sysSecurity.phYear') },
+            { text: '{m}', hint: this.$t('sysSecurity.phMonth') },
+            { text: '{d}', hint: this.$t('sysSecurity.phDay') }
+        ];
+    },
     editableSettings() {
         return {
             auth: {
@@ -984,6 +1019,20 @@ computed: {
     },
 },
 methods: {
+    /**
+     * v3.0.0（R18）：把占位符追加到「默认分类目录」输入框。
+     * 已有内容且不以 / 结尾时自动补一个分隔斜杠。
+     */
+    insertFolderPlaceholder(which, placeholder) {
+        const target = which === 'new' ? this.newToken : this.editingToken;
+        if (!target) return;
+        const current = String(target.defaultCategory || '');
+        if (!current) {
+            target.defaultCategory = placeholder;
+            return;
+        }
+        target.defaultCategory = current.endsWith('/') ? current + placeholder : `${current}/${placeholder}`;
+    },
     normalizeIpQuerySettings(settings = {}) {
         const ipQuery = settings.ipQuery || {};
         const customApi = ipQuery.customApi || {};
@@ -2031,6 +2080,35 @@ html.dark .token-table :deep(.el-table__row:hover td) {
     padding: 0 8px;
     font-size: 12px;
     white-space: nowrap;
+}
+/* v3.0.0（R18）默认分类目录的占位符提示：一行小字 + 可点击的 code 片段 */
+.token-folder-tip {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin-top: 6px;
+    line-height: 1.4;
+}
+.token-folder-tip-label {
+    font-size: 12px;
+    color: var(--el-text-color-secondary);
+}
+.token-folder-chip {
+    padding: 1px 6px;
+    border: 1px solid var(--el-border-color-lighter);
+    border-radius: 4px;
+    background: var(--el-fill-color-lighter);
+    color: var(--el-color-primary);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11px;
+    cursor: pointer;
+    user-select: none;
+    transition: border-color 0.16s ease, background-color 0.16s ease;
+}
+.token-folder-chip:hover {
+    border-color: var(--el-color-primary-light-5);
+    background: var(--el-color-primary-light-9);
 }
 
 /* ---- 列表里的凭据单元格 + 行内复制 ---- */

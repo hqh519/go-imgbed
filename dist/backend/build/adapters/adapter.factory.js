@@ -33,7 +33,22 @@ function createAdapter(channel) {
     }
 }
 function toCopyInfo(c) {
-    return { remoteKey: c.remoteKey, remoteUrl: c.remoteUrl, metas: {} };
+    let metas = {};
+    try {
+        const parsed = c.metas ? JSON.parse(c.metas) : null;
+        if (parsed && typeof parsed === 'object')
+            metas = parsed;
+    }
+    catch {
+        metas = {};
+    }
+    return {
+        remoteKey: c.remoteKey,
+        remoteUrl: c.remoteUrl,
+        objectPath: c.objectPath || '',
+        urlQuery: c.urlQuery || '',
+        metas,
+    };
 }
 exports.ADAPTER_META = {
     local: { label: '本地存储', secretFields: [] },

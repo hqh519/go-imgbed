@@ -107,6 +107,28 @@ export async function probeMediaDurationFile(srcPath: string): Promise<number> {
 }
 
 /**
+ * 音频码率探测（v3.0.0 R7）：`ffmpeg -i` 的 stderr 里带 `Audio: mp3 ..., 128 kb/s`
+ * 或 `Audio: pcm_s16le ..., 1411 kb/s`。失败返回 0（调用方退回按百分比估算）。
+ *
+ * 为什么需要它：原先音频压缩固定用「压缩百分比 × 2」当目标码率（80% → 160k），
+ * 于是 128k 的 mp3 会被「压」成 160k —— 产物更大被丢弃，用户看到的就是
+ * 「上传音频时压缩根本没触发」。现在按源码率的百分比算目标码率，才真的会变小。
+ */
+export async function probeAudioBitrateFile(srcPath: string): Promise<number> {
+  if (!ffmpegAvailable()) return 0;
+  try {
+    await run(ffmpegPath, ['-hide_banner', '-i', srcPath], { timeout: 15000, maxBuffer: 4 * 1024 * 1024 });
+    return 0;
+  } catch (err) {
+    const stderr = String((err as { stderr?: string }).stderr || '');
+    const audioLine = stderr.split(/\r?\n/).find((l) => l.includes('Audio:'));
+    if (!audioLine) return 0;
+    const m = audioLine.match(/(\d{2,6})\s*kb\/s/);
+    return m ? Number(m[1]) : 0;
+  }
+}
+
+/**
  * 视频尺寸探测（v2.8.9）：`ffmpeg -i` 的 stderr 里带着
  * `Video: h264 ..., 1920x1080 [SAR 1:1 DAR 16:9], ...`，不解码、几百毫秒返回。
  * 没有 ffmpeg 或解析不到时返回空对象（详情页留空，不影响上传）。
@@ -230,12 +252,17 @@ async function compressAudio(buffer: Buffer, ext: string, percent: number): Prom
   if (!AUDIO_OK.has(ext)) return keep(`${ext} 不是可压缩的音频格式`);
 
   const p = clampQuality(percent);
-  const bitrate = Math.round(Math.min(320, Math.max(48, p * 2)));
   const outExt = ext === 'mp3' ? '.mp3' : '.m4a';
 
   try {
     return await withTempFiles([`.${ext}`, outExt], async ([src, dst]) => {
       await fsp.writeFile(src, buffer);
+      // v3.0.0（R7）：与磁盘版一致 —— 目标码率跟着源码率走，避免「越压越大」
+      const sourceKbps = await probeAudioBitrateFile(src);
+      if (sourceKbps && sourceKbps <= 64) return keep(`源码率仅 ${sourceKbps}k，再压缩收益过低，保留原文件`);
+      const bitrate = sourceKbps
+        ? Math.min(320, Math.max(48, Math.round((sourceKbps * p) / 100)))
+        : Math.round(Math.min(320, Math.max(48, p * 2)));
       const args = outExt === '.mp3'
         ? ['-y', '-i', src, '-vn', '-c:a', 'libmp3lame', '-b:a', `${bitrate}k`, dst]
         : ['-y', '-i', src, '-vn', '-c:a', 'aac', '-b:a', `${bitrate}k`, '-movflags', '+faststart', dst];
@@ -472,7 +499,20 @@ export async function compressAudioFile(
   if (!ffmpegAvailable()) return keep('未安装 ffmpeg，音频跳过压缩');
   if (!AUDIO_OK.has(e)) return keep(`${e} 不是可压缩的音频格式`);
   const p = clampQuality(percent);
-  const bitrate = Math.round(Math.min(320, Math.max(48, p * 2)));
+  /*
+   * v3.0.0（R7）：目标码率按「源码率 × 压缩百分比」计算。
+   *   · 源码率探不到 → 退回旧口径（百分比 × 2，最高 320k）；
+   *   · 源码率已很低（≤64k，语音/播客）→ 再压只会更糊且大概率压不下去，直接跳过；
+   *   · 无损格式（wav/flac/ape，常见 1000k+）→ 目标被 320k 封顶，通常能省 70% 以上。
+   */
+  const sourceKbps = await probeAudioBitrateFile(srcPath);
+  if (sourceKbps && sourceKbps <= 64) {
+    return keep(`源码率仅 ${sourceKbps}k，再压缩收益过低，保留原文件`);
+  }
+  const targetKbps = sourceKbps
+    ? Math.min(320, Math.max(48, Math.round((sourceKbps * p) / 100)))
+    : Math.round(Math.min(320, Math.max(48, p * 2)));
+  const bitrate = targetKbps;
   const outExt = e === 'mp3' ? '.mp3' : '.m4a';
   const out = `${srcPath}.cmp${outExt}`;
   const args = outExt === '.mp3'

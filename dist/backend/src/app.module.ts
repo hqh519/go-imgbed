@@ -17,8 +17,15 @@ import { AccessController, AccessAdminController } from './access/access.control
 import { AccessService } from './access/access.service';
 import { MailController } from './mail/mail.controller';
 import { MailService } from './mail/mail.service';
+// v3.0.0 多实例：实例管理（创建 / 邀请 / 成员）
+import { InstancesModule } from './instances/instances.module';
+// v3.0.0 对外分享：目录 / 标签的公开浏览地址（/api/shares）
+import { SharesModule } from './shares/shares.module';
+// v3.0.0 本地文件系统：浏览 / 预览 / 批量上传到图床（/api/localfiles）
+import { LocalFilesController } from './localfiles/localfiles.controller';
 
 @Module({
+  imports: [InstancesModule, SharesModule],
   controllers: [
     AuthController,
     ChannelsController,
@@ -38,6 +45,7 @@ import { MailService } from './mail/mail.service';
     AccessController,
     AccessAdminController,
     MailController,
+    LocalFilesController,
   ],
   providers: [
     SettingsService,

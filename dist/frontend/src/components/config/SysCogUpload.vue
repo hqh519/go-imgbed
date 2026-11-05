@@ -1,8 +1,8 @@
 <template>
     <div class="upload-settings" v-loading="loading">
-        <!-- 上传数据设置：外链分发 + 主备渠道 + 去重等上传相关全局配置 -->
+        <!-- 存储通用设置：外链分发 + 主备渠道 + 去重等存储相关全局配置 -->
         <div class="page-header">
-            <h3 class="first-title">上传数据设置</h3>
+            <h3 class="first-title">存储通用设置</h3>
         </div>
 
         <!-- 外链分发设置：模式 + 访问源一键切换 -->
@@ -109,11 +109,11 @@
 
             <div class="storage-row">
                 <div class="mb-item domain-item">
-                    <span class="mb-label">自定义访问域名</span>
+                    <span class="mb-label">外链访问域名</span>
                     <el-input
                         v-model="storage.customDomain"
                         size="small"
-                        placeholder="https://img.example.com（留空则使用本站域名）"
+                        placeholder="https://img.example.com（留空则使用动态浏览域名）"
                         clearable
                         class="domain-input"
                         @change="saveStorage({ customDomain: storage.customDomain })"
@@ -121,8 +121,9 @@
                     <el-tooltip placement="top" raw-content>
                         <template #content>
                             <div style="max-width: min(360px, 78vw); line-height: 1.7;">
-                                上传页生成的文件外链统一使用该域名，例如 <b>https://img.example.com/file/xxx.png</b>。<br>
-                                留空则使用本站访问地址。可带协议，也可只填域名（默认按 <b>https</b> 处理）。
+                                全站文件外链的签发域名统一使用该配置，例如 <b>https://img.example.com/file/xxx.png</b>。<br>
+                                留空则使用「动态浏览域名」（优先 <b>X-Forwarded-Host</b>，其次 <b>Host</b>，最后 localhost）。<br>
+                                只影响本站签发的外链，<b>不会</b>覆盖各存储渠道自己的「公开访问域名」。
                             </div>
                         </template>
                         <font-awesome-icon icon="question-circle" class="help-icon"/>
@@ -222,7 +223,9 @@
                     <el-tag size="small" type="info" class="channel-count">
                         {{ getChannelList(channelType.value).length }}
                     </el-tag>
-                    <el-tag v-if="channelType.dedicated" size="small" type="primary" effect="plain" :title="$t('sysUpload.dedicatedChannel')">{{ $t('sysUpload.dedicatedChannel') }}</el-tag>
+                    <!-- v3.0.0（R8）：本地存储 / 本地文件 显示「本地通道」，其余类型保持「专属通道」 -->
+                    <el-tag v-if="channelType.dedicated && isLocalType(channelType.value)" size="small" type="primary" effect="plain" :title="$t('sysUpload.localChannel')">{{ $t('sysUpload.localChannel') }}</el-tag>
+                    <el-tag v-else-if="channelType.dedicated" size="small" type="primary" effect="plain" :title="$t('sysUpload.dedicatedChannel')">{{ $t('sysUpload.dedicatedChannel') }}</el-tag>
                     <el-tooltip v-else-if="channelType.generic" :content="$t('sysUpload.genericChannelTip')" placement="top" raw-content>
                         <el-tag size="small" type="info" effect="plain">{{ $t('sysUpload.genericChannel') }}</el-tag>
                     </el-tooltip>
@@ -310,8 +313,10 @@
                         <el-button text type="primary" size="small" @click="openEditDialog(channelType.value, channel)">
                             <font-awesome-icon icon="edit" style="margin-right: 3px;"/>编辑
                         </el-button>
-                        <!-- v2.6.0：本地存储渠道也开放「授权」设置（名单为空 = 全员可用兜底，非空 = 仅勾选账户） -->
+                        <!-- v2.6.0：本地存储渠道也开放「授权」设置（名单为空 = 全员可用兜底，非空 = 仅勾选账户）
+                             v3.0.0（R5）：本地文件渠道只给管理员使用，不做授权 -->
                         <el-button
+                            v-if="channel.type !== 'localfiles'"
                             text
                             type="primary"
                             size="small"
@@ -325,13 +330,14 @@
                             </el-button>
                             <template #dropdown>
                                 <el-dropdown-menu>
-                                    <el-dropdown-item command="setMain" :disabled="channel.isMain">
+                                    <!-- v3.0.0：本地文件渠道不参与上传，不提供主/备渠道标记 -->
+                                    <el-dropdown-item v-if="channel.type !== 'localfiles'" command="setMain" :disabled="channel.isMain">
                                         <font-awesome-icon icon="star" style="margin-right: 6px;"/>设为主渠道
                                     </el-dropdown-item>
-                                    <el-dropdown-item command="setBackup" :disabled="channel.isBackup">
+                                    <el-dropdown-item v-if="channel.type !== 'localfiles'" command="setBackup" :disabled="channel.isBackup">
                                         <font-awesome-icon icon="copy" style="margin-right: 6px;"/>设为备份渠道
                                     </el-dropdown-item>
-                                    <el-dropdown-item command="togglePool">
+                                    <el-dropdown-item v-if="channel.type !== 'localfiles'" command="togglePool">
                                         <font-awesome-icon icon="database" style="margin-right: 6px;"/>{{ channel.backupPool ? '取消备用库' : '设为备用库' }}
                                     </el-dropdown-item>
                                     <el-dropdown-item
@@ -405,7 +411,8 @@
                             <span class="channel-type-option">
                                 <ChannelIcon :type="ch.value" class="select-option-icon"/>
                                 <span>{{ ch.label }}</span>
-                                <el-tag v-if="ch.dedicated" size="small" type="primary" effect="plain" style="margin-left: 6px;">{{ $t('sysUpload.dedicatedChannel') }}</el-tag>
+                                <el-tag v-if="ch.dedicated && isLocalType(ch.value)" size="small" type="primary" effect="plain" style="margin-left: 6px;">{{ $t('sysUpload.localChannel') }}</el-tag>
+                                <el-tag v-else-if="ch.dedicated" size="small" type="primary" effect="plain" style="margin-left: 6px;">{{ $t('sysUpload.dedicatedChannel') }}</el-tag>
                                 <el-tag v-else-if="ch.generic" size="small" type="info" effect="plain" style="margin-left: 6px;">{{ $t('sysUpload.genericChannel') }}</el-tag>
                             </span>
                         </el-option>
@@ -413,6 +420,10 @@
                 </el-form-item>
                 <el-form-item label="渠道名称" prop="name">
                     <el-input v-model="newChannel.name" placeholder="仅支持中英文、数字、下划线、连字符"/>
+                    <!-- v3.0.0（R8）：本地文件渠道的用途提示（添加页） -->
+                    <div v-if="newChannel.type === 'localfiles'" class="localfiles-purpose-hint">
+                        本渠道不能存储，是用于在本地文件管理中浏览本地文件所用，请在此设置需要浏览的本地文件目录（含宿主机映射目录）
+                    </div>
                     <template #label>
                         <span>渠道名称</span>
                         <el-tooltip content="名称不能重复（重名会拒绝保存）；保存后仍可修改，改完请在保存时留意是否重名。备份渠道需与主渠道不同账户" placement="top">
@@ -431,7 +442,8 @@
                         :fields="currentFields"
                         :model="newChannel.config"
                     />
-                    <el-form-item label="备注（可选）">
+                    <!-- v3.0.0：本地渠道的备注走契约字段 note（在 ChannelFields 内渲染），隐藏通用 remark 输入框 -->
+                    <el-form-item v-if="!isLocalDialog" label="备注（可选）">
                         <el-input
                             v-model="newChannel.config.remark"
                             type="textarea"
@@ -441,7 +453,7 @@
                     </el-form-item>
                     <div class="form-hint-bar">
                         <span class="hint-text">建议先「测试连接」确认配置可用，再保存。</span>
-                        <el-button size="small" :loading="testing" @click="testDraft">测试连接</el-button>
+                        <el-button v-if="newChannel.type !== 'localfiles'" size="small" :loading="testing" @click="testDraft">测试连接</el-button>
                     </div>
                     <div v-if="testResult" class="test-result" :class="testResult.success ? 'ok' : 'fail'">
                         <font-awesome-icon :icon="testResult.success ? 'check-circle' : 'times-circle'" style="margin-right: 6px;"/>
@@ -497,7 +509,7 @@
             </el-descriptions>
             <template #footer>
                 <el-button @click="showDetailDialog = false">关闭</el-button>
-                <el-button @click="testChannel(currentChannel)">测试连接</el-button>
+                <el-button v-if="currentChannel?.type !== 'localfiles'" @click="testChannel(currentChannel)">测试连接</el-button>
                 <el-button type="primary" @click="openEditFromDetail">编辑</el-button>
             </template>
         </el-dialog>
@@ -516,6 +528,10 @@
                 </el-form-item>
                 <el-form-item label="渠道名称">
                     <el-input v-model="editChannel.name" placeholder="仅支持中英文、数字、下划线、连字符"/>
+                    <!-- v3.0.0（R8）：本地文件渠道的用途提示（编辑页） -->
+                    <div v-if="editChannel.type === 'localfiles'" class="localfiles-purpose-hint">
+                        本渠道不能存储，是用于在本地文件管理中浏览本地文件所用，请在此设置需要浏览的本地文件目录（含宿主机映射目录）
+                    </div>
                     <div class="form-hint-bar form-hint-bar--inline">
                         <span class="hint-text">名称可以修改；保存时会校验是否与其它渠道重名，重名无法保存。</span>
                     </div>
@@ -527,7 +543,8 @@
                     :fields="currentFields"
                     :model="editChannel.config"
                 />
-                <el-form-item label="备注（可选）">
+                <!-- v3.0.0：本地渠道的备注走契约字段 note（在 ChannelFields 内渲染），隐藏通用 remark 输入框 -->
+                <el-form-item v-if="!isLocalDialog" label="备注（可选）">
                     <el-input
                         v-model="editChannel.config.remark"
                         type="textarea"
@@ -537,7 +554,7 @@
                 </el-form-item>
                 <div class="form-hint-bar">
                     <span class="hint-text">密钥留空或显示 **** 表示不修改原值。</span>
-                    <el-button size="small" :loading="testing" @click="testEditChannel">测试连接</el-button>
+                    <el-button v-if="editChannel.type !== 'localfiles'" size="small" :loading="testing" @click="testEditChannel">测试连接</el-button>
                 </div>
                 <div v-if="testResult" class="test-result" :class="testResult.success ? 'ok' : 'fail'">
                     <font-awesome-icon :icon="testResult.success ? 'check-circle' : 'times-circle'" style="margin-right: 6px;"/>
@@ -557,7 +574,7 @@ import fetchWithAuth from '@/utils/fetchWithAuth';
 import ChannelIcon from '@/components/icons/ChannelIcon.vue';
 import ChannelFields from './ChannelFields.vue';
 import CustomSelect from './CustomSelect.vue';
-import { CHANNEL_TYPES, ADDABLE_CHANNEL_TYPES, SUMMARY_KEYS, TYPE_TIPS, fieldsOf, buildDefaults, visibleFields } from './channel-schema';
+import { CHANNEL_TYPES, ADDABLE_CHANNEL_TYPES, SUMMARY_KEYS, TYPE_TIPS, fieldsOf, buildDefaults, buildDefaultsFrom, visibleFields, LOCAL_CHANNEL_CODE, LOCAL_FILES_CHANNEL_CODE, LOCAL_BUILTIN_FIELDS, LOCAL_CUSTOM_FIELDS, LOCAL_FILES_BUILTIN_FIELDS } from './channel-schema';
 import { copyText } from '@/utils/clipboard';
 import { invalidateStorageChannels } from '@/utils/storageChannels';
 
@@ -627,9 +644,10 @@ export default {
         };
     },
     computed: {
-        /** 「添加渠道」可选的类型 —— 系统内置的本地存储不允许再新建 */
+        /** 「添加渠道」可选的类型 —— 系统内置的本地存储不允许再新建。
+         *  v3.0.0（R5）：按 typeCode 升序渲染，「本地文件」(1000) 因此排在「本地存储」(998) 之后。 */
         addableChannels() {
-            return ADDABLE_CHANNEL_TYPES;
+            return [...ADDABLE_CHANNEL_TYPES].sort((a, b) => (a.typeCode || 0) - (b.typeCode || 0));
         },
         filterOptions() {
             return [
@@ -662,7 +680,32 @@ export default {
             return this.backupPoolChannels.map((c) => c.id);
         },        currentFields() {
             const type = this.showAddDialog ? this.newChannel.type : this.currentChannelType;
-            return type ? fieldsOf(type) : [];
+            if (!type) return [];
+            /*
+             * v3.0.0：本地存储渠道按上下文区分字段 ——
+             *   · 添加渠道 → 自定义本地渠道（rootPath / hostPath ...）；
+             *   · 编辑 / 详情 → code=999999 用内置字段（prefixPath 固定 uploads），其余 code 用自定义字段。
+             */
+            if (type === 'local') {
+                if (this.showAddDialog) return LOCAL_CUSTOM_FIELDS();
+                const channel = this.showEditDialog ? this.editChannel : this.currentChannel;
+                return (channel?.code === LOCAL_CHANNEL_CODE) ? LOCAL_BUILTIN_FIELDS() : LOCAL_CUSTOM_FIELDS();
+            }
+            /*
+             * v3.0.0（R11）：内置「本地文件」渠道（999990）的浏览目录由系统生成、
+             * 后端强制固定为 uploads —— 编辑页做成只读，避免「改了但没生效」的误解。
+             * 自建的本地文件渠道仍走可编辑字段。
+             */
+            if (type === 'localfiles' && !this.showAddDialog) {
+                const channel = this.showEditDialog ? this.editChannel : this.currentChannel;
+                return channel?.code === LOCAL_FILES_CHANNEL_CODE ? LOCAL_FILES_BUILTIN_FIELDS() : fieldsOf(type);
+            }
+            return fieldsOf(type);
+        },
+        /** v3.0.0：当前弹窗是否为本地渠道（本地渠道的备注走契约字段 note，不用通用 remark 输入框） */
+        isLocalDialog() {
+            const type = this.showAddDialog ? this.newChannel.type : this.currentChannelType;
+            return type === 'local';
         },
         detailFields() {
             // 「启用容量限制」未开启时不展示容量上限 / 告警阈值
@@ -673,6 +716,12 @@ export default {
         }
     },
     methods: {
+        /**
+         * v3.0.0（R8）：本地存储 / 本地文件 两类渠道的「专属通道」标签改显「本地通道」
+         */
+        isLocalType(type) {
+            return type === 'local' || type === 'localfiles';
+        },
         /**
          * v2.5.0：备用库预览下拉只读 —— 用户误点选项时还原选中态并提示真正入口。
          * 下拉本身可展开查看池内渠道（v2.4.0 的 disabled 冻结态无法展开，已移除）。
@@ -782,7 +831,10 @@ export default {
             this.testResult = null;
         },
         onChannelTypeChange(type) {
-            this.newChannel.config = buildDefaults(type);
+            // v3.0.0：本地存储在「添加渠道」里代表自定义本地渠道，默认值按其字段生成
+            this.newChannel.config = type === 'local'
+                ? buildDefaultsFrom(LOCAL_CUSTOM_FIELDS())
+                : buildDefaults(type);
             this.testResult = null;
         },
         collectConfig(model) {
@@ -831,14 +883,19 @@ export default {
             this.currentChannel = channel;
             this.showDetailDialog = true;
         },
-        async openEditDialog(type, channel) {
+        async         openEditDialog(type, channel) {
             this.currentChannelType = type;
+            // v3.0.0：本地渠道按 code 区分内置 / 自定义字段集
+            // v3.0.0（R11）：内置本地文件渠道（999990）用只读字段集
+            const fields = type === 'local'
+                ? (channel?.code === LOCAL_CHANNEL_CODE ? LOCAL_BUILTIN_FIELDS() : LOCAL_CUSTOM_FIELDS())
+                : (type === 'localfiles' && channel?.code === LOCAL_FILES_CHANNEL_CODE ? LOCAL_FILES_BUILTIN_FIELDS() : null);
             this.editChannel = {
                 id: channel.id,
                 code: channel.code || '',
                 name: channel.name,
                 enabled: channel.enabled,
-                config: this.normalizeForEdit(type, channel.config || {})
+                config: this.normalizeForEdit(type, channel.config || {}, fields)
             };
             this.testResult = null;
             this.showEditDialog = true;
@@ -851,7 +908,7 @@ export default {
                 const resp = await fetchWithAuth(`/api/manage/channels/${channel.id}/plain`);
                 const data = await resp.json();
                 if (data && data.success && data.config) {
-                    const plain = this.normalizeForEdit(type, data.config);
+                    const plain = this.normalizeForEdit(type, data.config, fields);
                     Object.keys(plain).forEach((k) => { this.editChannel.config[k] = plain[k]; });
                 }
             } catch (e) {
@@ -867,15 +924,35 @@ export default {
             this.showDetailDialog = false;
             this.openEditDialog(this.currentChannelType, this.currentChannel);
         },
-        /** 回填编辑表单：switch 字段转为布尔，缺省字段补默认值 */
-        normalizeForEdit(type, config) {
+        /** 回填编辑表单：switch 字段转为布尔，缺省字段补默认值。
+         *  v3.0.0：fields 可选 —— 本地渠道等需要按上下文（内置 / 自定义）指定字段集。 */
+        normalizeForEdit(type, config, fields) {
+            const list = fields || fieldsOf(type);
             const out = { ...config };
-            for (const f of fieldsOf(type)) {
+            for (const f of list) {
                 if (f.type === 'switch') {
                     out[f.key] = out[f.key] === true || out[f.key] === 'true';
                 } else if (out[f.key] === undefined) {
                     out[f.key] = f.def !== undefined ? f.def : '';
                 }
+            }
+            /*
+             * v3.0.0（R8）：本地文件渠道「浏览目录」多目录兼容 ——
+             * 旧配置只有 rootPath 单目录时自动预填成 rootPaths（一行一个），
+             * 保存后配置即迁移为 rootPaths；未保存也不影响后端（rootPath 仍可用）。
+             * v3.0.0（R11）：后端存的是 JSON 数组，textarea 需要的是换行字符串 ——
+             * 早先直接 String(array) 会把多目录拼成 "/data,/mnt" 塞进一个输入框。
+             */
+            if (type === 'localfiles') {
+                let list = [];
+                if (Array.isArray(out.rootPaths)) {
+                    list = out.rootPaths.map((v) => String(v || '').trim());
+                } else if (typeof out.rootPaths === 'string') {
+                    list = out.rootPaths.split(/\r?\n/).map((s) => s.trim());
+                }
+                list = list.filter(Boolean);
+                if (!list.length && out.rootPath) list = [String(out.rootPath).trim()];
+                out.rootPaths = list.join('\n');
             }
             return out;
         },
@@ -1560,6 +1637,20 @@ export default {
     border-radius: 8px;
     background: var(--el-fill-color-light);
     border: 1px dashed var(--el-border-color);
+}
+
+/* v3.0.0（R8）：本地文件渠道「渠道名称」下方的用途提示（添加 / 编辑页共用） */
+.localfiles-purpose-hint {
+    width: 100%;
+    margin-top: 6px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--el-color-warning) 12%, var(--el-fill-color-light));
+    border: 1px dashed color-mix(in srgb, var(--el-color-warning) 55%, transparent);
+    color: var(--el-text-color-regular);
+    font-size: 12px;
+    line-height: 1.6;
+    box-sizing: border-box;
 }
 
 /* 表单项内的小提示（不占独立一行） */

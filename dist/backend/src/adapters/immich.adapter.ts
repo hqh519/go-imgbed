@@ -1,6 +1,7 @@
 import { createHash } from 'crypto';
 import { AdapterError, ChannelInfo, CopyInfo, StorageAdapter, UploadResult } from './adapter.interface';
 import { ensureProtocol } from '../common/endpoint';
+import { buildAssetUrl } from '../common/asset-url';
 
 /**
  * Immich 适配器 —— 按参考 PHP 案例（已跑通）实现：
@@ -30,18 +31,37 @@ export class ImmichAdapter implements StorageAdapter {
     return ensureProtocol(channel.config.serverUrl || '').replace(/\/+$/, '') + path;
   }
 
-  /** 对外访问域名：填了 domain 用 domain（跟随配置），否则用 serverUrl */
+  /**
+   * 对外访问域名（v3.0.0 R14 收紧）：只用「公开访问域名」（domain / publicDomain），
+   * 不再回落 serverUrl —— serverUrl 通常是内网地址 / Docker 容器名，
+   * 详情页「存储渠道 / 备份渠道」地址绝不能出现内网域名。
+   * 两项都未配置时返回空串 → buildDirectUrl 返回 null → 前端回退本站代理地址（本站域名）。
+   */
   private linkBase(channel: ChannelInfo): string {
-    const base = ensureProtocol(channel.config.domain || channel.config.serverUrl || '').replace(/\/+$/, '');
+    const base = ensureProtocol(
+      channel.config.publicDomain || channel.config.domain || '',
+    ).replace(/\/+$/, '');
     return base;
   }
 
   /** v2.8.7：内网通信域名（preferInternal 时优先，未配置回落对外域名 / 服务地址） */
   private internalLinkBase(channel: ChannelInfo): string {
     const base = ensureProtocol(
-      channel.config.internalDomain || channel.config.domain || channel.config.serverUrl || '',
+      channel.config.internalDomain || channel.config.publicDomain || channel.config.domain || channel.config.serverUrl || '',
     ).replace(/\/+$/, '');
     return base;
+  }
+
+  /**
+   * v3.0.0（R10）：immich 的固化地址。
+   * 路径固定为 `api/assets/<assetId>/original`，分享 key 属于「文件级 query」必须固化 ——
+   * 重建分享链接后 key 会变，老文件仍要用当初的 key。
+   */
+  private pathsOf(assetId: string, shareKey: string): { objectPath: string; urlQuery: string } {
+    return {
+      objectPath: `api/assets/${assetId}/original`,
+      urlQuery: shareKey ? `key=${shareKey}` : '',
+    };
   }
 
   async upload(file: { buffer: Buffer; mime: string; originalName: string }, key: string, channel: ChannelInfo): Promise<UploadResult> {
@@ -114,7 +134,13 @@ export class ImmichAdapter implements StorageAdapter {
 
     // 已配置「相册共享链接 ID/Key」时直接复用，不再创建单张分享链接
     const fixedKey = (cfg.shareLinkId || '').trim();
-    if (fixedKey) return { remoteKey: `${assetId}|${fixedKey}`, metas: { assetId, shareKey: fixedKey } };
+    if (fixedKey) {
+      return {
+        remoteKey: `${assetId}|${fixedKey}`,
+        ...this.pathsOf(assetId, fixedKey),
+        metas: { assetId, shareKey: fixedKey, albumId: cfg.albumId || '' },
+      };
+    }
 
     // ⚠️ 正确路由：POST /api/shared-links（createSharedLink）
     const shareResp = await fetch(this.api(channel, '/api/shared-links'), {
@@ -138,7 +164,11 @@ export class ImmichAdapter implements StorageAdapter {
     const shareJson = (await shareResp.json()) as { key?: string; slug?: string };
     const shareKey = shareJson.key || shareJson.slug;
     if (!shareKey) throw new AdapterError('分享响应中未找到 key/slug', channel.type);
-    return { remoteKey: `${assetId}|${shareKey}`, metas: { assetId, shareKey } };
+    return {
+      remoteKey: `${assetId}|${shareKey}`,
+      ...this.pathsOf(assetId, shareKey),
+      metas: { assetId, shareKey, albumId: cfg.albumId || '' },
+    };
   }
 
   async delete(copy: CopyInfo, channel: ChannelInfo): Promise<void> {
@@ -152,10 +182,26 @@ export class ImmichAdapter implements StorageAdapter {
   }
 
   buildDirectUrl(copy: CopyInfo, channel: ChannelInfo, preferInternal?: boolean): string | null {
-    const [assetId, shareKey] = copy.remoteKey.split('|');
-    if (!assetId) return null;
     const base = preferInternal ? this.internalLinkBase(channel) : this.linkBase(channel);
     if (!base) return null;
+    /*
+     * v3.0.0（R10）：新数据「动态域名 + 固化地址」——
+     * 域名永远跟随渠道配置（改域名立即生效），assetId 与 shareKey 固化在 objectPath/urlQuery 里。
+     */
+    if (copy.objectPath) {
+      return buildAssetUrl({ base, objectPath: copy.objectPath, urlQuery: copy.urlQuery });
+    }
+    /*
+     * v3.0.0：防御「登记文件」的 remoteKey —— 登记侧存的是源地址完整路径
+     * （如 api/assets/<id>/thumbnail?key=...），不含 "|" 分隔符。
+     * 之前会把整段路径当 assetId 拼出 /api/assets/api/assets/.../original 的错误直链；
+     * 现在识别为路径时按「域名 + 原样路径」拼接（查询串原样保留）。
+     */
+    if (copy.remoteKey.includes('/')) {
+      return `${base.replace(/\/+$/, '')}/${copy.remoteKey.replace(/^\/+/, '')}`;
+    }
+    const [assetId, shareKey] = copy.remoteKey.split('|');
+    if (!assetId) return null;
     // 无分享 key 时退化为原始资源地址（Immich 需登录，仅作兜底）
     if (!shareKey) return `${base}/api/assets/${assetId}/original`;
     return `${base}/api/assets/${assetId}/original?key=${shareKey}`;

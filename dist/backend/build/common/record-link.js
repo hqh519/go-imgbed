@@ -16,12 +16,18 @@ function originOf(raw) {
         return '';
     }
 }
-function recordDomainCandidates(cfg) {
+function recordDomainCandidates(cfg, type) {
     const c = cfg || {};
     const out = [];
     const internal = clean(c.internalDomain);
-    const publicDomain = clean(c.publicDomain);
-    const apiRaw = clean(c.apiUrl) || clean(c.endpoint);
+    let publicDomain = clean(c.publicDomain);
+    let apiRaw = clean(c.apiUrl) || clean(c.endpoint);
+    if (type === 'immich') {
+        if (clean(c.domain))
+            publicDomain = clean(c.domain);
+        if (clean(c.serverUrl))
+            apiRaw = clean(c.serverUrl);
+    }
     const api = originOf(apiRaw);
     if (internal)
         out.push({ field: 'internalDomain', domain: internal });
@@ -31,11 +37,11 @@ function recordDomainCandidates(cfg) {
         out.push({ field: 'apiUrl', domain: api });
     return out;
 }
-function matchRecordSource(cfg, sourceUrl) {
+function matchRecordSource(cfg, sourceUrl, type) {
     const src = String(sourceUrl || '').trim();
     if (!/^https?:\/\//i.test(src))
         return null;
-    for (const cand of recordDomainCandidates(cfg)) {
+    for (const cand of recordDomainCandidates(cfg, type)) {
         if (!src.includes(cand.domain))
             continue;
         const rest = src.split(cand.domain).join('').replace(/^\/+/, '');
@@ -45,8 +51,8 @@ function matchRecordSource(cfg, sourceUrl) {
     }
     return null;
 }
-function recordLoadOrigin(cfg, preferInternal = true) {
-    const cands = recordDomainCandidates(cfg);
+function recordLoadOrigin(cfg, preferInternal = true, type) {
+    const cands = recordDomainCandidates(cfg, type);
     if (!cands.length)
         return '';
     if (preferInternal)
@@ -60,6 +66,6 @@ function joinRecordUrl(origin, rest) {
         return '';
     return `${o}/${p}`;
 }
-function hasRecordDomains(cfg) {
-    return recordDomainCandidates(cfg).length > 0;
+function hasRecordDomains(cfg, type) {
+    return recordDomainCandidates(cfg, type).length > 0;
 }

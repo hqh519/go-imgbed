@@ -2,6 +2,7 @@ import { AbortMultipartUploadCommand, CompleteMultipartUploadCommand, CreateMult
 import { promises as fsp } from 'fs';
 import { AdapterError, ChannelInfo, CopyInfo, StorageAdapter, UploadResult } from './adapter.interface';
 import { ensureProtocol } from '../common/endpoint';
+import { buildAssetUrl } from '../common/asset-url';
 
 export { looksInternalHost } from '../common/endpoint';
 
@@ -117,7 +118,7 @@ export class S3Adapter implements StorageAdapter {
           ContentType: file.mime,
         }),
       );
-      return { remoteKey: fullKey };
+      return { remoteKey: fullKey, objectPath: this.objectPathFor(fullKey) };
     } catch (err) {
       throw new AdapterError(`上传失败: ${(err as Error).message}`, channel.type);
     }
@@ -186,7 +187,7 @@ export class S3Adapter implements StorageAdapter {
           MultipartUpload: { Parts: parts },
         }),
       );
-      return { remoteKey: fullKey };
+      return { remoteKey: fullKey, objectPath: this.objectPathFor(fullKey) };
     } catch (err) {
       if (uploadId) {
         await this.client
@@ -215,6 +216,50 @@ export class S3Adapter implements StorageAdapter {
    *   未配置公开域名时回退 endpoint 推导；endpoint 缺协议会自动补齐
    *   （内网 / 容器名补 http，公网域名补 https，见 common/endpoint.ts）。
    */
+  /**
+   * v3.0.0（R10）：该渠道「加载域名」基址 —— 文件加载域名的唯一出口。
+   *   ① 代理模式优先内网通信域名，否则公开访问域名；
+   *   ② 都没配时退回 Endpoint（path-style 直接用，virtual-host 把桶名提到 host）；
+   * 返回值不含尾斜杠，路径部分由 objectPath 补。
+   */
+  private baseUrlOf(preferInternal: boolean): string {
+    const cfg = this.channel.config;
+    const raw = preferInternal && cfg.internalDomain ? cfg.internalDomain : cfg.publicDomain || '';
+    const domain = ensureProtocol(raw || '').replace(/\/+$/, '');
+    if (domain) return domain;
+    const endpoint = resolveEndpoint(this.channel.type, cfg).replace(/\/+$/, '');
+    if (!endpoint) return '';
+    const pathStyle = cfg.pathStyle === 'true' || this.channel.type === 'minio';
+    if (pathStyle) return endpoint;
+    try {
+      const u = new URL(endpoint);
+      return `${u.protocol}//${this.bucket}.${u.host}${u.pathname.replace(/\/+$/, '')}`;
+    } catch {
+      return `${endpoint}/${this.bucket}`;
+    }
+  }
+
+  /**
+   * v3.0.0（R10）：固化路径。
+   * path-style 时桶名在路径里（`bucket/2026/11/x.png`）；
+   * virtual-host 时桶名在域名里（`2026/11/x.png`），不能重复。
+   */
+  private objectPathFor(key: string): string {
+    const cfg = this.channel.config;
+    const pathStyle = cfg.pathStyle === 'true' || this.channel.type === 'minio';
+    if (!pathStyle) return key;
+    const domain = String(cfg.publicDomain || cfg.internalDomain || '').trim();
+    if (domain) {
+      try {
+        const segs = new URL(ensureProtocol(domain)).pathname.split('/').filter(Boolean);
+        if (segs[segs.length - 1] === this.bucket) return key;
+      } catch {
+        /* 非法域名交给后面兜底 */
+      }
+    }
+    return `${this.bucket}/${key}`;
+  }
+
   buildDirectUrl(copy: CopyInfo, channel: ChannelInfo, preferInternal?: boolean): string | null {
     const cfg = channel.config;
     const key = copy.remoteKey;
@@ -222,8 +267,20 @@ export class S3Adapter implements StorageAdapter {
     const suffix = (cfg.suffix || '').trim();
     const withSuffix = (u: string) => (suffix ? u + (suffix.startsWith('?') ? suffix : `?${suffix}`) : u);
     const pathStyle = cfg.pathStyle === 'true' || channel.type === 'minio';
+    /*
+     * v3.0.0（R10）：新数据一律「动态域名 + 固化地址」——
+     * 域名取自渠道当前配置（改域名立即生效），路径用上传时落库的 objectPath
+     * （改桶名/前缀/命名不影响存量文件）。objectPath 为空的老数据继续走下面的旧规则。
+     */
+    if (copy.objectPath) {
+      const base = this.baseUrlOf(!!preferInternal);
+      if (!base) return null;
+      return buildAssetUrl({ base, objectPath: copy.objectPath, urlQuery: copy.urlQuery, suffix });
+    }
 
-    // 外链域名同样允许不写协议（如填 minio:9000/imgbed 走内网）：内网补 http、公网补 https
+    // 外链域名同样允许不写协议（如填 minio:9000 走内网）：内网补 http、公网补 https
+    // v3.0.0：MinIO 的域名只填域名（不含 /bucket）—— 桶名一律由下面的 pathStyle 分支拼接；
+    //         历史配置里若仍带着 /bucket，靠 pathHasBucket 判断避免拼成 /bucket/bucket。
     // v2.8.7：preferInternal 时优先「内网通信域名」（服务端代理拉取走内网）
     const domain = ensureProtocol((preferInternal && cfg.internalDomain) || cfg.publicDomain || '').replace(/\/+$/, '');
     if (domain) {

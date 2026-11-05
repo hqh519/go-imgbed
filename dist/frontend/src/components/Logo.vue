@@ -85,10 +85,10 @@ export default {
              defaultLogo
     },
     logoHref() {
-      // 只有启用 useConfigLink 时才使用用户配置的链接
-      if (this.useConfigLink && this.userConfig?.logoLink) {
-        return this.userConfig.logoLink
-      }
+      /*
+       * v3.0.0：移除「Logo跳转链接」设置项 —— logo 点击一律走组件传入的 href
+       * （默认回到站内首页），不再读取 page 配置里的 logoLink。
+       */
       return this.href
     },
     logoClasses() {

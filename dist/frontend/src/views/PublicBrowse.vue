@@ -7,6 +7,7 @@
       </div>
       <div class="header-center">
         <div class="breadcrumb">
+          <!-- v3.0.0：分享模式的根是分享名称（access.name）；普通模式仍是根目录名 -->
           <span class="breadcrumb-item" @click="goToRoot">{{ rootDirName }}</span>
           <template v-for="(part, index) in pathParts" :key="index">
             <span class="breadcrumb-sep">/</span>
@@ -15,8 +16,9 @@
         </div>
       </div>
       <div class="header-right">
-        <!-- 搜索框：默认只显示放大镜，点击展开 -->
+        <!-- 搜索框：默认只显示放大镜，点击展开（分享模式隐藏：后端不支持跨分享搜索） -->
         <div
+          v-if="!shareMode"
           ref="searchBoxRef"
           class="search-box"
           :class="{ expanded: searchExpanded }"
@@ -44,8 +46,44 @@
       </div>
     </header>
 
+    <!--
+      v3.0.0：对外分享模式（/browse/<用户名>/<实例序号>/(cate|tag)/…）
+      首次进入先调 /api/shares/public/access：
+        · ok=false && needPassword → 密码页（输入后带 pw 重调，通过即种 Cookie 并刷新列表）
+        · ok=false 其它            → 错误页（文案用后端 error）
+    -->
+    <div v-if="shareMode && shareAuth === 'needPassword'" class="share-gate">
+      <div class="share-gate-card">
+        <div class="share-gate-icon">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 1a5 5 0 0 0-5 5v3H6a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-9a2 2 0 0 0-2-2h-1V6a5 5 0 0 0-5-5zm3 8H9V6a3 3 0 0 1 6 0v3z"/></svg>
+        </div>
+        <h2 class="share-gate-title">{{ $t('publicBrowse.sharePasswordTitle') }}</h2>
+        <p v-if="shareName" class="share-gate-name">{{ shareName }}</p>
+        <p class="share-gate-hint">{{ $t('publicBrowse.sharePasswordHint') }}</p>
+        <input
+          v-model="sharePassword"
+          type="password"
+          class="share-gate-input"
+          autocomplete="off"
+          :placeholder="$t('publicBrowse.sharePasswordPlaceholder')"
+          @keyup.enter="submitSharePassword"
+        />
+        <p v-if="sharePasswordError" class="share-gate-error">{{ sharePasswordError }}</p>
+        <button class="share-gate-btn" :disabled="sharePwBusy" @click="submitSharePassword">
+          {{ sharePwBusy ? $t('publicBrowse.loading') : $t('publicBrowse.sharePasswordOk') }}
+        </button>
+      </div>
+    </div>
+
+    <!-- 分享不可访问（不存在 / 已停用 / 已过期） -->
+    <div v-else-if="shareMode && shareAuth === 'error'" class="error-container share-error">
+      <h2 class="share-error-title">{{ $t('publicBrowse.shareErrorTitle') }}</h2>
+      <p>{{ shareError }}</p>
+      <button class="retry-btn" @click="initFromRoute">{{ $t('publicBrowse.retry') }}</button>
+    </div>
+
     <!-- 加载状态 -->
-    <div v-if="loading && files.length === 0" class="loading-container">
+    <div v-else-if="loading && files.length === 0" class="loading-container">
       <div class="loading-spinner"></div>
       <p>{{ $t('publicBrowse.loading') }}</p>
     </div>
@@ -58,6 +96,12 @@
 
     <!-- 瀑布流容器 -->
     <div v-else class="gallery-container" ref="galleryContainer">
+      <!-- v3.0.0：分享模式空态（当前目录/标签下还没有文件） -->
+      <div v-if="shareMode && !loading && files.length === 0" class="share-empty">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 6H12l-2-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2z"/></svg>
+        <p>{{ $t('publicBrowse.shareEmpty') }}</p>
+      </div>
+
       <!-- 文件夹区域 -->
       <div v-if="folders.length > 0" class="folders-section">
         <div class="folders-grid">
@@ -365,6 +409,29 @@ export default {
       audioSwipeActive: false,
       // 设备类型判断（用 JS 而非纯 CSS，避免全屏时媒体查询失效）
       isMobile: false,
+      /*
+       * v3.0.0：对外分享模式（/browse/<用户名>/<实例序号>/(cate|tag)/…）
+       *   shareAuth：pending / ok / needPassword / error
+       *   shareSub ：分享内部的子目录（相对分享根，'' = 根）；不进 URL，
+       *              因为 /api/shares/public/list 一次性返回整个分享的内容，前端按目录过滤即可。
+       */
+      shareMode: false,
+      shareUser: '',
+      shareIdx: '',
+      shareKind: '',
+      sharePath: '',
+      shareTag: '',
+      shareName: '',
+      shareAuth: 'pending',
+      shareError: '',
+      sharePassword: '',
+      sharePasswordError: '',
+      sharePwBusy: false,
+      shareSub: '',
+      shareRawFiles: [],
+      shareRawDirs: [],
+      shareTotal: 0,
+      sharePage: 1,
     };
   },
   computed: {
@@ -373,9 +440,13 @@ export default {
       return this.userConfig?.siteTitle || 'go-imgbed';
     },
     rootDirName() {
+      // 分享模式：根 = 分享名称（access.name），标签分享回退到标签名
+      if (this.shareMode) return this.shareName || this.shareTag || this.$t('publicBrowse.shareRoot');
       return this.rootDir.split('/').filter(Boolean).pop() || this.$t('publicBrowse.rootDirectory');
     },
     pathParts() {
+      // 分享模式：面包屑层级来自分享内部的子目录（shareSub），与 URL 无关
+      if (this.shareMode) return String(this.shareSub || '').split('/').filter(Boolean);
       if (!this.currentPath || !this.rootDir) return [];
       const relative = this.currentPath.replace(this.rootDir, '').replace(/^\/+/, '');
       return relative.split('/').filter(Boolean);
@@ -615,8 +686,16 @@ export default {
       
       // 支持根目录访问（dirPath 可以为空）
       const parts = dirPath.split('/').filter(Boolean);
-      this.rootDir = parts[0] || '';
-      this.currentPath = dirPath;
+
+      /*
+       * v3.0.0：识别对外分享地址 /browse/<用户名>/<实例序号>/(cate|tag)/<路径…|标签名>
+       *   旧地址 /browse/<目录路径> 不会匹配（第二段必须是纯数字、第三段必须是 cate/tag），
+       *   命中后走分享模式，其余情况仍走原来的 /api/public/list。
+       */
+      const isShare = parts.length >= 3
+        && /^\d+$/.test(parts[1])
+        && (parts[2] === 'cate' || parts[2] === 'tag');
+
       this.files = [];
       this.hasMore = true;
       // 重置搜索状态
@@ -624,9 +703,224 @@ export default {
       this.searchKeyword = '';
       this.filterType = '';
       this.currentStartIndex = 0;
+
+      if (isShare) {
+        this.shareMode = true;
+        this.shareUser = parts[0];
+        this.shareIdx = parts[1];
+        this.shareKind = parts[2];
+        this.sharePath = this.shareKind === 'cate' ? parts.slice(3).join('/') : '';
+        this.shareTag = this.shareKind === 'tag' ? (parts[3] || '') : '';
+        this.shareSub = '';
+        this.sharePassword = '';
+        this.sharePasswordError = '';
+        this.shareAuth = 'pending';
+        this.shareError = '';
+        this.shareName = '';
+        this.rootDir = '';
+        this.currentPath = dirPath;
+        this.loading = true;
+        await this.checkShareAccess();
+        this.loading = false;
+        return;
+      }
+
+      this.shareMode = false;
+      this.resetShareState();
+      // 从分享地址切回普通地址时把标题还原成站点名
+      document.title = this.siteName;
+      this.rootDir = parts[0] || '';
+      this.currentPath = dirPath;
       
       await this.loadFiles();
       this.observeLoadTrigger();
+    },
+
+    /** v3.0.0：退出分享模式时清掉分享相关状态（含密码，避免带到另一个分享） */
+    resetShareState() {
+      this.shareUser = '';
+      this.shareIdx = '';
+      this.shareKind = '';
+      this.sharePath = '';
+      this.shareTag = '';
+      this.shareName = '';
+      this.shareAuth = 'pending';
+      this.shareError = '';
+      this.sharePassword = '';
+      this.sharePasswordError = '';
+      this.shareSub = '';
+      this.shareRawFiles = [];
+      this.shareRawDirs = [];
+      this.shareTotal = 0;
+      this.sharePage = 1;
+    },
+
+    /**
+     * v3.0.0：分享访问校验。
+     *   ok=true            → 种 Cookie 生效，直接拉列表；
+     *   ok=false+需要密码  → 展示密码页（已提交过密码则提示密码错误）；
+     *   ok=false 其它      → 错误页，文案用后端 error。
+     */
+    async checkShareAccess() {
+      try {
+        const params = new URLSearchParams();
+        params.set('user', this.shareUser);
+        params.set('idx', this.shareIdx);
+        params.set('kind', this.shareKind);
+        if (this.shareKind === 'tag') params.set('tag', this.shareTag);
+        else params.set('path', this.sharePath);
+        if (this.sharePassword) params.set('pw', this.sharePassword);
+
+        const res = await axios.get(`/api/shares/public/access?${params.toString()}`);
+        const d = res.data || {};
+        if (d.ok) {
+          this.shareAuth = 'ok';
+          // 后端对「账户根目录分享」回的展示名是「根目录」（写死中文），这里换成当前语言的「分享」
+          const name = String(d.name || '');
+          this.shareName = name && name !== '根目录' ? name : (this.shareTag || this.$t('publicBrowse.shareRoot'));
+          this.shareError = '';
+          this.sharePasswordError = '';
+          this.shareSub = '';
+          // 页面标题 = 分享名称 · 站点名
+          document.title = `${this.shareName} · ${this.siteName}`;
+          await this.loadShareFiles(true);
+          return;
+        }
+        if (d.needPassword) {
+          this.shareAuth = 'needPassword';
+          if (d.name) this.shareName = d.name;
+          this.sharePasswordError = this.sharePassword
+            ? (d.error || this.$t('publicBrowse.shareWrongPassword'))
+            : '';
+          return;
+        }
+        this.shareAuth = 'error';
+        this.shareError = d.error || this.$t('publicBrowse.shareUnavailable');
+      } catch (e) {
+        this.shareAuth = 'error';
+        this.shareError = e?.response?.data?.error || this.$t('publicBrowse.loadFailed');
+      }
+    },
+
+    /** 密码页提交：带 pw 重调 access，通过后刷新列表 */
+    async submitSharePassword() {
+      if (this.sharePwBusy) return;
+      this.sharePwBusy = true;
+      this.sharePasswordError = '';
+      try {
+        await this.checkShareAccess();
+      } finally {
+        this.sharePwBusy = false;
+      }
+    },
+
+    /** 分享内部的当前目录（相对分享根；'' = 分享根目录） */
+    shareCurrentDir() {
+      return String(this.shareSub || '').replace(/^\/+|\/+$/g, '');
+    },
+
+    /**
+     * v3.0.0：拉取分享列表。
+     * 后端一次返回整个分享的文件（按 page/pageSize 分页）+ 全部子目录全路径，
+     * 前端按 shareSub 做目录过滤，因此进入子目录不需要重新请求（也不会误判成另一个分享）。
+     */
+    async loadShareFiles(reset) {
+      if (reset) {
+        this.shareRawFiles = [];
+        this.shareRawDirs = [];
+        this.shareTotal = 0;
+        this.sharePage = 1;
+        this.files = [];
+        this.hasMore = true;
+      }
+      this.loading = true;
+      try {
+        const params = new URLSearchParams();
+        params.set('user', this.shareUser);
+        params.set('idx', this.shareIdx);
+        params.set('kind', this.shareKind);
+        if (this.shareKind === 'tag') params.set('tag', this.shareTag);
+        else params.set('path', this.sharePath);
+        params.set('page', String(this.sharePage));
+        params.set('pageSize', String(this.pageSize));
+
+        const res = await axios.get(`/api/shares/public/list?${params.toString()}`);
+        const d = res.data || {};
+        if (!d.ok) {
+          if (d.needPassword) {
+            this.shareAuth = 'needPassword';
+            this.sharePasswordError = this.sharePassword ? (d.error || this.$t('publicBrowse.shareWrongPassword')) : '';
+          } else {
+            this.shareAuth = 'error';
+            this.shareError = d.error || this.$t('publicBrowse.shareUnavailable');
+          }
+          return;
+        }
+
+        const got = (d.files || []).map((f) => ({
+          name: f.name,
+          isFolder: false,
+          metadata: f.metadata,
+          loaded: false,
+        }));
+        this.shareRawFiles.push(...got);
+        for (const dir of (d.directories || [])) {
+          if (dir && !this.shareRawDirs.includes(dir)) this.shareRawDirs.push(dir);
+        }
+        this.shareTotal = Number(d.totalCount || 0);
+        this.sharePage += 1;
+        // 空页 / 已取完 → 停止无限滚动，避免死循环请求
+        this.hasMore = got.length > 0 && this.shareRawFiles.length < this.shareTotal;
+        this.applyShareView();
+      } catch (e) {
+        this.shareAuth = 'error';
+        this.shareError = e?.response?.data?.error || this.$t('publicBrowse.loadFailed');
+      } finally {
+        this.loading = false;
+        this.observeLoadTrigger();
+      }
+    },
+
+    /** v3.0.0：把分享内的原始文件/目录按当前子目录过滤成页面要渲染的 files 数组 */
+    applyShareView() {
+      // 标签分享：不分目录，直接展示全部文件（面包屑只显示标签名）
+      if (this.shareKind === 'tag') {
+        const all = this.shareRawFiles.slice();
+        all.forEach((f) => { if (!this.isImage(f) && !this.isVideo(f)) f.loaded = true; });
+        this.files = all;
+        this.totalCount = all.length;
+        return;
+      }
+
+      const root = String(this.sharePath || '').replace(/\/+$/g, '');
+      const rel = this.shareCurrentDir();
+      const abs = [root, rel].filter(Boolean).join('/');
+      const prefix = abs ? `${abs}/` : '';
+
+      // 当前目录下的直接子目录（目录是全路径，取第一段拼回全路径）
+      const dirSet = new Set();
+      for (const full of this.shareRawDirs) {
+        let rest = String(full || '').replace(/^\/+/, '');
+        if (prefix) {
+          if (!rest.startsWith(prefix)) continue;
+          rest = rest.slice(prefix.length);
+        }
+        const seg = rest.split('/').filter(Boolean)[0];
+        if (!seg) continue;
+        dirSet.add(prefix + seg);
+      }
+      const dirs = Array.from(dirSet).sort().map((p) => ({ name: p, isFolder: true }));
+
+      // 当前目录下的文件：metadata.Directory 是「全路径 + 尾斜杠」
+      const want = abs.replace(/\/+$/g, '');
+      const files = this.shareRawFiles.filter((f) => {
+        const dir = String(f?.metadata?.Directory || '').replace(/\/+$/g, '');
+        return dir === want;
+      });
+      files.forEach((f) => { if (!this.isImage(f) && !this.isVideo(f)) f.loaded = true; });
+
+      this.files = [...dirs, ...files];
+      this.totalCount = files.length;
     },
 
     async loadFiles() {
@@ -688,6 +982,11 @@ export default {
 
     async loadMore() {
       if (this.loading || !this.hasMore) return;
+      // v3.0.0：分享模式继续按页拉取整个分享，再按当前子目录过滤
+      if (this.shareMode) {
+        await this.loadShareFiles(false);
+        return;
+      }
       this.loading = true;
       try {
         const start = this.currentStartIndex + this.mediaFiles.length;
@@ -719,15 +1018,37 @@ export default {
     },
 
     enterFolder(folderPath) {
+      // v3.0.0：分享模式在分享内部切换子目录（不进 URL —— 子目录不是独立的分享）
+      if (this.shareMode) {
+        const root = String(this.sharePath || '').replace(/\/+$/g, '');
+        let rel = String(folderPath || '').replace(/^\/+|\/+$/g, '');
+        if (root && rel.startsWith(`${root}/`)) rel = rel.slice(root.length + 1);
+        this.shareSub = rel;
+        this.applyShareView();
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+        return;
+      }
       const newPath = folderPath.replace(/\/+$/, '');
       this.$router.push(`/browse/${newPath}`);
     },
 
     goToRoot() {
+      if (this.shareMode) {
+        this.shareSub = '';
+        this.applyShareView();
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+        return;
+      }
       this.$router.push(`/browse/${this.rootDir}`);
     },
 
     goToPath(index) {
+      if (this.shareMode) {
+        this.shareSub = this.pathParts.slice(0, index + 1).join('/');
+        this.applyShareView();
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+        return;
+      }
       const parts = this.pathParts.slice(0, index + 1);
       const newPath = this.rootDir + (parts.length ? '/' + parts.join('/') : '');
       this.$router.push(`/browse/${newPath}`);
@@ -1357,6 +1678,137 @@ html.dark .search-box:hover {
   justify-content: center;
   min-height: 60vh;
   color: #666;
+}
+
+/* ===== v3.0.0：对外分享 —— 密码页 / 错误页 / 空态 ===== */
+.share-gate {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 70vh;
+  padding: 24px 16px;
+  box-sizing: border-box;
+}
+
+.share-gate-card {
+  width: 100%;
+  max-width: 360px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 28px 24px;
+  border-radius: 16px;
+  background: #2E2E32;
+  border: 1px solid #46464A;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+  text-align: center;
+}
+
+.share-gate-icon {
+  width: 40px;
+  height: 40px;
+  color: #3b82f6;
+}
+
+.share-gate-icon svg {
+  width: 100%;
+  height: 100%;
+}
+
+.share-gate-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: #e5e7eb;
+}
+
+.share-gate-name {
+  margin: 0;
+  font-size: 13px;
+  color: #9ca3af;
+  word-break: break-all;
+}
+
+.share-gate-hint {
+  margin: 0;
+  font-size: 12px;
+  color: #6b7280;
+  line-height: 1.5;
+}
+
+.share-gate-input {
+  width: 100%;
+  height: 38px;
+  padding: 0 12px;
+  box-sizing: border-box;
+  border-radius: 10px;
+  border: 1px solid #46464A;
+  background: #1c1c1f;
+  color: #e5e7eb;
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.share-gate-input:focus {
+  border-color: #3b82f6;
+}
+
+.share-gate-error {
+  margin: 0;
+  font-size: 12px;
+  color: #f56c6c;
+}
+
+.share-gate-btn {
+  width: 100%;
+  height: 38px;
+  margin-top: 4px;
+  border: none;
+  border-radius: 10px;
+  background: #3b82f6;
+  color: #fff;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.share-gate-btn:hover:not(:disabled) {
+  background: #2563eb;
+}
+
+.share-gate-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.share-error-title {
+  margin: 0 0 6px;
+  font-size: 16px;
+  font-weight: 600;
+  color: #e5e7eb;
+}
+
+.share-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 90px 0;
+  color: #555;
+}
+
+.share-empty svg {
+  width: 56px;
+  height: 56px;
+}
+
+.share-empty p {
+  margin: 0;
+  font-size: 14px;
+  color: #6b7280;
 }
 
 .loading-spinner {

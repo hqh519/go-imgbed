@@ -29,14 +29,26 @@ export const CHANNEL_TYPES = [
     { value: 'aliyun', label: '阿里云 OSS', dedicated: true, typeCode: 170 },
     { value: 'webdav', label: 'WebDAV 协议存储', dedicated: true, typeCode: 180 },
     { value: 'custom', label: '自定义 Web 通道', dedicated: false, generic: true, typeCode: 190 },
-    { value: 'local', label: '本地存储', dedicated: true, builtin: true, typeCode: 999 }
+    { value: 'local', label: '本地存储', dedicated: true, builtin: true, typeCode: 999 },
+    // v3.0.0：本地文件渠道 —— 只读浏览容器内已有目录，不参与上传（上传页/渠道选择里不会出现）
+    // 排序：**必须排在「本地存储」之后**（typeCode 1000 最大）——
+    // 上传设置的分组顺序直接按本数组顺序渲染，数组里放前面就会出现「本地文件在本地存储之前」。
+    // 仅管理员可见/可用，不做渠道授权。
+    { value: 'localfiles', label: '本地文件', dedicated: true, typeCode: 1000, readonly: true }
 ];
 
-/** 「添加渠道」时可选类型 —— 排除系统内置渠道 */
-export const ADDABLE_CHANNEL_TYPES = CHANNEL_TYPES.filter((t) => !t.builtin);
+/** 「添加渠道」时可选类型 —— 排除系统内置渠道；
+ *  v3.0.0：末尾追加「本地存储（自定义路径）」—— 允许新建 type=local 的自定义本地渠道（rootPath 自定），
+ *  内置本地渠道 code=999999 仍随安装唯一存在、不可新增。 */
+export const ADDABLE_CHANNEL_TYPES = [
+    ...CHANNEL_TYPES.filter((t) => !t.builtin),
+    { value: 'local', label: '本地存储', dedicated: true, typeCode: 998 }
+];
 
 /** 内置渠道的固定业务 ID（与后端 LOCAL_CHANNEL_CODE 保持一致，1.9.2 起为 999999） */
 export const LOCAL_CHANNEL_CODE = '999999';
+/** v3.0.0：内置「本地文件」渠道的固定业务 ID（与后端 LOCAL_FILES_CHANNEL_CODE 保持一致） */
+export const LOCAL_FILES_CHANNEL_CODE = '999990';
 
 /**
  * 渠道类型 → 后端 CHANNEL_LABEL（用于「渠道类型」筛选参数、卡片角标）。
@@ -53,28 +65,29 @@ export const CHANNEL_SHORT_LABEL = {
     webdav: 'WebDAV',
     immich: 'Immich',
     custom: 'External',
-    local: 'Local'
+    local: 'Local',
+    localfiles: 'File'
 };
 
 /** 卡片上展示的摘要字段 */
 export const SUMMARY_KEYS = {
     cos: [['bucket', 'Bucket'], ['region', '地域'], ['publicDomain', '外链域名']],
-    minio: [['endpoint', 'Endpoint'], ['bucket', 'Bucket']],
+    minio: [['endpoint', 'Endpoint/服务地址'], ['bucket', 'Bucket']],
     r2: [['endpoint', '账户ID/Endpoint'], ['bucket', 'Bucket'], ['publicDomain', '外链域名']],
-    s3: [['endpoint', 'Endpoint'], ['bucket', 'Bucket']],
+    s3: [['endpoint', 'Endpoint/服务地址'], ['bucket', 'Bucket']],
     aliyun: [['bucket', 'Bucket'], ['region', '地域'], ['publicDomain', '外链域名']],
-    easyimages: [['apiUrl', '接口地址'], ['publicDomain', '外链域名']],
-    lsky: [['apiUrl', '接口地址'], ['publicDomain', '外链域名']],
-    webdav: [['baseUri', 'WebDAV 地址'], ['directory', '目录']],
-    immich: [['serverUrl', '服务地址'], ['albumId', '相册 ID']],
-    custom: [['apiUrl', '接口地址'], ['publicDomain', '外链域名']],
-    // 本地存储没有可配置项（落盘位置由程序决定），摘要留空，靠类型提示说明
-    local: []
+    easyimages: [['apiUrl', 'Endpoint/服务地址'], ['publicDomain', '外链域名']],
+    lsky: [['apiUrl', 'Endpoint/服务地址'], ['publicDomain', '外链域名']],
+    webdav: [['baseUri', 'Endpoint/服务地址'], ['directory', '目录']],
+    immich: [['serverUrl', 'Endpoint/服务地址'], ['albumId', '相册 ID']],
+    custom: [['apiUrl', 'Endpoint/服务地址'], ['publicDomain', '外链域名']],
+    // 本地存储：自定义路径时可展示 rootPath；对象前缀随配置展示（内置渠道两项都为空时隐藏）
+    local: [['rootPath', '存储地址'], ['objectPrefix', '自定义存储前缀']]
 };
 
 /** 各类型顶部提示 */
 export const TYPE_TIPS = {
-    local: '系统内置渠道，无需任何配置：文件直接写入服务端自身的 uploads 目录，零外部依赖、开箱即用。实体文件固定按「年份/月份」归档（如 uploads/2026/10/），与后台给文件设置的「文件分类」相互独立 —— 在文件管理里改分类只改数据库的虚拟目录，不会搬运实体文件。外链统一由本站 /file/ 代理下发。该渠道不可删除，但可以禁用。',
+    local: '自定义本地存储渠道：文件写入服务端容器内的指定目录（rootPath），可选择映射到宿主机目录；对象前缀与自定义命名支持占位符（前缀留空默认 {user}/{ID}/{y}/{m}），可启用容量限制。内置本地渠道（存储地址固定 uploads）随安装自动存在、不可删除，只能禁用。',
     cos: '腾讯云 COS 走专属通道：填写地域后可自动生成 Endpoint，也可手填 CDN 加速域名作为外链。',
     minio: 'MinIO 走专属通道：默认使用 Path-Style 寻址，桶需设置为「公开读」才能直接访问外链。若 MinIO 与图床同机 / 同 docker 网络，Endpoint 可直接填容器名（如 minio:9000）走内网通信。',
     r2: 'Cloudflare R2 走专属通道：Endpoint 可只填账户 ID（自动补全 r2.cloudflarestorage.com），外链需填写 r2.dev 子域或自定义域名。',
@@ -86,6 +99,116 @@ export const TYPE_TIPS = {
     immich: 'Immich 走专属通道：按「去重检查 → 上传 → 入相册 → 建分享链接」四步流程实现，外链为分享原图地址。服务地址支持填容器名（如 immich:2283）走内网。',
     custom: '自定义 Web 存储：只需「上传接口地址 + 文件字段名 + 响应 URL 路径」三件套即可接入任意 HTTP 图床；需要鉴权或附加参数时，用「自定义请求头 (JSON)」和「自定义Body (JSON)」。同时兼容主流通用 API：请求方法可选 POST/PUT/PATCH，请求体可选 multipart 或 JSON+Base64，响应 URL 路径支持多候选与自动探测，相对路径响应会自动补全域名。'
 };
+
+/**
+ * 本地存储（内置渠道 code=999999）：
+ * v3.0.0 契约字段 —— prefixPath 固定 uploads（只读）、objectPrefix、nameTemplate、
+ * sizeLimitEnabled / sizeLimitGB、note。落盘规则：uploads/用户名/实例/对象前缀。
+ */
+export const LOCAL_BUILTIN_FIELDS = () => [
+    f('prefixPath', '存储地址', {
+        def: 'uploads',
+        fixed: true,
+        placeholder: 'uploads',
+        tip: '系统内置路径，不可修改。实体文件按「uploads / 自定义存储前缀 / 文件名」落盘' +
+            '（前缀留空时默认 {user}/{ID}/{y}/{m}），外链统一由本站 /file/ 代理下发。'
+    }),
+    f('objectPrefix', '自定义存储前缀（可选）', {
+        placeholder: '{user}/{ID}/{y}/{m}',
+        tip: OBJECT_PREFIX_TIP,
+        quick: 'prefix'
+    }),
+    f('nameTemplate', '自定义文件命名（可选）', { placeholder: '{hash}', tip: CUSTOM_NAME_TIP, quick: 'name' }),
+    { key: 'sizeLimitEnabled', label: '启用容量限制', type: 'switch', def: false },
+    {
+        key: 'sizeLimitGB',
+        label: '容量上限 (GB)',
+        type: 'number',
+        def: 10,
+        min: 0.1,
+        step: 1,
+        precision: 1,
+        showWhen: { key: 'sizeLimitEnabled', value: true }
+    },
+    f('note', '备注', { type: 'textarea', placeholder: '给这个渠道写点备注，例如：用途、磁盘位置等' })
+];
+
+/**
+ * v3.0.0（R11）：内置「本地文件」渠道（code=999990）的字段。
+ * 浏览目录由系统生成（后端固定为 uploads 的绝对路径），**禁止变更** ——
+ * 这里做成只读展示，避免管理员在 UI 上改了却被后端静默覆盖、误以为已生效。
+ */
+export const LOCAL_FILES_BUILTIN_FIELDS = () => [
+    f('rootPaths', '浏览目录（容器内路径，系统固定）', {
+        type: 'textarea',
+        fixed: true,
+        def: '',
+        placeholder: 'uploads',
+        tip: '系统内置的本地文件渠道：浏览目录固定为 uploads（容器内路径由后端强制写入），不可修改。' +
+            '如需浏览其它目录，请用「添加渠道 → 本地文件」新建一个渠道。'
+    }),
+    f('hostPath', '宿主机映射目录（可选）', {
+        placeholder: '/vol1/docker/imgbed-data',
+        tip: '仅用于说明：填写 uploads 在宿主机上对应的目录，方便运维对照，不参与任何读写。'
+    })
+];
+
+/**
+ * 渠道类型 > 字段定义的分发（供 SysCogUpload 使用）。
+ * v3.0.0（R11）：内置本地文件渠道（999990）与自建本地文件渠道字段不同 ——
+ * 前者浏览目录只读，后者可自由填写。
+ */
+export const LOCAL_FILES_FIELDS = () => [
+    f('rootPaths', '浏览目录（容器内路径，一行一个）', {
+        required: true,
+        type: 'textarea',
+        def: '',
+        placeholder: '/data/share\n/mnt/photos',
+        suggest: ['/data', '/mnt', '/mnt/data', '/share', '/media', '/app/uploads'],
+        tip: '容器内的绝对路径，一行一个，可填多个；本地文件管理页的根目录会把每个浏览目录显示为一级子目录。' +
+            '系统只读取这些目录，不会修改或删除里面的任何文件；' +
+            '以 . 开头、以 # 开头的文件以及 node_modules / .git 等目录默认隐藏。'
+    }),
+    f('hostPath', '宿主机映射目录（可选）', {
+        placeholder: '/vol1/docker/share',
+        tip: '仅用于说明：填写浏览目录在宿主机上对应的目录，方便运维对照，不参与任何读写。'
+    })
+];
+
+/**
+ * 本地存储（自定义渠道，type=local，code 为 99xxxx）：
+ * v3.0.0 契约字段 —— rootPath（容器内地址，必填）、hostPath（可选，宿主机映射目录）、
+ * objectPrefix、nameTemplate、sizeLimitEnabled / sizeLimitGB、note。
+ */
+export const LOCAL_CUSTOM_FIELDS = () => [
+    f('rootPath', '存储地址（容器内路径）', {
+        required: true,
+        placeholder: '/data/uploads',
+        tip: '容器内的绝对路径，上传的实体文件会写入该目录；可选择映射到容器的宿主机目录（下方「宿主机映射目录」）。直接手填即可。'
+    }),
+    f('hostPath', '宿主机映射目录（可选）', {
+        placeholder: '/vol1/docker/imgbed-data',
+        tip: '当 rootPath 已通过 docker -v / compose 卷映射到宿主机时填写对应宿主机目录，便于直接在宿主机查看与管理实体文件；未映射则留空。'
+    }),
+    f('objectPrefix', '自定义存储前缀（可选）', {
+        placeholder: '{user}/{ID}/{y}/{m}',
+        tip: OBJECT_PREFIX_TIP,
+        quick: 'prefix'
+    }),
+    f('nameTemplate', '自定义文件命名（可选）', { placeholder: '{hash}', tip: CUSTOM_NAME_TIP, quick: 'name' }),
+    { key: 'sizeLimitEnabled', label: '启用容量限制', type: 'switch', def: false },
+    {
+        key: 'sizeLimitGB',
+        label: '容量上限 (GB)',
+        type: 'number',
+        def: 10,
+        min: 0.1,
+        step: 1,
+        precision: 1,
+        showWhen: { key: 'sizeLimitEnabled', value: true }
+    },
+    f('note', '备注', { type: 'textarea', placeholder: '给这个渠道写点备注，例如：用途、磁盘位置等' })
+];
 
 const f = (key, label, extra = {}) => ({ key, label, type: 'text', ...extra });
 
@@ -106,30 +229,33 @@ const INTERNAL_ADDR_TIP =
     '渠道通信由服务端发起，因此图床对外是 https 也不影响用内网地址连接。';
 
 const OBJECT_PREFIX_TIP =
-    '对象前缀决定文件在存储桶 / 网盘里的目录层级，支持占位符：' +
-    '{y} 年（4 位）、{m} 月（2 位）、{d} 日（2 位）。' +
-    '例如填 {y}/{m}/ 会存成 2026/10/xxx.png；' +
-    '留空等价于 {y}/{m}（即默认按「年份/月份」归档）。末尾斜杠会自动补齐，重复斜杠会自动合并。';
+    '自定义存储前缀决定文件在存储桶 / 网盘里的目录层级，支持占位符：' +
+    '{user} 当前账户用户名、{ID} 渠道 ID、{y} 年（4 位）、{m} 月（2 位）、{d} 日（2 位）、' +
+    '{domain} 渠道外链域名（未配置外链域名时为空）。' +
+    '例如填 {user}/{ID}/{y}/{m} 会存成 alice/992299/2026/11/xxx.png；' +
+    '留空时：普通渠道按 {y}/{m}（年份/月份）归档，本地存储渠道按 {user}/{ID}/{y}/{m} 归档。' +
+    '末尾斜杠会自动补齐，重复斜杠会自动合并。';
 
 const CUSTOM_NAME_TIP =
     '自定义文件命名，支持占位符：' +
-    '{filename} 原文件名（不含扩展名）、{uuid} 随机 UUID、{md5} 文件 MD5、' +
-    '{timestamp} 13 位毫秒时间戳、{ext} 扩展名（不含点）。' +
-    '例如 {filename}-{timestamp} 会生成 photo-1730112000000.png。' +
-    '留空则使用默认「文件名-时间戳」；模板里没写 {ext} 时会自动补上原扩展名。';
+    '{hash} 内容哈希前 16 位、{filename} 原文件名（不含扩展名）、{uuid} 随机 UUID、{md5} 文件 MD5、' +
+    '{timestamp} 13 位毫秒时间戳、{ext} 扩展名（含点）。' +
+    '例如 {filename}-{timestamp}.{ext} 会生成 photo-1730112000000.png。' +
+    '{filename} 只保留「文字 / 字母 / 数字 / - / _ / .」，首尾空格去掉、中间空格转 -。' +
+    '留空则默认使用 {hash}（内容哈希前 16 位）；模板里没写 {ext} 时会自动补上原扩展名。';
 
 /** 外链域名（publicDomain）类字段的提示 —— 与上传通道区分开 */
 const PUBLIC_DOMAIN_TIP =
     '这里是「外链域名」，用来替换外链的域名部分（外链 = 此域名 + 对象路径），与上面的上传通道相互独立：' +
     '上传可以走内网地址，外链域名另填。' +
     '取值取决于外链分发模式：' +
-    '① 代理模式（默认，图片由本图床转发给访客）→ 取流由服务端发起，这里同样可以填内网地址（如 http://minio:9000/imgbed），' +
+    '① 代理模式（默认，图片由本图床转发给访客）→ 取流由服务端发起，这里同样可以填内网地址（如 http://minio:9000），' +
     '读写全走内网、速度最快，访客看到的仍是图床自己的域名；' +
     '② 302 重定向模式（访客浏览器直接打开该地址）→ 必须填公网可访问的地址，否则访客打不开图片。';
 
 /** v2.8.7：内网通信域名（internalDomain）字段提示 */
 const INTERNAL_DOMAIN_TIP =
-    '可选。填容器内网 IP 或容器名作为通信地址（如 http://minio:9000/imgbed、immich:2283），' +
+    '可选。填容器内网 IP 或容器名作为通信地址（如 http://minio:9000、immich:2283），' +
     '设置后系统内部所有加载该渠道文件的地方（文件管理、文件详情、历史记录、访客图库、签发外链的代理转发等）' +
     '都会优先用这个内网地址取流：提高加载速度、节省公网流量；' +
     '未设置时用上面的公开访问域名，再为空则用 Endpoint。' +
@@ -138,12 +264,19 @@ const INTERNAL_DOMAIN_TIP =
 
 /** 各类型的业务字段 */
 export const CHANNEL_FIELDS = {
+/**
+ * 本地存储：v3.0.0 起指向内置渠道字段（LOCAL_BUILTIN_FIELDS）。
+ * 自定义本地渠道的字段用 LOCAL_CUSTOM_FIELDS（由 SysCogUpload 按渠道 code 区分）。
+ */
     /**
-     * 本地存储：没有任何连接配置。
-     * 落盘位置固定为「后端根目录/uploads」，实体目录按年份/月份自动归档，
-     * 容量限制由通用字段（QUOTA_FIELDS）提供 —— 磁盘快满时可以在这里设告警阈值。
+     * v3.0.0：本地文件渠道（只读浏览）。
+     * v3.0.0（R8）：「浏览根目录」升级为「浏览目录」—— 支持多个目录（一行一个），
+     * 本地文件管理页的根目录会把每个浏览目录渲染成一级子目录。
+     * 兼容：旧配置只有 rootPath 单目录 —— 编辑时自动预填，后端读取时自动回落。
+     * 该渠道不参与任何上传动作，仅供「本地文件」页浏览 / 预览 / 一键上传到图床。
      */
-    local: () => [],
+    localfiles: LOCAL_FILES_FIELDS,
+    local: LOCAL_BUILTIN_FIELDS,
     cos: () => [
         f('bucket', '存储桶名称 (Bucket)', { required: true, placeholder: 'mybucket（可只填前缀，由 AppID 自动补全）' }),
         f('appid', 'APPID', {
@@ -160,26 +293,26 @@ export const CHANNEL_FIELDS = {
             tip: '本系统通过 COS 官方 S3 兼容协议上传，两种签名均可正常工作，默认使用 V5。'
         }),
         f('region', '所属地域 (Region)', { required: true, placeholder: 'ap-guangzhou' }),
-        f('endpoint', 'Endpoint', {
-            placeholder: '留空将按地域自动生成',
+        f('endpoint', 'Endpoint/服务地址', {
+            placeholder: 'https://cos.{Region}.myqcloud.com',
             tip: '留空自动使用 https://cos.<region>.myqcloud.com；如使用私有或加速端点可在此覆盖。' + INTERNAL_ADDR_TIP
         }),
         f('publicDomain', '公开访问域名', {
-            placeholder: 'https://img.example.com',
+            placeholder: 'https://{Bucket}.cos.{Region}.myqcloud.com',
             tip: '优先用于拼接外链（如 COS 的 CDN 加速域名）。留空则按 endpoint + bucket 自动拼接。' + PUBLIC_DOMAIN_TIP
         }),
         f('secretId', 'SecretId', { type: 'password', required: true, secret: true }),
         f('secretKey', 'SecretKey', { type: 'password', required: true, secret: true }),
         f('pathStyle', 'Path-Style 寻址', { type: 'switch', def: false }),
-        f('objectPrefix', '对象前缀（可选）', { placeholder: '{y}/{m}/', tip: OBJECT_PREFIX_TIP }),
-        f('customName', '自定义文件命名（可选）', { placeholder: '{filename}-{timestamp}', tip: CUSTOM_NAME_TIP }),
+        f('objectPrefix', '自定义存储前缀（可选）', { placeholder: '{user}/{ID}/{y}/{m}', tip: OBJECT_PREFIX_TIP, quick: 'prefix' }),
+        f('customName', '自定义文件命名（可选）', { placeholder: '{hash}', tip: CUSTOM_NAME_TIP, quick: 'name' }),
         f('suffix', '外链后缀（可选）', {
             placeholder: '?imageMogr2/thumbnail/800x',
             tip: '拼接在外链末尾的图片处理参数（对齐 PHP 案例的 tencent_suffix），如 COS 数据万象的 ?imageMogr2。'
         })
     ],
     minio: () => [
-        f('endpoint', 'Endpoint', {
+        f('endpoint', 'Endpoint/服务地址', {
             required: true,
             placeholder: 'minio:9000 / 192.168.1.10:9000 / http://127.0.0.1:9000',
             tip: INTERNAL_ADDR_TIP
@@ -190,13 +323,19 @@ export const CHANNEL_FIELDS = {
         f('secretAccessKey', 'SecretKey', { type: 'password', required: true, secret: true }),
         f('publicDomain', '公开访问域名', {
             required: true,
-            placeholder: 'http://minio:9000/imgbed 或 https://minio.example.com/imgbed',
-            tip: 'MinIO 需将桶设为公开读；这里填写可直接访问的前缀地址（host 或 host/bucket）。' + PUBLIC_DOMAIN_TIP
+            placeholder: 'https://minio.example.com 或 http://minio:9000',
+            tip: 'v3.0.0 起只填域名即可（不要带 /存储桶），桶名由后端在拼链接时补上，' +
+                '最终外链 = 域名/桶名/对象前缀/文件名（例如 https://minio.example.com/imgbed/2026/10/xxx.png），' +
+                '换桶名时外链会自动跟随变化。MinIO 需将桶设为公开读。' + PUBLIC_DOMAIN_TIP
         }),
-        f('internalDomain', '内网通信域名（可选）', { placeholder: 'http://minio:9000/imgbed', tip: INTERNAL_DOMAIN_TIP }),
+        f('internalDomain', '内网通信域名（可选）', {
+            placeholder: 'http://内网地址:端口 或 容器名称:端口',
+            tip: '只填域名（如 http://minio:9000 或 http://192.168.1.10:9000），不需要带 /存储桶；' +
+                '系统取流时会拼成 域名/桶名/对象前缀/文件名。' + INTERNAL_DOMAIN_TIP
+        }),
         f('pathStyle', 'Path-Style 寻址', { type: 'switch', def: true, tip: 'MinIO 必须开启 Path-Style。' }),
-        f('objectPrefix', '对象前缀（可选）', { placeholder: '{y}/{m}/', tip: OBJECT_PREFIX_TIP }),
-        f('customName', '自定义文件命名（可选）', { placeholder: '{filename}-{timestamp}', tip: CUSTOM_NAME_TIP })
+        f('objectPrefix', '自定义存储前缀（可选）', { placeholder: '{user}/{ID}/{y}/{m}', tip: OBJECT_PREFIX_TIP, quick: 'prefix' }),
+        f('customName', '自定义文件命名（可选）', { placeholder: '{hash}', tip: CUSTOM_NAME_TIP, quick: 'name' })
     ],
     r2: () => [
         f('endpoint', '账户 ID 或 Endpoint', {
@@ -214,11 +353,11 @@ export const CHANNEL_FIELDS = {
             placeholder: 'https://pub-xxxx.r2.dev',
             tip: 'R2 直链需要开启公开访问（r2.dev 子域或绑定的自定义域名）。' + PUBLIC_DOMAIN_TIP
         }),
-        f('objectPrefix', '对象前缀（可选）', { placeholder: '{y}/{m}/', tip: OBJECT_PREFIX_TIP }),
-        f('customName', '自定义文件命名（可选）', { placeholder: '{filename}-{timestamp}', tip: CUSTOM_NAME_TIP })
+        f('objectPrefix', '自定义存储前缀（可选）', { placeholder: '{user}/{ID}/{y}/{m}', tip: OBJECT_PREFIX_TIP, quick: 'prefix' }),
+        f('customName', '自定义文件命名（可选）', { placeholder: '{hash}', tip: CUSTOM_NAME_TIP, quick: 'name' })
     ],
     s3: () => [
-        f('endpoint', 'Endpoint', {
+        f('endpoint', 'Endpoint/服务地址', {
             required: true,
             placeholder: 'https://s3.us-east-1.amazonaws.com / minio:9000 / 192.168.1.10:9000',
             tip: INTERNAL_ADDR_TIP
@@ -232,9 +371,9 @@ export const CHANNEL_FIELDS = {
             placeholder: 'https://cdn.example.com',
             tip: '留空则按 endpoint + bucket 自动拼接外链。' + PUBLIC_DOMAIN_TIP
         }),
-        f('internalDomain', '内网通信域名（可选）', { placeholder: 'http://s3.internal:9000', tip: INTERNAL_DOMAIN_TIP }),
-        f('objectPrefix', '对象前缀（可选）', { placeholder: '{y}/{m}/', tip: OBJECT_PREFIX_TIP }),
-        f('customName', '自定义文件命名（可选）', { placeholder: '{filename}-{timestamp}', tip: CUSTOM_NAME_TIP }),
+        f('internalDomain', '内网通信域名（可选）', { placeholder: 'http://内网地址:端口 或 容器名称:端口', tip: INTERNAL_DOMAIN_TIP }),
+        f('objectPrefix', '自定义存储前缀（可选）', { placeholder: '{user}/{ID}/{y}/{m}', tip: OBJECT_PREFIX_TIP, quick: 'prefix' }),
+        f('customName', '自定义文件命名（可选）', { placeholder: '{hash}', tip: CUSTOM_NAME_TIP, quick: 'name' }),
         f('userAgent', '自定义 User-Agent（可选）', {
             placeholder: 'CloudFlare-ImgBed',
             tip: '部分 S3 兼容服务商把访问密钥与特定 UA 绑定，配置后请求头将直接替换为该值（只能包含可打印 ASCII 字符）。'
@@ -262,15 +401,15 @@ export const CHANNEL_FIELDS = {
             def: false,
             tip: '默认走 bucket.域名/key（虚拟主机风格）。若使用内网端点或代理网关不支持子域名，可开启后改用 域名/bucket/key。'
         }),
-        f('objectPrefix', '对象前缀（可选）', { placeholder: '{y}/{m}/', tip: OBJECT_PREFIX_TIP }),
-        f('customName', '自定义文件命名（可选）', { placeholder: '{filename}-{timestamp}', tip: CUSTOM_NAME_TIP }),
+        f('objectPrefix', '自定义存储前缀（可选）', { placeholder: '{user}/{ID}/{y}/{m}', tip: OBJECT_PREFIX_TIP, quick: 'prefix' }),
+        f('customName', '自定义文件命名（可选）', { placeholder: '{hash}', tip: CUSTOM_NAME_TIP, quick: 'name' }),
         f('suffix', '外链后缀（可选）', {
             placeholder: '?x-oss-process=image/resize,w_800',
             tip: '拼接在外链末尾的图片处理参数（OSS 图片处理为 x-oss-process），如 ?x-oss-process=image/resize,w_800/quality,q_80。'
         })
     ],
     easyimages: () => [
-        f('apiUrl', '上传接口地址', {
+        f('apiUrl', 'Endpoint/服务地址', {
             required: true,
             placeholder: 'https://img.example.com/api/index.php 或 192.168.1.10/api/index.php',
             tip: INTERNAL_ADDR_TIP
@@ -291,12 +430,12 @@ export const CHANNEL_FIELDS = {
             tip: '文件在 multipart 表单中的字段名。EasyImages 固定为 image（不是 file！填错就会报「没有选择上传的文件」）。同样可改以适配其它图床。'
         }),
         f('responsePath', '响应 URL 路径', { placeholder: 'url', def: 'url', tip: '响应 JSON 中外链所在路径，如 url、data.url、[0].src。' }),
-        f('publicDomain', '公开访问域名（可选）', { placeholder: 'https://cdn.example.com', tip: PUBLIC_DOMAIN_TIP }),
-        f('internalDomain', '内网通信域名（可选）', { placeholder: 'http://192.168.1.10/api/index.php', tip: INTERNAL_DOMAIN_TIP }),
+        f('publicDomain', '公开访问域名', { required: true, placeholder: 'https://cdn.example.com', tip: PUBLIC_DOMAIN_TIP }),
+        f('internalDomain', '内网通信域名（可选）', { placeholder: 'http://内网地址:端口 或 容器名称:端口', tip: INTERNAL_DOMAIN_TIP }),
         f('customDeleteUrl', '删除接口模板（可选）', { placeholder: 'https://img.example.com/app/del.php?hash=' })
     ],
     lsky: () => [
-        f('apiUrl', '上传接口地址', {
+        f('apiUrl', 'Endpoint/服务地址', {
             required: true,
             placeholder: 'https://img.example.com/api/v1/upload 或 lsky:8080/api/v1/upload',
             tip: INTERNAL_ADDR_TIP
@@ -315,28 +454,33 @@ export const CHANNEL_FIELDS = {
             tip: 'Lsky Pro v2 需要指定存储策略 ID 时填写。'
         }),
         f('responsePath', '响应 URL 路径', { placeholder: 'data.links.url', def: 'data.links.url', tip: 'Lsky v1 用 data.url，v2 用 data.links.url。' }),
-        f('publicDomain', '公开访问域名（可选）', { placeholder: 'https://cdn.example.com', tip: PUBLIC_DOMAIN_TIP }),
-        f('internalDomain', '内网通信域名（可选）', { placeholder: 'http://192.168.1.10:8080', tip: INTERNAL_DOMAIN_TIP })
+        f('publicDomain', '公开访问域名', { required: true, placeholder: 'https://cdn.example.com', tip: PUBLIC_DOMAIN_TIP }),
+        f('internalDomain', '内网通信域名（可选）', { placeholder: 'http://内网地址:端口 或 容器名称:端口', tip: INTERNAL_DOMAIN_TIP })
     ],
     webdav: () => [
-        f('baseUri', 'WebDAV 地址', {
+        f('baseUri', 'Endpoint/服务地址', {
             required: true,
             placeholder: 'https://dav.example.com/remote.php/dav/files/user 或 nas.local:5005/dav',
             tip: INTERNAL_ADDR_TIP
         }),
         f('username', '用户名', { placeholder: 'user' }),
         f('password', '密码 / 应用密码', { type: 'password', secret: true }),
-        f('directory', '存储目录（可选）', { placeholder: 'imgbed', tip: '相对 WebDAV 根地址的固定目录，例如填 imgbed 就存到 <WebDAV 地址>/imgbed/ 下。留空则直接存到根地址。' }),
-        f('objectPrefix', '对象前缀（可选）', { placeholder: '{y}/{m}/', tip: OBJECT_PREFIX_TIP }),
-        f('customName', '自定义文件命名（可选）', { placeholder: '{filename}-{timestamp}', tip: CUSTOM_NAME_TIP }),
-        f('publicDomain', '公开访问域名（可选）', {
-            placeholder: 'https://img.example.com',
-            tip: '若网盘提供公网直链域名可填写；留空则外链回落到 WebDAV 自身地址。' + PUBLIC_DOMAIN_TIP
+        f('objectPrefix', '自定义存储前缀（可选）', {
+            placeholder: '{user}/{ID}/{y}/{m}',
+            tip: 'v3.0.0（R10）起「存储目录」并入本项：填 imgbed 就存到 <Endpoint/服务地址>/imgbed/ 下，' +
+                '支持 {user}/{ID}/{y}/{m}/{d} 等占位符；上传后路径会固化落库，之后改这里不影响已存文件。' + OBJECT_PREFIX_TIP,
+            quick: 'prefix'
         }),
-        f('internalDomain', '内网通信域名（可选）', { placeholder: 'http://nas.local:5005', tip: INTERNAL_DOMAIN_TIP })
+        f('customName', '自定义文件命名（可选）', { placeholder: '{hash}', tip: CUSTOM_NAME_TIP, quick: 'name' }),
+        f('publicDomain', '公开访问域名', {
+            required: true,
+            placeholder: 'https://img.example.com',
+            tip: '该渠道下文件对公网的访问域名；代理模式取流仍优先用「内网通信域名」。' + PUBLIC_DOMAIN_TIP
+        }),
+        f('internalDomain', '内网通信域名（可选）', { placeholder: 'http://内网地址:端口 或 容器名称:端口', tip: INTERNAL_DOMAIN_TIP })
     ],
     immich: () => [
-        f('serverUrl', 'Immich 服务地址', {
+        f('serverUrl', 'Endpoint/服务地址', {
             required: true,
             placeholder: 'immich:2283 / 192.168.1.10:2283 / https://immich.example.com',
             tip: INTERNAL_ADDR_TIP
@@ -347,16 +491,17 @@ export const CHANNEL_FIELDS = {
             placeholder: '留空则每张图单独创建分享链接',
             tip: '可选项：填写后不再为每张图创建分享链接，直接复用该共享 Key 生成外链（适合已配置好相册共享链接的场景）。'
         }),
-        f('domain', '公开访问域名（可选）', {
+        f('domain', '公开访问域名', {
+            required: true,
             placeholder: 'https://img.example.com',
-            tip: '外链使用的域名（对齐 PHP 案例的 immich_domain）；留空则用上面的服务地址。' + PUBLIC_DOMAIN_TIP
+            tip: '该渠道下文件对公网的访问域名（对齐 PHP 案例的 immich_domain）；代理模式取流优先用「内网通信域名」。' + PUBLIC_DOMAIN_TIP
         }),
-        f('internalDomain', '内网通信域名（可选）', { placeholder: 'http://immich:2283', tip: INTERNAL_DOMAIN_TIP })
+        f('internalDomain', '内网通信域名（可选）', { placeholder: 'http://内网地址:端口 或 容器名称:端口', tip: INTERNAL_DOMAIN_TIP })
     ],
     custom: () => [
         // ---- 与 PHP 联调案例一一对应的核心字段（apiUrl / fileField / responsePath / publicDomain / headers / body），
         //      httpMethod 与 requestFormat 为「兼容主流通用 API」新增的可选项 ----
-        f('apiUrl', '上传接口地址', {
+        f('apiUrl', 'Endpoint/服务地址', {
             required: true,
             placeholder: 'https://your-imgbed.com/api/upload 或 192.168.1.10/api/upload',
             tip: '对齐 PHP 案例的 custom_api：文件将以 multipart/form-data POST 到这里。支持 {filename} {name} {ext} {mime} {size} {timestamp} {random} 占位符。' + INTERNAL_ADDR_TIP
@@ -390,11 +535,12 @@ export const CHANNEL_FIELDS = {
             def: 'url',
             tip: '对齐 PHP 案例的 custom_json_path，默认 url；支持 a.b.c、[0].src、data.list.0.url 等路径，也可用「|」写多候选（如 data.url|url|data.links.url），填 auto 或留空则自动探测主流图床的常见位置。'
         }),
-        f('publicDomain', '公开访问域名（可选）', {
+        f('publicDomain', '公开访问域名', {
+            required: true,
             placeholder: 'https://cdn.example.com',
-            tip: '对齐 PHP 案例的 custom_domain：把响应 URL 的域名替换为此值，用于加 CDN 或修正内网地址。' + PUBLIC_DOMAIN_TIP
+            tip: '对齐 PHP 案例的 custom_domain：该渠道下文件对公网的访问域名，用于加 CDN 或修正内网地址。' + PUBLIC_DOMAIN_TIP
         }),
-        f('internalDomain', '内网通信域名（可选）', { placeholder: 'http://192.168.1.10:8080', tip: INTERNAL_DOMAIN_TIP }),
+        f('internalDomain', '内网通信域名（可选）', { placeholder: 'http://内网地址:端口 或 容器名称:端口', tip: INTERNAL_DOMAIN_TIP }),
         f('headers', '自定义请求头 (JSON)', {
             type: 'textarea',
             placeholder: '{"Authorization":"Bearer xxx","X-Custom":"1"}',
@@ -461,10 +607,24 @@ export function visibleFields(fields, model) {
     });
 }
 
-/** 生成某类型的完整字段列表（业务字段 + 容量字段） */
+/** 生成某类型的完整字段列表（业务字段 + 容量字段）。
+ *  v3.0.0：本地渠道的字段里已自带契约的「启用容量限制 / 容量上限」（sizeLimitEnabled / sizeLimitGB），
+ *  不再追加通用容量字段（quotaEnabled 等）。 */
 export function fieldsOf(type) {
     const base = CHANNEL_FIELDS[type] ? CHANNEL_FIELDS[type]() : [];
+    if (type === 'local') return base;
     return [...base, ...QUOTA_FIELDS()];
+}
+
+/** 按给定字段列表生成默认 config 对象（供本地渠道等非 fieldsOf 来源使用） */
+export function buildDefaultsFrom(fields) {
+    const out = {};
+    for (const field of fields || []) {
+        if (field.def !== undefined) out[field.key] = field.def;
+        else if (field.type === 'switch') out[field.key] = false;
+        else out[field.key] = '';
+    }
+    return out;
 }
 
 /** 生成某类型的默认 config 对象（用于新增渠道时预填） */

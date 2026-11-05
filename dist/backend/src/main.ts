@@ -1,4 +1,5 @@
 // 必须最先导入（副作用模块）：在 PrismaClient 构造之前把 backend/.env 注入 process.env
+import { SettingsService } from './settings/settings.service';
 import './common/load-env';
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
@@ -6,7 +7,8 @@ import { ExpressAdapter } from '@nestjs/platform-express';
 import cookieParser from 'cookie-parser';
 import express from 'express';
 import { join } from 'path';
-import { existsSync } from 'fs';
+import { existsSync, readFileSync, statSync } from 'fs';
+import { gzipSync } from 'zlib';
 import { AppModule } from './app.module';
 import { ChannelsService } from './channels/channels.controller';
 import { AccessService } from './access/access.service';
@@ -271,6 +273,86 @@ async function bootstrap() {
      * 否则浏览器启发式缓存住旧 html、引用旧哈希资源 —— 表现为「系统更新后仍残留旧缓存」。
      * index: false —— index.html 统一由下方 SPA 回退发出，便于统一控制响应头。
      */
+    /*
+     * v3.0.0（R19）：静态产物 gzip 压缩（纯内置模块，不引入第三方依赖）。
+     *
+     * 为什么需要：入口 JS 约 1.7MB（gzip 后约 560KB），未压缩时首屏要下载全量文本，
+     * 弱网 / 手机流量下等待明显。这里对 js / css / json / svg / txt 做一次压缩并缓存
+     * （按「路径 + mtime」命中，文件更新后自动失效），之后直接用压缩结果响应。
+     *
+     * 安全边界：
+     *   · 只处理 GET / HEAD，且客户端明确接受 gzip；
+     *   · 只处理 frontendDir 下的真实文件，路径含 .. 一律跳过（防目录穿越）；
+     *   · 命中不到文件就交给后面的 express.static / SPA 回退，行为完全不变；
+     *   · 已带 Content-Encoding 的响应不重复压缩。
+     * 若外层有 nginx 且已开 gzip，nginx 见到 Content-Encoding 会原样透传，不会二次压缩。
+     */
+    const GZIP_TYPES: Record<string, string> = {
+      '.js': 'application/javascript; charset=utf-8',
+      '.mjs': 'application/javascript; charset=utf-8',
+      '.css': 'text/css; charset=utf-8',
+      '.json': 'application/json; charset=utf-8',
+      '.svg': 'image/svg+xml',
+      '.txt': 'text/plain; charset=utf-8',
+      '.map': 'application/json; charset=utf-8',
+      '.html': 'text/html; charset=utf-8',
+    };
+    const gzipCache = new Map<string, { mtime: number; body: Buffer }>();
+    const GZIP_MAX_ENTRIES = 240;
+
+    server.use((req, res, next) => {
+      if (req.method !== 'GET' && req.method !== 'HEAD') return next();
+      if (!/\bgzip\b/i.test(String(req.headers['accept-encoding'] || ''))) return next();
+      if (res.getHeader('Content-Encoding')) return next();
+      let rel = req.path || '';
+      if (!rel || rel === '/' || rel.includes('..')) return next();
+      const dot = rel.lastIndexOf('.');
+      if (dot < 0) return next();
+      const ext = rel.slice(dot).toLowerCase();
+      const contentType = GZIP_TYPES[ext];
+      if (!contentType) return next();
+      let full: string;
+      try {
+        rel = decodeURIComponent(rel);
+        if (rel.includes('..')) return next();
+        full = join(frontendDir, rel);
+      } catch (e) {
+        return next();
+      }
+      let st;
+      try {
+        st = statSync(full);
+        if (!st.isFile()) return next();
+      } catch (e) {
+        return next();
+      }
+      // 太小的文件压缩收益为负（gzip 头 + 额外开销），交给原流程
+      if (st.size < 1024) return next();
+      try {
+        const hit = gzipCache.get(full);
+        let body: Buffer;
+        if (hit && hit.mtime === st.mtimeMs) {
+          body = hit.body;
+        } else {
+          body = gzipSync(readFileSync(full), { level: 6 });
+          if (gzipCache.size >= GZIP_MAX_ENTRIES) gzipCache.clear();
+          gzipCache.set(full, { mtime: st.mtimeMs, body });
+        }
+        res.setHeader('Content-Type', contentType);
+        res.setHeader('Content-Encoding', 'gzip');
+        res.setHeader('Vary', 'Accept-Encoding');
+        res.setHeader('Content-Length', String(body.length));
+        res.setHeader(
+          'Cache-Control',
+          /[/\\]assets[/\\]/.test(full) ? 'public, max-age=31536000, immutable' : 'no-cache',
+        );
+        if (req.method === 'HEAD') return res.status(200).end();
+        return res.status(200).end(body);
+      } catch (e) {
+        return next();
+      }
+    });
+
     server.use(express.static(frontendDir, {
       index: false,
       setHeaders(res, filePath) {
@@ -392,8 +474,20 @@ async function bootstrap() {
    */
   try {
     await app.get(ChannelsService).ensureBuiltinLocalChannel();
+    await app.get(ChannelsService).ensureBuiltinLocalFilesChannel();
   } catch (err) {
     console.warn(`[local-channel] 内置本地存储渠道初始化失败：${(err as Error).message}`);
+  }
+
+  /*
+   * v3.0.0（R10）：预热「外链访问域名」缓存。
+   * 签发函数 signOrigin() 是同步的（上传响应、WebDAV、API Token 等十几个调用点），
+   * 若不在启动时读一次配置，第一次签发会退化成按请求头推断的域名。
+   */
+  try {
+    await app.get(SettingsService).getServerDomain();
+  } catch {
+    /* 设置读取失败时按动态浏览域名兜底 */
   }
 
   /*

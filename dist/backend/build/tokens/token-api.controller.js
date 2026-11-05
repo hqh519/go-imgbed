@@ -13,6 +13,7 @@ var __param = (this && this.__param) || function (paramIndex, decorator) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.TokenApiController = void 0;
+const request_origin_1 = require("../common/request-origin");
 const common_1 = require("@nestjs/common");
 const platform_express_1 = require("@nestjs/platform-express");
 const crypto_1 = require("crypto");
@@ -24,6 +25,7 @@ const settings_service_1 = require("../settings/settings.service");
 const storage_channel_service_1 = require("../storage/storage-channel.service");
 const file_view_1 = require("../common/file-view");
 const app_log_1 = require("../common/app-log");
+const folder_placeholders_1 = require("./folder-placeholders");
 let TokenApiController = class TokenApiController {
     uploadSvc;
     sysConfig;
@@ -135,10 +137,14 @@ let TokenApiController = class TokenApiController {
         }
         const tokenBackupFlag = String(tokenMetas.defaultBackup || '').trim().toLowerCase();
         const backupOff = !useUserStore && storage_channel_service_1.NO_BACKUP_VALUES.includes(tokenBackupFlag);
+        const tokenFolder = (0, folder_placeholders_1.expandFolderPlaceholders)(String(tokenMetas.defaultCategory || ''), {
+            tokenName: auth.token.name,
+            user: owner,
+        });
         const opts = {
             channelId: channelId || undefined,
             tokenId: undefined,
-            uploadFolder: '',
+            uploadFolder: tokenFolder,
             uploadNameType: String(body.nameType || 'default'),
             uploader: owner,
             ip,
@@ -174,7 +180,7 @@ let TokenApiController = class TokenApiController {
             const r = await this.uploadSvc.upload({ buffer, mime, originalName }, opts);
             if (r.error)
                 return res.status(500).json({ success: false, message: r.error });
-            const origin = `${req.protocol}://${req.get('host')}`;
+            const origin = (0, request_origin_1.signOrigin)(req);
             const prefix = await this.settings.getLinkPrefix(origin);
             const ext = (0, file_view_1.extSuffixFor)(r.id, originalName);
             return res.json({
@@ -245,6 +251,7 @@ let TokenApiController = class TokenApiController {
                 try {
                     return {
                         tokenId: t.id,
+                        tokenName: String(t.name || '').trim(),
                         secretKey: crypto_service_1.CryptoService.decrypt(metas.secretKeyEnc),
                         owner: String(metas.owner || '').trim(),
                         defaultBackup: String(metas.defaultBackup || '').trim(),
@@ -309,7 +316,10 @@ let TokenApiController = class TokenApiController {
         const originalName = key.split('/').pop() || key;
         const owner = found.owner && found.owner !== 'admin' ? found.owner : await this.adminUsername();
         const backupOff = storage_channel_service_1.NO_BACKUP_VALUES.includes(String(found.defaultBackup || '').trim().toLowerCase());
-        const uploadFolder = String(found.defaultCategory || '').replace(/^\/+|\/+$/g, '');
+        const uploadFolder = (0, folder_placeholders_1.expandFolderPlaceholders)(String(found.defaultCategory || ''), {
+            tokenName: found.tokenName,
+            user: owner,
+        });
         try {
             const r = await this.uploadSvc.upload({ buffer: body, mime: headers['content-type'] || 'application/octet-stream', originalName }, {
                 channelId: channelId || undefined,
@@ -328,7 +338,7 @@ let TokenApiController = class TokenApiController {
             void prisma_1.prisma.apiToken.update({ where: { id: found.tokenId }, data: { lastUsedAt: new Date() } }).catch(() => undefined);
             res.setHeader('ETag', `"${(0, crypto_1.createHash)('md5').update(body).digest('hex')}"`);
             res.setHeader('x-amz-request-id', (0, crypto_1.randomBytes)(16).toString('hex').toUpperCase());
-            const origin = `${req.protocol}://${req.get('host')}`;
+            const origin = (0, request_origin_1.signOrigin)(req);
             const prefix = await this.settings.getLinkPrefix(origin);
             const signedUrl = `${prefix}${this.encodePath(r.id)}${(0, file_view_1.extSuffixFor)(r.id, originalName)}`;
             this.setSafeHeader(res, 'Location', signedUrl);

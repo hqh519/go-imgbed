@@ -40,26 +40,18 @@
                 <el-form-item :label="$t('sysOthers.enable')">
                     <el-switch v-model="settings.publicBrowse.enabled" :disabled="settings.publicBrowse.fixed"></el-switch>
                 </el-form-item>
-                <el-form-item prop="publicBrowse.allowedDir">
-                    <template #label>
-                        <span>{{ $t('sysOthers.openDirectory') }}</span>
-                        <el-tooltip placement="right" raw-content>
-                            <template #content>
-                                <div style="max-width: 320px; line-height: 1.6;" v-html="$t('sysOthers.openDirectoryTooltip')">
-                                </div>
-                            </template>
-                            <font-awesome-icon icon="question-circle" style="margin-left: 5px; cursor: pointer;"/>
-                        </el-tooltip>
-                    </template>
-                    <!-- v2.6.0：改多行文本框，一行一个目录 -->
-                    <el-input
-                        v-model="settings.publicBrowse.allowedDir"
-                        type="textarea"
-                        :rows="10"
-                        :disabled="settings.publicBrowse.fixed"
-                        placeholder="wallpaper&#10;photos&#10;album"
-                    ></el-input>
+                <!-- v3.0.0：启用开关下一行 —— 新标签打开分享记录页（对外分享的目录 / 标签清单） -->
+                <el-form-item :label="$t('sysOthers.shareRecords')">
+                    <el-button size="small" type="primary" plain @click="openShareRecords">
+                        <font-awesome-icon icon="share-alt" class="share-records-icon"/>{{ $t('sysOthers.shareRecordsView') }}
+                    </el-button>
                 </el-form-item>
+                <!--
+                  v3.0.0：原先的「开放目录」文本框（publicBrowse.allowedDir）及其表单项已移除。
+                  目录 / 标签的对外分享改为在「文件管理 → 文件夹属性 / 标签属性」逐项开启；
+                  allowedDir 的原值仍随 others 分区整份回传，不会清空历史白名单。
+                -->
+                <p class="dir-share-hint">{{ $t('sysOthers.openDirectoryMovedHint') }}</p>
             </el-form>
 
             <!-- 图片尺寸处理（原「安全设置 → 访问管理」迁移至此，置于本页尾部） -->
@@ -131,12 +123,20 @@
                         v-model="setting.value"
                         :disabled="setting.fixed"
                     ></el-switch>
-                    <el-input
-                        v-else
-                        v-model="setting.value"
-                        :disabled="setting.fixed"
-                        :placeholder="localized(setting, 'placeholder')"
-                    ></el-input>
+                    <div v-else class="setting-text-row">
+                        <el-input
+                            v-model="setting.value"
+                            :disabled="setting.fixed"
+                            :placeholder="localized(setting, 'placeholder')"
+                        ></el-input>
+                        <!-- v3.0.0（R5）：「允许的上传格式」旁提供一键复制默认值 -->
+                        <el-button
+                            v-if="setting.id === 'allowedExtensions'"
+                            size="small"
+                            class="setting-copy-default"
+                            @click="copyAllowedExtensionsDefault"
+                        >{{ $t('sysOthers.copyDefaultExtensions') }}</el-button>
+                    </div>
                     <!-- v2.8.9：配置项下方的补充提示（如「可在用户编辑中对用户单独开启」） -->
                     <div v-if="setting.hint" class="setting-hint">{{ localized(setting, 'hint') }}</div>
                 </el-form-item>
@@ -153,6 +153,7 @@ import fetchWithAuth from '@/utils/fetchWithAuth';
 import FloatingSaveButton from '@/components/FloatingSaveButton.vue';
 import unsavedSettings from '@/mixins/unsavedSettings';
 import { UPLOAD_DEFAULT_CONFIG_IDS } from '@/utils/uploadDefaults';
+import { copyText } from '@/utils/clipboard';
 
 export default {
 mixins: [unsavedSettings],
@@ -227,6 +228,18 @@ computed: {
                     item.id !== 'compressConcurrency'
             );
         }
+        // v3.0.0：「WebP转换」关闭 → 「WebP转换模式」无意义，一并隐藏（只影响展示，不改值）
+        const webpOn = this.configBool(items, 'defaultConvertToWebp', true);
+        if (!webpOn) {
+            items = items.filter(item => item.id !== 'webpMode');
+        }
+        // v3.0.0 第十三轮：「影音压缩/转码控制」关闭 → load1/RAM 两个阈值无意义，一并隐藏（只影响展示，不改值）
+        const guardOn = this.configBool(items, 'mediaResourceGuardEnabled', true);
+        if (!guardOn) {
+            items = items.filter(
+                item => item.id !== 'mediaResourceLoadLimit' && item.id !== 'mediaResourceRamLimit'
+            );
+        }
         return items;
     },
     /** 图片尺寸处理：格式校验（与原「安全设置」保持一致） */
@@ -251,6 +264,20 @@ computed: {
     }
 },
 methods: {
+    /**
+     * v3.0.0（R5）：「允许的上传格式」→ 一键复制默认值
+     * 默认值 = 安装时的全量白名单（图片 + 视频 + 音频），只复制不自动填，避免误覆盖用户已有配置。
+     */
+    async copyAllowedExtensionsDefault() {
+        const DEFAULT_EXT = 'jpg,png,gif,jpeg,webp,bmp,mp4,webm,mov,m4v,mp3,m4a,aac,ogg';
+        const ok = await copyText(DEFAULT_EXT);
+        if (ok) this.$message.success(this.$t('sysOthers.copyDefaultExtensionsDone'));
+        else this.$message.error(this.$t('sysOthers.copyDefaultExtensionsFailed'));
+    },
+    /** v3.0.0：新标签打开「分享记录」页（对外分享的目录 / 标签清单） */
+    openShareRecords() {
+        window.open('/share-records', '_blank', 'noopener');
+    },
     /**
      * 从配置数组里读一个布尔项（同时兼容真布尔与 'true'/'false' 字符串 ——
      * 配置项存库后可能被序列化成字符串）。
@@ -347,6 +374,8 @@ mounted() {
         if (!this.settings.telemetry) this.settings.telemetry = { enabled: false, fixed: false };
         if (!this.settings.randomImageAPI) this.settings.randomImageAPI = { enabled: true, allowedDir: '', fixed: false };
         if (!this.settings.publicBrowse) this.settings.publicBrowse = { enabled: true, allowedDir: '', fixed: false };
+        // v3.0.0：输入框已移除，但 allowedDir 的原值必须继续随 others 分区回传（避免清空历史白名单）
+        if (typeof this.settings.publicBrowse.allowedDir !== 'string') this.settings.publicBrowse.allowedDir = '';
         // 历史存档里可能带有已迁移的 webdav 段：本页不再处理，但保留原值以免保存时被覆盖丢失
         if (!this.settings.webdav) this.settings.webdav = { enabled: false, rootPath: '', readonly: false };
 
@@ -374,6 +403,22 @@ mounted() {
 </script>
 
 <style scoped>
+/* v3.0.0（R5）：文本类配置项一行内可带「复制默认值」按钮 */
+.setting-text-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+}
+.setting-text-row :deep(.el-input) {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+.setting-copy-default {
+    flex: 0 0 auto;
+    height: 32px;
+    border-radius: 8px;
+}
 /* v2.8.9：配置项下方的补充提示（占满一行，跟在控件下面） */
 .setting-hint {
     flex: 0 0 100%;
@@ -387,6 +432,19 @@ mounted() {
 }
 .others-settings {
     min-height: 500px;
+}
+
+/* v3.0.0：访客图库 —— 「开放目录」输入框已移除，这里只是一行说明 */
+.dir-share-hint {
+    margin: 0 0 20px;
+    max-width: 720px;
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--el-text-color-secondary);
+}
+
+.share-records-icon {
+    margin-right: 6px;
 }
 
 .first-settings {

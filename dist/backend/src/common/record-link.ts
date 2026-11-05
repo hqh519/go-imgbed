@@ -42,13 +42,23 @@ function originOf(raw: string): string {
   }
 }
 
-/** 渠道配置里的三个域名候选（按需求顺序：内网 → 公开 → Endpoint） */
-export function recordDomainCandidates(cfg: Record<string, unknown> | null | undefined): RecordDomainCandidate[] {
+/** 渠道配置里的域名候选（按需求顺序：内网 → 公开 → Endpoint）。
+ *  v3.0.0：支持传入渠道类型 —— immich 的公开域名键是 domain、端点键是 serverUrl，
+ *  不传类型时按通用键（publicDomain / apiUrl|endpoint）解析（旧行为兼容）。 */
+export function recordDomainCandidates(
+  cfg: Record<string, unknown> | null | undefined,
+  type?: string,
+): RecordDomainCandidate[] {
   const c = cfg || {};
   const out: RecordDomainCandidate[] = [];
   const internal = clean(c.internalDomain);
-  const publicDomain = clean(c.publicDomain);
-  const apiRaw = clean(c.apiUrl) || clean(c.endpoint);
+  let publicDomain = clean(c.publicDomain);
+  let apiRaw = clean(c.apiUrl) || clean(c.endpoint);
+  // v3.0.0：immich 的公开访问域名键是 domain、服务地址键是 serverUrl（与登记侧 channelDomainCandidates 一致）
+  if (type === 'immich') {
+    if (clean(c.domain)) publicDomain = clean(c.domain);
+    if (clean(c.serverUrl)) apiRaw = clean(c.serverUrl);
+  }
   const api = originOf(apiRaw);
   if (internal) out.push({ field: 'internalDomain', domain: internal });
   if (publicDomain) out.push({ field: 'publicDomain', domain: publicDomain });
@@ -63,10 +73,11 @@ export function recordDomainCandidates(cfg: Record<string, unknown> | null | und
 export function matchRecordSource(
   cfg: Record<string, unknown> | null | undefined,
   sourceUrl: string,
+  type?: string,
 ): RecordSourceMatch | null {
   const src = String(sourceUrl || '').trim();
   if (!/^https?:\/\//i.test(src)) return null;
-  for (const cand of recordDomainCandidates(cfg)) {
+  for (const cand of recordDomainCandidates(cfg, type)) {
     if (!src.includes(cand.domain)) continue;
     const rest = src.split(cand.domain).join('').replace(/^\/+/, '');
     if (!rest) return null;
@@ -83,8 +94,9 @@ export function matchRecordSource(
 export function recordLoadOrigin(
   cfg: Record<string, unknown> | null | undefined,
   preferInternal = true,
+  type?: string,
 ): string {
-  const cands = recordDomainCandidates(cfg);
+  const cands = recordDomainCandidates(cfg, type);
   if (!cands.length) return '';
   if (preferInternal) return cands[0].domain;
   return cands.find((c) => c.field === 'publicDomain')?.domain || cands[0].domain;
@@ -99,6 +111,9 @@ export function joinRecordUrl(origin: string, rest: string): string {
 }
 
 /** 该渠道配置里是否有可用的「域名三件套」——没有就不是登记文件的路径语义 */
-export function hasRecordDomains(cfg: Record<string, unknown> | null | undefined): boolean {
-  return recordDomainCandidates(cfg).length > 0;
+export function hasRecordDomains(
+  cfg: Record<string, unknown> | null | undefined,
+  type?: string,
+): boolean {
+  return recordDomainCandidates(cfg, type).length > 0;
 }

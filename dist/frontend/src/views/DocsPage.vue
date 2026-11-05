@@ -96,7 +96,14 @@ const ZH = {
         { t: '筛选新增项（v2.8.9）', d: '「常规」页：重定向下方新增「有效期」（已限时 / 已过期 / 永久有效），备份状态下新增「名称状态」（已改名 / 未改名）。「大小」页新增「实际大小 / 原始大小」口径切换（默认实际），点快捷项会把区间换算成合适单位直接填进自定义输入框。筛选标签行在手机上可左右滑动。' },
         { t: '上传目录选项（v2.8.9）', d: '后台「上传相关配置 → 上传目录选项」关闭后，前台上传页右上角的目录输入框与右下角「目录选择」一并隐藏（此前只是关闭候选项、输入框还在）。' },
         { t: '移动端顶栏（v2.8.9）', d: '文件管理页手机上：声音切换收进右上「更多菜单」（语言切换上方，文字「开启声音 / 关闭声音」）；「刷新」左侧新增「搜索」按钮，点一下展开搜索框（刷新页面默认收起），「筛选」紧随其后。PC 端「刷新 / 回收站 / 声音」三个按钮的左右间距各加宽 4px。' },
-        { t: '登记文件增强（v2.8.9）', d: '登记弹窗新增可选「扩展名」：源地址不带扩展名时（如 Immich 的 /api/assets/xxx）用它识别类型，源地址自身带扩展名时以地址为准。渠道域名不再写死：程序会读取该渠道配置里的全部访问地址（公开 / 内网 / Endpoint），同域名且无查询串时只保存对象路径，外链按该渠道当前配置实时签发，与正常上传完全一致；外部地址则保留绝对地址。' }
+        { t: '登记文件增强（v2.8.9）', d: '登记弹窗新增可选「扩展名」：源地址不带扩展名时（如 Immich 的 /api/assets/xxx）用它识别类型，源地址自身带扩展名时以地址为准。渠道域名不再写死：程序会读取该渠道配置里的全部访问地址（公开 / 内网 / Endpoint），同域名且无查询串时只保存对象路径，外链按该渠道当前配置实时签发，与正常上传完全一致；外部地址则保留绝对地址。' },
+        { t: '移动端左右滑动（v3.0.0）', d: '上传页在手机上：文件列表项支持左右滑动手势，滑到下一张 / 上一张即可快速切换「文件上传 / 链接转存」两种模式的输入焦点，无需点按顶部切换按钮。' },
+        { t: '上传前自动刷新配置（v3.0.0）', d: '每次打开上传页或提交上传前，前端会自动向后端拉取一次最新配置（渠道、压缩 / WebP / 命名等设置），管理员改完后台无需用户手动刷新页面即可生效。' },
+        { t: 'WebP 转换模式（v3.0.0）', d: '后台「WebP转换」开启后，其下方出现「WebP转换模式」（无损压缩 / 有损压缩，默认无损）；前台上传设置里可单独选「跟随全局 / 无损 / 有损」覆盖全局设置。无损完全保留画质（体积略大）、有损体积更小（画质略有损失）。WebP 与压缩共用「更大则保留原文件」策略：转换 / 压缩后体积没有变小就直接用原文件，不会越压越大。' },
+        { t: '实例切换（v3.0.0）', d: '上传页左上角头像：点击弹出「切换实例」弹窗（默认实例 + 自己创建 / 加入的实例），头像右下角的小角标就是当前实例的序号；选择持久化在本机（localStorage goimgbed_instance_id），之后上传的文件都归属该实例。弹窗底部还有「用户管理 / 实例管理」两个入口。弹窗里每个实例名称前显示序号（默认实例不显示序号，与头像角标一致）。' },
+        { t: '登记文件（v3.0.0）', d: '域名匹配对全部渠道一致：按「内网通信域名 → 公开访问域名 → Endpoint / 服务地址」顺序试探源地址，前一个为空自动看下一个；文件名称优先取源文件的真实文件名，取不到时才用「登记文件-时间戳」。' },
+        { t: '拍照上传：真实相机预览（v3.0.0 第八轮 / R8.1）', d: '上传页右下快捷栏「登记文件」上方多了一个相机按钮：点一下打开的是真实相机预览（不是文件选择），确认画面后按「拍照」，照片直接进入上传流程 —— 自动模式立即上传，手动模式进等待区；可切换前置 / 后置镜头。拍照与选文件走完全同一条管线（压缩 / WebP / 重命名 / 分片 / 实例归属都一致）。浏览器不支持摄像头或当前不是 HTTPS 时，弹窗会说明原因，并提供「改用系统相机」按钮（手机会直接打开相机）。' },
+        { t: '上传设置「归属实例」（v3.0.0 第八轮）', d: '上传设置里「备份渠道」下面新增「归属实例」：可跟随当前实例、强制默认实例，或指定某个实例。选择会随上传设置一起保存，对该页所有上传（单文件、分片大文件、链接转存）都生效 —— 适合在首页固定往某个实例投文件的场景。' },
       ]
     },
     {
@@ -127,9 +134,21 @@ const ZH = {
         { t: '自定义 Web 通道', d: '只需「上传接口地址 + 文件表单字段名 + 响应 URL 路径」三件套；需要鉴权或附加参数时，用「自定义请求头 (JSON)」与「附加表单字段 (JSON)」。请求方法可选 POST/PUT/PATCH，请求体可选 multipart 或 JSON+Base64。' },
         { t: '主渠道与备份渠道', d: '主渠道同步上传（决定上传耗时），备份渠道异步双写（不阻塞响应）。每个渠道可单独启用/禁用。' },
         { t: '停用渠道（v2.8.6）', d: '关掉某个渠道右上角的启用开关后：它不会出现在任何渠道下拉 / 渠道选择里（上传设置、Token、用户管理、系统状态一致），也不再接受任何来源的上传 —— 网页、WebDAV、API 显式指定该渠道时会直接报「渠道已停用」，不会静默改投别的渠道。' },
-        { t: '公开访问域名 / 内网通信域名（v2.8.7）', d: '各渠道编辑页的域名字段统一命名为「公开访问域名」。简单图床、兰空图床、Immich、MinIO、S3、WebDAV、自定义Web 还支持「内网通信域名（可选）」：填容器内网 IP 或容器名后，系统内部加载该渠道文件的所有地方（文件管理、详情、历史记录、访客图库、签发外链的代理转发）都优先走内网取流 —— 提速且省公网流量；为空则用公开访问域名，再为空用 Endpoint。文件详情页「存储渠道 / 备份渠道」的渠道源链接始终用公开访问域名（内网地址外网打不开）。302 重定向模式下外链同样走公开访问域名。' },
+        { t: '公开访问域名 / 内网通信域名（v2.8.7）', d: '各渠道编辑页的域名字段统一命名为「公开访问域名」。简单图床、兰空图床、Immich、MinIO、S3、WebDAV、自定义Web 还支持「内网通信域名（可选）」：填容器内网 IP 或容器名后，系统内部加载该渠道文件的所有地方（文件管理、详情、历史记录、访客图库、签发外链的代理转发）都优先走内网取流 —— 提速且省公网流量；为空则用公开访问域名，再为空用 Endpoint。文件详情页「存储渠道 / 备份渠道」的渠道源链接始终用公开访问域名（内网地址外网打不开）。302 重定向模式下外链同样走公开访问域名。MinIO 渠道（v3.0.0 起）这两个域名**只填域名**，不要带 /存储桶 —— 桶名由后端在拼外链时补上，最终地址固定为「域名/桶名/对象前缀/文件名」（例：https://minio.example.com/imgbed/2026/10/xxx.png）；普通上传落库的对象键本身不带桶名（S3 协议要求 Bucket 单独传递，键里再带一次会存成 桶名/桶名/…），所以桶名统一在「拼链接」这一层补，取流、302、详情页源链接三处口径一致。升级前填过 /桶名的旧配置读取时自动剥离，旧登记文件（键里没桶名）也会自动补齐，两种形态都不会出现重复桶名。' },
         { t: '容量限制', d: '勾选「启用容量限制」后才会出现「容量上限」「告警阈值」；超出阈值的渠道不再参与上传分流，避免写满。' },
+        { t: '本地存储渠道（v3.0.0）', d: '除内置本地渠道外，现在可以添加「本地存储（自定义路径）」渠道：存储地址填容器内路径（rootPath，直接手填，第十一轮起为普通输入框），可选填宿主机映射目录（hostPath）；对象前缀与自定义文件命名与其它渠道一致，可启用容量限制。' },
+        { t: '内置本地渠道路径规则（v3.0.0）', d: '内置渠道（渠道 ID 999999）存储地址固定为 uploads（不可修改），实体文件按「uploads / 自定义存储前缀 / 文件名」落盘；前缀留空时默认 {user}/{ID}/{y}/{m}（第十一轮起），前缀里没有 {user} 的自定义前缀仍按「上传者 / 实例 / 前缀」归档。' },
+        { t: '本地存储多浏览目录（v3.0.0 第八轮）', d: '「本地文件」类型渠道可配置多个浏览根目录（一行一个），本地文件页左侧目录树会把这几个根目录都列出来，切换根目录直接换目录树、不重建页面。旧配置只有一个根目录时按单元素读取，无需迁移；多根目录下「已入库」判定按完整路径比对，不会跨根目录误判。' },
+        {
+          t: '占位符变量表（v3.0.0 / 第九轮扩充）',
+          sub: [
+            '自定义存储前缀支持：{y} 年（4 位）、{m} 月（2 位）、{d} 日（2 位）、{ID} 渠道 ID、{user} 当前账户用户名（原样）、{domain} 渠道外链域名（未配置时为空）；设置项名称后有「渠道ID / 用户名 / 年份 / 月份 / 日期」快插按钮，点击把占位符（含前导斜杠）追加到输入框末尾。',
+            '自定义文件命名支持：{hash} 内容哈希前 16 位、{filename} 原文件名（不含扩展名，已清洗）、{uuid} 随机 UUID（唯一编号）、{md5} 文件 MD5、{timestamp} 13 位毫秒时间戳、{ext} 扩展名；设置项名称后有「哈希 / 文件名 / 唯一编号 / MD5 / 时间戳 / 扩展名」快插按钮（扩展名插入 .{ext}）。',
+            '{filename} 只保留「文字 / 字母 / 数字 / - / _ / .」，首尾空格去掉、中间空格转 -；模板里没写 {ext} 时系统会自动补上原扩展名；留空命名则默认使用 {hash}（内容哈希前 16 位）。'
+          ]
+        },
         { t: '测试连接', d: '新增或编辑渠道时可点「测试连接」验证配置，成功会返回一条可点击查看的直链。' },
+        { t: '字段名统一「Endpoint / 服务地址」（v3.0.0）', d: '原来在各类渠道里分别叫「上传接口地址」「服务地址」「WebDAV 地址」的那一栏，v3.0.0 统一改名为「Endpoint / 服务地址」，含义与校验规则完全不变（对象存储 / WebDAV / 自定义 Web 通道的上游地址）。老配置不用迁移，值原地保留。' },
         {
           t: '内网直连（上传提速）',
           sub: [
@@ -210,7 +229,78 @@ const ZH = {
         { t: '登记文件（v2.9.0 更新）', d: '①「文件分类」留空时自动归入「登记文件/当前年/当前月」；②在后台文件管理页点「登记文件」，会把当前所在目录自动填进分类；③前台登记成功后，首页文件列表立即出现这条记录（带服务端签发的外链），无需刷新；④外链按「内网通信域名 → 公开访问域名 → 上传接口地址」顺序匹配源地址，命中后剔除该段、剩下的作为存储路径，三段都匹配不上则登记失败并给出原因。' },
         { t: '重命名（v2.9.0 修复）', d: '详情页的重命名输入框已改为只读：只能点按钮生成 48 位大小写 + 数字随机 File_ID，且会与库内已有名称比对去重，不能手动输入。重命名现在只改文件的显示名称（File_ID），不会再清空分类、也不会把文件移到根目录。' },
         { t: '顶栏按钮统一（v2.9.0）', d: '「刷新 / 回收站 / 声音」改为与「筛选」同款样式（透明底、32×32、图标主题色）；「新建目录 / 登记文件 / 历史记录」改为与「排序」同款配色；手机上这几个按钮的内外边距一并收窄并整体靠右。' },
-        { t: '搜索范围入口（v2.9.0）', d: '原来搜索图标下拉里的「展示文件夹 / 全部展开」已迁移到卡片 / 列表视图切换按钮后面，改为两个独立图标按钮（文件夹树 / 列表），当前生效的一个高亮。' }
+        { t: '搜索范围入口（v2.9.0）', d: '原来搜索图标下拉里的「展示文件夹 / 全部展开」已迁移到卡片 / 列表视图切换按钮后面，改为两个独立图标按钮（文件夹树 / 列表），当前生效的一个高亮。' },
+        { t: '展示文件夹 / 直接展开与加载更多（v3.0.0）', d: '「展示文件夹」模式下目录以卡片呈现、进入目录才看到文件；「直接展开文件」则忽略目录层级平铺全部文件。长列表先渲染最近一段，向下滚到底部自动加载后续文件，向上回到顶部会补加载更早的一段（双向懒加载），数据量很大时依然流畅。' },
+        { t: '批量编辑：原名 / 限时 / 重定向 / 加密（v3.0.0）', d: '勾选多个文件后可一次性完成：批量改「原名」（沿用原文件名，自动保留扩展名，只改主名）、设置限时（到期外链失效）、开关重定向、加密 / 解密 —— 三合一在同一弹窗里提交，确认统一在底部批量操作栏。' },
+        { t: '标签管理模式（v3.0.0）', d: '标签管理改为三列卡片布局（全部标签 / 编辑区 / 预览），顶部可搜索标签；支持把标签拆分成多个、给标签写备注、给标签开启对外分享，同时保留拖拽排序、标签加密、合并与批量打标 / 摘除。标签卡片显示为「标签名称 (数量)」单行（如 风格 (12)），数量紧跟名称；属性弹窗里「标签对外分享」位于「备注」之前。' },
+        { t: '文件夹属性（v3.0.0）', d: '目录右键 / 更多菜单打开「文件夹属性」：改名、共享（生成共享入口）、对外分享（生成访客图库链接）、备注，以及整目录加密。' },
+        { t: '目录导航「当前 / 全局」（v3.0.0）', d: '目录下拉可在「当前实例的目录」与「全站目录」之间切换：选「当前」只列本实例已有的目录，选「全局」可看到全站目录，方便跨实例对照路径与移动文件。' },
+        { t: '实例切换收进页面切换下拉（v3.0.0）', d: '文件管理页的实例切换不再单独占一个按钮，已并入顶部「页面切换」下拉：切换后列表 / 筛选 / 批量操作都只作用于所选实例内的文件。' },
+        { t: '移动端返回键回上一级（v3.0.0）', d: '手机浏览器里进入某个目录后按系统返回键，回到上一级目录而不是直接退出文件管理页。' },
+        {
+          t: '对外分享：目录与标签（v3.0.0）',
+          sub: [
+            '目录、标签都可单独开启「对外分享」：开关 + 访问密码（可留空 = 不加密）+ 时限（到期链接自动失效）。',
+            '目录分享访问地址：/browse/用户名/实例序号/cate/目录路径',
+            '标签分享访问地址：/browse/用户名/实例序号/tag/标签名',
+            '实例序号规则：0 = 默认实例，1..n 按实例创建时间升序（与上传页头像角标一致）；切换实例后同一目录 / 标签的地址会随之变化。'
+          ]
+        },
+        { t: '分享记录页（v3.0.0）', d: '文件管理 → 分享记录：逐条启用 / 停用、设置或更换访问密码、加密、删除，支持批量（启用 / 停用 / 加密 / 删除），并可按用户与实例筛选，便于集中清理过期分享。' },
+        { t: '访客图库改为只读（v3.0.0）', d: '访客通过分享链接进入图库只能浏览：原目录输入框已移除，无法手动跳到其它路径，也看不到任何管理操作。' },
+        { t: '文件外链密码只认文件自身（v3.0.0）', d: 'v3.0.0 起文件外链的密码只看「文件自己的加密」：目录加密、标签加密不再影响 /file 外链，它们只决定访客图库 / 分享页里的可见性。给整个目录加密码后外链仍然不需密码。' },
+        { t: '筛选的「且 / 或」（v3.0.0）', d: '多条件时的全局开关（旧称「同时 / 任意」）决定不同筛选分区之间是全部命中还是任一命中；标签页里另有只作用于标签名的「且 / 或」，两者互不影响。' },
+        { t: '用户共享筛选与已加密筛选（v3.0.0）', d: '筛选弹窗的用户维度新增「我共享的 / 共享给我的」两种口径；「常规」页新增「已加密」（已加密 / 未加密）条件，便于快速挑出待加密或已加密的文件。' },
+        { t: '详情页：处理记录分组（v3.0.0）', d: '「处理记录」按类别分组显示：失败 / 重试 / WebP / 压缩 / 转码，每组只列与该文件相关的条目（重试次数、失败原因、自动切换到的渠道、状态与耗时、未执行原因），没有记录的组不显示。' },
+        { t: '详情页：压缩「是否触发」的三种情形（v3.0.0）', d: '压缩一栏会写明到底有没有执行：①未开启压缩（全局 / 账户关闭了压缩，或该格式在「禁止压缩格式」里）；②因走 WebP 跳过（已成功转 WebP，不再重复压缩）；③未达阈值（原始体积小于压缩阈值，不触发）。' },
+        { t: '详情页：所属实例 / 加密 / 有效期 / 分享图（v3.0.0）', d: '详情页新增「所属实例」与「文件加密」两行；「有效期」移到分隔条上方的独立一行（与重定向、处理记录并列，更好读）；分享卡片的缩略图固定 3:4 比例。' },
+        { t: '灯箱：自动隐藏 / 长按 3 倍速 / 目录按钮（v3.0.0）', d: '操作 2 秒后灯箱控件自动淡出（触摸或移动立即恢复）；长按图片以 3 倍速浏览、松手复原；顶部新增「目录」按钮直达当前页图片列表；「实际大小」模式下图片居中置顶显示；按返回键 / Esc 退出灯箱。' },
+        { t: '目录共享的加载规则（v3.0.0 第三轮）', d: '目录「对用户共享」后，共享内容不再自动混进普通列表 —— 被共享人必须通过「筛选 → 用户共享 → 共享给我的」才会加载（含子目录）；共享文件在卡片视图右下角、列表视图名称下一行存储渠道简称后面显示「共享」标识（悬停可见共享人）。被共享用户点开共享文件也能正常预览，不会再因管理端链接校验被 401 挡住。' },
+        { t: '搜索 / 筛选自动展开（v3.0.0 第三轮）', d: '提交搜索或筛选时，若当前处于「展示文件夹」模式，会自动切换为「直接展开文件」，避免结果被折叠进目录里；手动切回「展示文件夹」后，系统会记住这个选择、后续提交不再自动切换。' },
+        { t: '移动端文件管理（v3.0.0 第三轮）', d: '①搜索框回车提交在手机上同样生效（部分输入法漏发按键事件的问题已修复）；②右上「新建目录 / 登记文件 / 历史记录」改为纯图标按钮；③「页面切换」按钮的实例序号改为悬浮在按钮图标右上角的小角标，不再把名称挤成省略号。' },
+        { t: '批量设置（v3.0.0 第三轮）', d: '勾选多个文件后的「限时 / 加密 / 重定向」批量弹窗统一更名为「批量设置」，页签顺序调整为 限时 → 加密 → 重定向。' },
+        { t: '详情页加载项顺序（v3.0.0 第三轮）', d: '固定为：文件名 → 文件类型 → 文件大小 → 文件尺寸 → 文件分类 → 文件标签 → 文件状态 → 所属实例 → 存储渠道 → 备份渠道 → 上传用户 → 上传方式 → 上传时长 → 上传速度 → 上传 IP → 访问次数 → 上传时间 → MD5 → 文件加密 → 重定向。另外，关闭详情页时正在播放的视频 / 音频会立即停止。' },
+        { t: '灯箱滑动翻页（v3.0.0 第三轮）', d: '手机上图片处于「实际大小」或被放大时，左右滑动用于移动图片，不再触发上一张 / 下一张；只有「适应窗口」状态下滑动才会翻页。' },
+        { t: '登记文件：带参数的源地址（v3.0.0 第三轮）', d: '源地址里的查询串（如 …/api/thumbnail?key=abc&size=preview&c=1&edited=true）会完整保留，外链拼回时同样带全参数，不再被截断；路径段是 thumbnail / preview / original 这类动作词时，还会继续从查询参数里识别真实文件名（如 key=2026/abc.webp → abc.webp）。' },
+        { t: '共享标识双端显示（v3.0.0 第七轮）', d: '「共享」标识现在对发起方与接收方都显示：目录卡片与文件行（卡片右下角 / 列表渠道简称后）都会打标，悬停可见共享人；此前接收方的标识不显示，是前端把后端算好的共享字段丢掉了，已修复。「全部实例」范围下标识同样不丢。' },
+        { t: '数量统计一键清空（v3.0.0 第七轮）', d: '右上角「数量统计」改为可点按钮：没有任何搜索 / 筛选 / 标签 / 用户条件时显示文件总数；一旦存在条件（按钮点亮），点一下即清空全部搜索、#标签、-标签、筛选弹窗条件、用户筛选并退出搜索模式（回收站内则回到全部回收站文件），并有成功提示。' },
+        { t: '目录导航悬停展开（v3.0.0 第七轮）', d: '桌面端把鼠标悬停在「目录导航」上（约 0.3 秒）即自动展开下拉并加载全站目录，无需先点击；移开或选中目录后自动收起。触屏与窄屏（≤1023px）不启用，仍为点击展开。' },
+        { t: '顶栏角标与状态配色（v3.0.0 第七轮）', d: '①回收站按钮在回收站模式下加橙红圆点，激活时底色变淡红、图标变红；②「标签」按钮字号调大、橙红圆点更醒目；③筛选角标在手机上缩小一号不再喧宾夺主；④手机端筛选弹窗底部「且/或」开关靠左对齐、不再居中。' },
+        { t: '移动端第二行背框（v3.0.0 第七轮）', d: '手机端工具行（勾选 / 视图 / 排序 / 目录 / 新建那行）的玻璃背框圆角收到 5px、上下内边距 4px、左右 3px，与顶栏的间距收紧；展开移动端搜索框时搜索区占据第一行、第二行整体下移让位，不再互相遮挡。' },
+        { t: '灯箱：防误触 / 全屏 PDF / 表格预览（v3.0.0 第七轮）', d: '①txt、PDF、音频、表格与其它非媒体类型统一改为铺满整屏的透明底，点空白处只恢复控件、不再误关灯箱（点关闭按钮或 Esc 才退出）；②PDF 阅读区全屏铺满，顶栏改为悬浮渐变层；③CSV / TSV 文件可直接在灯箱里以表格浏览（表头固定、行列均可滚动），文本预览同样生效。' },
+        { t: '文件夹共享权限：开关 + 只读 / 可编辑（v3.0.0 第八轮）', d: '文件夹属性的「共享」改为开关：打开后选共享给哪些用户，并选择权限 —— 「可编辑」对方能进目录、能改属性，但删不掉目录；「只读」对方连选择圆圈和属性入口都没有，点名称只会进入目录，单击会有只读提示。任何共享接收方（无论可编辑还是只读）都删不掉共享目录，前端隐藏按钮只是体验层，后端也会拒绝并说明是谁共享给你的。共享方自己不受影响 —— 自己的目录、目录里的文件照常可删除，权限限制只作用于接收方。' },
+        { t: '文件评分与等级（v3.0.0 第八轮）', d: '文件详情页新增两行：评分（五颗星，支持半星，可清除）与等级（五个爱心，1–5，再点一次取消）。评分 / 等级是独立字段（不写进备注），保存后立即入库；权限与备注一致 —— 文件作者本人或管理员可以改，其他共享接收方只读。' },
+        { t: '筛选「评级」页（v3.0.0 第八轮）', d: '筛选弹窗新增「评级」页：评分快捷（5 星 / 4 星以上 / 3 星以上 / 未评分）、等级快捷，以及评分与等级的自定义范围（0–5，评分支持 0.5 步进）。注意「未评分」是精确等于 0（范围两个框都填 0），不填任何范围则表示不限。列表与回收站都支持该筛选。' },
+        { t: '灯箱七项增强（v3.0.0 第八轮）', d: '①Markdown 文件在灯箱里可按「目录大纲」跳转（顶栏大纲按钮，点标题滚到对应位置）；②PDF 顶部是固定的关闭行（不会随控件自动隐藏而消失），底部有本页 PDF 文档导航（桌面端）；③手机端关灯箱不再误触「返回上一级」目录；④音频打开与切集都会自动播放；⑤顶栏关闭按钮左侧新增「详情」按钮，任意形态都能直接跳到文件详情；⑥图片的「实际大小 / 适应窗口」移到缩略图行上方居中，两侧多了放大 / 缩小按钮（每次 10%）；⑦视频右下角新增「抓拍」按钮，把当前画面存成 PNG 下载。' },
+        { t: '灯箱：图片铺满 + 抓拍与详情（v3.0.0 第九轮）', d: '①图片默认可用区域扩大到「标题行 ~ 缩略图行」之间（缩放栏不再独占一行），缩小 / 尺寸切换 / 放大三个按钮改为浮动在图片上层；②PDF 灯箱下方的文档导航行跟随控件一起淡出（顶栏关闭行保持可见）；③视频「抓拍」从右下角移到右上「详情」按钮左侧，「更多设置」与「下一页」、视频「目录」与「上一页」垂直居中对齐；④抓拍文件名直接用原文件名（重名自动加 (1)(2) 序号）；⑤抓拍保存后弹窗询问是否一键上传到图床；⑥点「详情」不再关闭灯箱，详情弹窗叠在灯箱上层（关闭详情后灯箱原样保留、视频继续播放）。' },
+        { t: '渠道设置改名与回收站图标（v3.0.0 第九轮）', d: '系统管理里的「上传设置」标签页正式改名为「渠道设置」（相关提示同步更新）；各渠道类型的「对象前缀」统一改名为「自定义存储前缀（可选）」；回收站「恢复」按钮补上图钉图标（此前 undo 图标未注册，按钮没有图标）。' },
+        { t: '文件管理：评级筛选与卡片角标（v3.0.0 第九轮）', d: '①评分 / 级别快捷项改为六档（五星 / 四星及以上 / 三星 / 两星 / 一星 / 未评分；五级 / 四级及以上 / 三级 / 两级 / 一级 / 未评级）；②「评级」页移到「标签」页之后；③卡片左下角显示空星星与空爱心（有值时数字叠在图标中间），列表与卡片上的小眼睛 / 悬停预览全部移除；④渠道名称筛选不再出现「本地文件」；⑤移除顶部哨兵自动补载，只保留「加载更多」按钮；⑥目录导航按钮文本直接显示完整路径（桌面面包屑已删）；⑦第二行上下间距减半、移动端数量统计与历史记录按钮等高（28px）。' },
+        { t: '存储通用设置与三域名模型（v3.0.0 第十轮）', d: '①「上传数据设置」改名为「存储通用设置」，「自定义访问域名」改名为「外链访问域名」——全站文件外链的签发域名都取它，未配置时按「X-Forwarded-Host → Host → localhost」动态推断；它只影响本站签发的外链，不会覆盖各渠道自己的「公开访问域名」。②三层域名各司其职：外链访问域名（本站 /file 出口）／文件加载域名（每渠道，代理模式优先「内网通信域名」，未配置回落「公开访问域名」）／公开访问域名（详情页存储·备份渠道与 302 目标）。③简单图床、兰空、Immich、MinIO、R2、WebDAV、自定义 Web 的「公开访问域名」改为必填（存量渠道保存时若为空，后端会用 Endpoint 站点源自动补齐，不会被打回）。④WebDAV 的「存储目录」并入「自定义存储前缀」，新配置只需填一项。' },
+        { t: '链接只存后半段：域名永不落库（v3.0.0 第十轮）', d: '每条文件副本新增「固化地址」（objectPath，URL 去掉 scheme://host 后的路径）与「文件级查询串」（urlQuery，如 Immich 的 key/size/edited），域名一律不落库。拼接规则统一为「动态域名 + 固化地址 + 查询串」：改域名立即生效；改存储桶 / 自定义前缀 / 自定义命名 / 相册 ID 不影响已落库文件。特殊字符（? = & 与无后缀链接）按 path 与 query 分开处理，逐段编码，不会再被二次编码成 404。' },
+        { t: '登记文件同样剥域名（v3.0.0 第十轮）', d: '登记文件提交后，把「文件源地址」按 URL.host 精确比对当前渠道的加载域名（本地存储渠道则比对本站签发域名），命中即剔除域名段，只把后半段作为固化地址落库；之后域名始终跟随渠道配置。删除登记文件仍然只删数据库记录，绝不动源站文件。' },
+        { t: '去重改为「克隆 + 引用计数」（v3.0.0 第十轮）', d: '命中秒传时不再借用原上传者的外链，而是为本次上传者（含同一账户的不同实例）克隆一条独立记录与副本行（指向同一个远端对象、零字节冗余）。外链密码、限时访问、重定向、链接权限、访问量全部独立；任何一方删除时都会先检查是否还有别的记录引用同一个对象，只有最后一个使用者才真正删除远端文件。' },
+        { t: '内置本地文件渠道 999990（v3.0.0 第十轮）', d: '系统启动时自动创建 code=999990 的「本地文件」浏览渠道，浏览目录固定为内置本地存储的 uploads，不可删除、不可修改目录；管理员另外创建的本地文件渠道（随机 6 位 code）不受影响。' },
+        { t: '删除渠道的拦截更细（v3.0.0 第十轮）', d: '只要数据库里还有该渠道的文件副本就禁止删除，包含正常文件、回收站里的文件与登记文件，不限用户和实例；提示会分别列出副本总数、其中回收站数量与登记文件数量。' },
+        { t: '后台缩略图统一走代理 + 缩放（v3.0.0 第十轮）', d: '文件管理卡片与列表、历史记录、系统状态「最近上传」的图片缩略图统一改为本站 /file 代理 + thumb 参数（固定宽度、cover 裁剪），由服务端用内网通信域名取流并 sharp 缩放，输出长缓存（30 天 immutable）。本地存储渠道的缩略图同样缩放。不依赖管理员浏览器能否直连渠道内网域名。' },
+        { t: '本地存储按自定义命名落盘（v3.0.0 第十轮）', d: '修复本地存储渠道忽略「自定义存储前缀 / 自定义文件命名」的问题：本地渠道此前走的是老格式分支，配置项完全不生效；现在与其他渠道同一套占位符规则（留空时默认 {hash}）。' },
+        { t: '简单图床 / 兰空可删远端文件（v3.0.0 第十轮）', d: '删除文件时会保留并复用上传响应里的删除凭证：简单图床用响应中的 del 地址（带签名 hash，GET 即删），兰空用 data.key 调 DELETE /api/v1/images/:key；此前两者都缺凭证，导致远端文件删不掉。' },
+        { t: '存储前缀与用户归档（v3.0.0 第十一轮）', d: '自定义存储前缀的 {user} 占位符改为直接取当前账户用户名（不再追加随机数字），快捷按钮定为「渠道ID / 用户名 / 年份 / 月份 / 日期」五项，点击把 /{ID}、/{user}、/{y}、/{m}、/{d} 追加到输入框末尾。本地存储渠道前缀留空时默认 {user}/{ID}/{y}/{m}（placeholder 同步）；自定义本地渠道的「存储地址」改为普通输入框（不再锁 autocomplete）。' },
+        { t: '删除链接同样不落域名（v3.0.0 第十一轮）', d: '简单图床上传响应里的删除地址（del）此前把域名整条固化在副本 metas 里，渠道换域名后就成了死链；现在只落路径与查询串（deletePath/deleteQuery），删除时用渠道当前加载域名重新拼装，存量老记录也会按同样规则换域名后删除。' },
+        { t: '本地文件渠道创建修复（v3.0.0 第十一轮）', d: '修复新增「本地文件」渠道时误校验 rootPath 导致无法保存的问题：现在按「浏览目录」（rootPaths，一行一个）校验，宿主机映射目录保持可选；内置本地文件渠道（999990）的浏览目录在编辑页改为只读展示，由系统生成、不可变更。' },
+        { t: 'Immich 登记文件缩略图修复（v3.0.0 第十一轮）', d: '登记的 Immich 文件此前在后台缩略图 / 详情预览图上加载失败：取流时丢掉了分享鉴权 query（?key=…）。现在取流与详情直链一样走「动态域名 + 固化路径 + 完整查询串」，预览恢复正常。' },
+        { t: '前端并发数（v3.0.0 第十一轮）', d: '「其他设置 → 上传相关配置」新增「前端并发数」（位于「失败自动重试」前一行），控制浏览器同时上传的文件数，留空默认 3；每次点「上传 / 转存」前自动刷新，改完立即生效。' },
+        { t: '移动端第二行间距规范化（v3.0.0 第十一轮）', d: '手机上文件管理页的第二行工具栏（全选 / 视图切换）与顶部栏间隔 8px、与下方文件区间隔 10px；吸附在顶栏下方时同样保持 8px，且背框宽度与常态完全一致。向下滚动顶栏收起时第二行跟随收起，滚回原位自动复位。' },
+        { t: '详情三地址口径（v3.0.0 第十一轮）', d: '文件详情页：「存储渠道 / 备份渠道」地址用「公开访问域名」输出（获取对外地址）；「源」地址用「文件加载域名」输出（排查服务端取流）；预览图用本站签发外链加载。后台各页顶栏在页面滚动后背框改为完全不透明（关闭背景模糊），回到顶部恢复玻璃质感。' },
+        { t: '本地文件：多目录路径修复（v3.0.0 第九轮）', d: '修复多浏览目录改造引入的路径重复 bug：子目录里的文件路径曾整段重复（如 lf-test/子目录/子目录/内层.txt）导致预览 404、目录树出现假文件夹。后端列表改为返回「相对当前目录」的路径 + 裸目录名，前端自行拼接；同时移动端目录按钮换成文件夹图标并移到第一行最右，缩略图改为 1:1 正方形。' },
+        { t: '首页与共享（v3.0.0 第九轮）', d: '①手机端拍摄界面改为整屏（100dvh），拍摄按钮收进隐藏区，点画面可切换显隐，打开相机默认后置镜头；②「上传设置」按钮右上角显示所选归属实例序号（默认实例 = 0）；③共享接收方（只读 / 可编辑）在文件详情页看不到编辑 / 删除按钮，批量删除同样被拦截；④邮箱验证码改为 6 位字母或数字均可（后端校验同步放开）。' },
+        { t: '回收站分页与删除转圈（v3.0.0 第十二轮）', d: '①回收站改为服务端分页，每页 48 条（普通文件列表仍为 24 条），支持翻页与「加载更多」追加；②文件管理页与回收站删除 / 恢复 / 彻底删除期间，对应卡片或列表行会覆盖「转圈 + 正在删除…/正在处理…」遮罩，防止重复点击，结束后自动消失；③删除「新建目录」登记的空目录现在会真正删掉（此前只删文件行，空目录永远删不掉），目录属性一并清理。' },
+        { t: '目录改名与目录操作修复（v3.0.0 第十二轮）', d: '①文件夹属性里的「目录名称」现在在文件夹卡片、目录导航（当前路径链 / 全局树）所有位置生效，保存后立即刷新，不改真实路径；②选中文件夹批量移动：移动弹窗直接输入目录名（如「漫画」）即可，无需以 / 开头（系统自动补）；③空目录（新建目录登记的）也能随移动一起搬家；④批量移动成功计数包含目录个数，移动后目录导航自动刷新。' },
+        { t: '灯箱增强（v3.0.0 第十二轮）', d: '①图片 / 视频灯箱宽度 100% 贴屏幕边缘，缩放三按钮去背框；②控件隐藏时键盘方向键静默切换、长按 3 倍速不点亮控件；③移动端上拉随机换一个视频并自动播放、下拉打开文件详情（页面不跟随滚动）；④TXT 灯箱满屏高、字号加大、左对齐，顶部新增「复制全文」；⑤视频「目录预览 / 更多设置」移到底部与翻页按钮同轴；⑥「下一页」下方新增爱心按钮，弹出不退出灯箱的「评分 / 级别 / 标签」面板；⑦PDF 预加载行不再遮挡浏览区；⑧视频抓拍上传失败已修复。' },
+        { t: '影音压缩/转码控制（v3.0.0 第十三轮）', d: '「其他设置 → 上传相关配置」在「前端并发数」下方新增「影音压缩/转码控制」开关（默认开启），开启后显示「load1负载值」（默认 1.5）与「RAM安全值(MB)」（默认 256）两个输入框：视频/音频开始压缩或转码前检测服务器负载与可用内存，load1 超过「倍率 × CPU 核数」或可用内存低于安全值（任一满足）即放弃处理，文件照常上传并保留原文件，原因写入系统日志。两项填 0 表示分别关闭该检测；关闭总开关则完全不做资源检测。图片压缩不受影响；Docker 部署时读数为宿主机（WSL2）数据。' },
+        { t: '跨端体验细修（v3.0.0 第十四轮）', d: '①首页：上传设置「目录树选择」桌面端靠右、手机端目录树可正常加载（超时重试 + 根节点默认展开）、拍摄改为 4:3 竖屏并可连拍、自动复位焦距、每次上传按右上角最新目录分类；②本地文件管理：已落库文件不再重复上传（类型筛选新增「落库」）、目录树支持全部收起/展开、桌面端顶栏常驻吸附、列表视图缩略图前新增常驻选中圆圈；③图床文件管理：回收站可显示已删除文件夹并可同名重建、恢复时自动合并、有文件夹选中时所有文件夹选中按钮显形、筛选新增 TXT/PDF（「其他」不再包含）、文件夹属性默认只读、可编辑共享用户可评分评级、手机端返回键逐级返回上级目录（根目录不再退出页面）；④灯箱：移除爱心收藏、复制按钮移到详情左侧、打开详情自动暂停音视频、手机端上拉随机换图/换音频、抓拍上传不退出灯箱、TXT 满高居中；⑤其他：详情页评分取消半星、未评分/未评级文案、评级爱心默认空心、文件名改为「文件原名」，上传自动打「本地上传 / 视频抓拍」标签并支持从 `#标签` 提取，回收站彻底删除在开启 2FA 时需输入动态验证码。' },
+        { t: '返回键、页面切换与首屏性能（v3.0.0 最终版）', d: '①移动端返回键回到「两层」协议：灯箱内打开文件详情页时，返回只关详情页、再返回才关灯箱、再返回才回上一级目录，任何情况下都不会退出网页；②左上角「页面切换」保持旧版下拉样式，只重做点击命中（按下即跳转 + 4 秒兜底强跳），页面停留或加载后再点也能一次生效，「切换实例」仍在下拉末尾；③视频抓拍：点抓拍即暂停视频、命名「视频原名-时分秒」，上传完成不弹提示，改为面板内「已上传 + 查看」，点查看打开详情且灯箱不退出；④API Token「默认分类目录」支持 {tokenName}/{user}/{y}/{m}/{d} 占位符，编辑弹窗内点击片段即可插入；⑤卡片视图左下角星星 / 爱心的颜色与透明度与上传日期、文件大小一致，数字字号缩小一号且不再加粗；⑥首屏静态资源启用 gzip 压缩并对第三方库分包，入口 JS 从 1.7MB 降到约 117KB；⑦长时间闲置 / 标签页被回收后的自动恢复：入口请求 6 秒兜底挂载、空白页自动重载、懒加载 chunk 失效自动刷新；⑧登录 / 上传 / 管理页背景图输入框改为多行文本；目录选择弹窗层级、摄像头 1 倍焦距、批量标签「提示失败但实际成功」等一并修复。' },
+        { t: '批量选择与播放体验（v3.0.0 第十六轮）', d: '①下载文件改用「文件原名」命名；②图床文件管理页不再自动刷新内容，只有点击刷新按钮或执行操作才更新；③图床文件管理页与本地文件管理页都支持 Shift + 点击批量选中区间（选中后底部出现操作区）；④回收站彻底删除：开启两步验证时只需输入动态验证码，未开启时仍需输入「确认删除」；⑤用户编辑页头像下方新增「上传页背景图 / 管理页背景图」输入框（可填多张、刷新随机一张，设置后覆盖系统网页设置里的同名背景图），用户编辑页也套用与后台一致的背景图样式；⑥视频灯箱：修复切下一个视频后鼠标消失且唤不出控件的问题、桌面端长按鼠标左键 3 倍速播放、设置菜单新增「画面方向（竖屏 / 横屏）」支持横屏播放、抓拍改为灯箱内轻量面板（上传到图床 / 下载 / 取消，不再退出灯箱）；⑦本地文件管理：列表视图修复表头与内容列位错位、选中圆圈固定为独立一列、桌面端目录树面板默认展开；⑨登记文件：源地址输入框加长、文件分类与扩展名等宽并支持记忆（刷新后清空）、分类左侧新增目录选择按钮（与首页上传设置的目录导航一致）。' },
+        { t: '详情渠道地址与灯箱体验（v3.0.0 第十五轮）', d: '①文件详情「存储渠道 / 备份渠道」地址全面改为对外公网域名：immich 一律使用渠道配置的「公开访问域名」，直链拼出内网 IP / 容器名时自动换成公开域名，渠道没有公开域名时显示「暂无对外直链」提示（不再回退本站内网地址）；②回收站恢复文件夹时把目录内文件一并复原（回到原层级），文件行标出原所在目录；③TXT / MD 灯箱铺满整个窗口（上下贴边），标题与右侧按钮浮在正文上层；④凡是能用文本方式打开的文件（html、php、js、yaml、vue、toml…）都进 TXT 灯箱浏览；⑤音频灯箱上下滑动不再带动页面滚动；⑥视频灯箱左下「目录」与右下「设置」按钮上移 10vh；⑦移动端视频抓拍不再自动下载（避免浏览器切走导致灯箱退出），只询问上传、后台完成后提示；⑧本地文件管理：点已落库文件名直接打开图床文件详情页、浏览路径自动记忆（刷新后回到上次目录）、目录树默认全部收起（面板仍默认展开）、首页左右滑动在文件 / 链接模式间轮回切换。' },        { t: '手机端关灯箱不再回上一级（v3.0.0 第八轮）', d: '以前手机上点关闭按钮关掉灯箱，偶尔会连目录一起退回上一级。原因是灯箱关闭时要退掉自己压的历史哨兵（history.back），这个动作会触发一次 popstate，页面把它当成了「用户按了返回键」。现在灯箱退哨兵前会打时间戳，页面在半秒内忽略这类程序触发的 popstate，只在用户真的按返回键时才回上一级目录。' },
       ]
     },
     {
@@ -222,7 +312,8 @@ const ZH = {
         { t: '上传方式（v2.8.6）', d: '每个文件都会记录是从哪个入口传上来的：Default = v2.8.6 之前的历史网页上传；Upload = 上传页「文件」模式；Fetch = 上传页「链接」模式转存；WebDAV / API-Web / API-S3 = 对外通道。文件详情页的「上传方式」字段、文件管理的筛选与系统状态的上传方式分布用的都是这份取值。' },
         { t: '系统日志', d: '记录写操作（上传 / 保存 / 删除）与 4xx、5xx、慢请求；支持按级别、作用域、关键词过滤与导出。' },
         { t: '移动端（v2.8.6）', d: '上传趋势的分组标签一屏放不下时改为左右滑动；历史记录 / 访问记录顶部的搜索与筛选栏随页面滚动，不再常驻占半屏。' },
-        { t: '访问记录时间筛选（v2.8.8）', d: '手机上原来的双月份区间选择器必然溢出屏幕，现改为「按钮 + 单个月份面板」弹窗（与「系统状态 → 趋势预览」用同一个日历面板）；已选区间时按钮高亮并显示起止日期，右侧小叉可一键清空回到「全部时间」。桌面端仍是原来的双日期选择器。' }
+        { t: '访问记录时间筛选（v2.8.8）', d: '手机上原来的双月份区间选择器必然溢出屏幕，现改为「按钮 + 单个月份面板」弹窗（与「系统状态 → 趋势预览」用同一个日历面板）；已选区间时按钮高亮并显示起止日期，右侧小叉可一键清空回到「全部时间」。桌面端仍是原来的双日期选择器。' },
+        { t: '历史记录实例名（v3.0.0 第七轮）', d: '切到「全部实例」时，每条记录下方显示它真实所属的实例名（后端随列表返回实例 ID 与名称），不再一律显示「默认实例」；「默认实例」的记录仍显示「默认实例」。' }
       ]
     },
     {
@@ -233,8 +324,22 @@ const ZH = {
         { t: '白名单模式', d: '开启后只有白名单文件可被访问，其余请求返回白名单提示图。' },
         { t: '放行地址（来源域名）', d: '一行一条「域名:端口」，如 192.168.1.3:5505、img.example.com:8443。按访问来源的域名 + 端口精确匹配，路径与参数不参与；同域不同端口视为不同来源；直接粘贴完整地址会自动截取域名部分。' },
         { t: '图片审查与 IP 查询', d: '上传时自动调用配置的审查渠道给出标签，可据此屏蔽不通过的图片。' },
+        { t: '对外分享权限（v3.0.0）', d: '管理员在后台「分享权限」里决定哪些账户可以创建对外分享；账户级开关在用户编辑页的「对外分享」模块。关闭后该账户看不到分享入口，已建立的分享也不再对外可用（不会删除记录，重新打开即恢复）。' },
+        { t: '用户管理列表（v3.0.0 第三轮）', d: '操作列的「编辑」按钮更名为「管理」；管理员视角下原「类型和大小限制」列已换成「分享权限」开关（控制该账户能否创建对外分享，管理员恒为开启）。单个账户的上传类型与大小限制仍在「管理」页里设置。' },
         { t: 'API Token', d: '为脚本 / 第三方程序签发带权限与有效期的 Token，可随时吊销。支持「S3 协议」与「Web 通用」两种接入方式。' },
         { t: 'Web 通用接入的 compress 参数', d: '在自定义 Body 里带 compress=true 或 1 才会压缩（图片走 sharp、视频/音频走 ffmpeg，gif 自动跳过）；不传则原样上传，不受后台「默认开启压缩」影响。compressPercent 可选，指定压到原体积的百分比（10-100）。' }
+      ]
+    },
+    {
+      id: 'instances',
+      title: '十、多实例方案（v3.0.0）',
+      intro: '实例是文件的「隔离分组」：同一账户可以创建多个实例，把文件按用途分开管理，而渠道与全局配置仍然共用。',
+      items: [
+        { t: '创建 / 邀请 / 加入', d: '用户编辑页「实例管理」：创建实例（名称必填且不可重复，备注仅作者可见）；创建者生成 8 位邀请码发给他人，对方在「加入实例」里填码即可加入，成为成员后可向该实例上传文件。邀请码改为手动生成：打开「邀请」弹窗只回显已有邀请码（没有则显示「尚未生成邀请码」），点「生成邀请码」才创建；生成后长期有效，直到点「关闭邀请」或再次重新生成。' },
+        { t: '数据隔离', d: '每个实例有自己的文件空间：文件、回收站、历史记录按实例隔离，普通成员只能看到自己被加入的实例；内置本地渠道的落盘目录也会按「用户名 / 实例」分开。' },
+        { t: '配置共用', d: '存储渠道、上传相关配置、系统设置仍然是全局 / 账户级的，不会因为切换实例而改变；实例只隔离「文件」这一层。' },
+        { t: '删除前置条件', d: '实例下仍有文件（含回收站）时无法删除，会提示先清空；删除实例只删分组，不会连带删除成员账户。' },
+        { t: '历史记录实例筛选', d: '历史记录页顶部可按实例筛选，默认「全部实例」（不按实例过滤，也不再记住上次选择）；选中某个实例后仅展示该实例的文件记录。列表底部改为「加载更多」按钮手动翻页，不再滚动自动加载。页面默认只加载当前登录账户自己的记录，管理员通过「用户管理 → 按用户收集 → 查看记录」新标签进入时才会带上指定用户。' }
       ]
     },
     {
@@ -259,7 +364,15 @@ const ZH = {
         { t: 'frontend/src/components/config/', d: '系统管理各分区：SysCogStatus（系统状态）、SysCogUpload（存储渠道）、SysCogSecurity（安全设置 / API Token）、SysCogLog（系统日志）、SysCogOthers（其他设置，含对外 WebDAV）、SysCogPage、SysCogAI。' },
         { t: 'frontend/src/utils/', d: '工具：fileManager（列表请求参数拼装）、clipboard（剪贴板兼容层）、fetchWithAuth（带会话的请求）、upload/urlBuilder（四种外链格式生成）。' },
         { t: 'backend/src/common/record-link.ts（v2.9.0）', d: '登记文件的外链规则：recordDomainCandidates 收集渠道的三段域名（内网通信域名 / 公开访问域名 / 接口地址），matchRecordSource 按内容段匹配并剔除命中段得到路径，recordLoadOrigin 决定读取时实际用哪个域名（内网优先，缺省回落到公开 / 接口），joinRecordUrl 拼最终链接。' },
-        { t: 'frontend/src/components/dashboard/MediaPreviewOverlay.vue（v2.9.0）', d: '媒体预览浮层：图片灯箱（幻灯片 / 实际大小 / 缩略图条）、视频播放器（速度 / 单片循环·随机·顺序）、音频播放器（当前页音频列表点播）、其它类型通用弹窗；控件 2 秒自动隐藏。FileCard / FileListItem 的缩略图点击只发 previewMedia 事件，不自己拼链接。' }
+        { t: 'frontend/src/components/dashboard/MediaPreviewOverlay.vue（v2.9.0）', d: '媒体预览浮层：图片灯箱（幻灯片 / 实际大小 / 缩略图条）、视频播放器（速度 / 单片循环·随机·顺序）、音频播放器（当前页音频列表点播）、其它类型通用弹窗；控件 2 秒自动隐藏。FileCard / FileListItem 的缩略图点击只发 previewMedia 事件，不自己拼链接。' },
+        { t: 'backend/src/instances/*（v3.0.0）', d: '多实例方案：instances.controller.ts 暴露 /api/instances 全套接口（列表 / 创建 / 改名 / 删除 / 邀请码 / 加入 / 成员管理），instances.service.ts 负责实例与成员关系、删除前置校验（实例下仍有文件含回收站时拒绝）。' },
+        { t: 'backend/src/files/folder-meta.service.ts（v3.0.0）', d: '文件夹元数据服务：目录的改名、加密、备注、共享与访客图库属性都由它持久化与校验。' },
+        { t: 'frontend/src/components/dashboard/FolderPropsDialog.vue（v3.0.0）', d: '「文件夹属性」弹窗：改名 / 加密 / 备注 / 共享 / 访客图库统一入口。' },
+        { t: 'frontend/src/components/dashboard/ShareDialog.vue（v3.0.0）', d: '「分享」弹窗：生成带缩略图与有效期的分享卡片，复制分享链接。' },
+        { t: 'frontend/src/components/dashboard/TagModePanel.vue（v3.0.0）', d: '标签管理模式面板：拖拽排序、标签加密、合并与批量打标 / 摘除。' },
+        { t: 'backend/src/shares/*（v3.0.0）', d: '对外分享：shares.controller.ts 暴露 /api/shares 全套接口（列表 / 新建 / 编辑 / 批量 enable·disable·password·delete）与访客侧 /api/shares/public/access、/api/shares/public/list；shares.service.ts 负责目录 / 标签分享的密码校验、时限判定、实例序号与访问路径解析，校验通过后种 Cookie goimgbed_share_pw（httpOnly，7 天）。' },
+        { t: 'backend/prisma/compat-sync.js（v3.0.0）', d: '数据库升级兼容脚本：db push 前自动清理会触发唯一约束的历史重复数据（如重复标签并入一条、重复名称补后缀），并在 db push 报唯一约束告警时自动重试，因此升级不再需要手动加 --accept-data-loss。' },
+        { t: 'frontend/src/views/ShareRecordsPage.vue（v3.0.0）', d: '分享记录页：逐条 / 批量启用、停用、加密、删除分享，支持按用户与实例筛选；复用 shares 接口，不单独持有一份状态。' }
       ]
     },
     {
@@ -271,7 +384,7 @@ const ZH = {
         { t: '第二步：理解一次上传', d: '从 POST /upload 进入，读 upload.controller.ts → upload.service.ts 的 upload()：渠道解析 → 去重 → 压缩 → 主渠道上传 → 备份 → 写 FileRecord / FileCopy。' },
         { t: '第三步：新增存储渠道', d: '在 backend/src/adapters/ 加适配器 → adapter.factory.ts 注册 → frontend/src/components/config/channel-schema.js 加配置字段与展示名 → SysCogUpload.vue 的 CHANNEL_TYPES 加类型。' },
         { t: '第四步：新增后台设置项', d: '后台设置走「分区 JSON」：在 sysconfig.service.ts 的 defaults(section) 补默认值，前端对应的 SysCog*.vue 直接读写该分区，无需改数据库。' },
-        { t: '第五步：改数据库结构', d: '改 backend/prisma/schema.prisma → npx prisma db push → npx prisma generate，然后重启后端。' },
+        { t: '第五步：改数据库结构', d: '改 backend/prisma/schema.prisma → npx prisma db push → npx prisma generate，然后重启后端。v3.0.0 起 db push 前会先跑 backend/prisma/compat-sync.js 做兼容清理（合并重复标签等），失败会自动重试，不用再加 --accept-data-loss。' },
         { t: '第六步：新增页面', d: '在 frontend/src/views/ 新建页面 → router/index.js 注册路由并挂对应守卫（userAuthGuard / manageAuthGuard / adminAuthGuard / superAuthGuard）。' },
         { t: '约定（重要）', d: '渠道类型、角色、配置项的前后端字段名必须保持一致；渠道展示名要同时维护 backend/src/common/file-view.ts 的 CHANNEL_LABEL 与 frontend/src/components/config/channel-schema.js 的 CHANNEL_SHORT_LABEL。' }
       ]
@@ -303,6 +416,7 @@ const ZH = {
         },
         { t: '必须持久化的内容', d: 'backend/data（SQLite 数据库）、backend/logs（日志，仅自动保留最近 7 天）。容器部署时对应挂载 ./data 卷。' },
         { t: '升级', d: 'Docker：docker compose pull 后 docker compose up -d --build；非 Docker：重新 build 后端并重启进程，前端重新 build 后覆盖静态目录。' },
+        { t: '数据库升级（v3.0.0）', d: 'v3.0.0 起 db push 前会自动合并重复标签等兼容处理，升级无需手动加 --accept-data-loss；若仍出现唯一约束告警，脚本会自动重试，一般无需人工干预。' },
         { t: '反向代理要点', d: '需要透传 Host、X-Forwarded-For、X-Forwarded-Proto；WebDAV 需要放行 PROPFIND / MKCOL / PUT 等非标准方法（Nginx 默认允许，部分云网关需显式声明）。' }
       ]
     },
@@ -327,7 +441,31 @@ const ZH = {
         { t: '带扩展名访问会不会出问题？', d: '不会。扩展名只用于直观展示类型；代理、302、访问源切换都按 File_ID 处理。' },
         { t: '上传很慢？', d: '主渠道是同步上传；可把主渠道换成带宽更好的渠道，或用备份渠道分担。大文件建议使用对象存储渠道（COS / MinIO / R2 / S3）。' },
         { t: '点缩略图为什么不是打开详情页了？', d: 'v2.9.0 起缩略图 / 封面用于「看内容」（灯箱 / 播放器），文件名才是「管文件」（详情页）。想改名、改标签、看链接，请点文件名。' },
-        { t: '登记文件提示「源地址不属于存储渠道」？', d: '说明这条地址里找不到所选渠道配置的任何一个域名。请确认：①渠道选对了；②源地址确实带着该渠道的「内网通信域名 / 公开访问域名 / 上传接口地址」之一（可以带端口与路径，但主机名必须一致）。三段都对不上时系统不会建记录 —— 因为建了也加载不出来。' }
+        { t: '登记文件提示「源地址不属于存储渠道」？', d: '说明这条地址里找不到所选渠道配置的任何一个域名。请确认：①渠道选对了；②源地址确实带着该渠道的「内网通信域名 / 公开访问域名 / 上传接口地址」之一（可以带端口与路径，但主机名必须一致）。三段都对不上时系统不会建记录 —— 因为建了也加载不出来。' },
+        { t: '实例之间数据隔离吗？配置要重复设置吗？', d: '文件（含回收站与历史记录）按实例隔离，普通成员只能看到被加入的实例；存储渠道、上传设置等仍是全局 / 账户级配置，所有实例共用，无需重复设置。' },
+        { t: '筛选开了「同时」模式，为什么选了图片 + 视频却没有结果？', d: '「同时」表示不同分区条件要全部命中：单个文件的「文件类型」只有一个值，不可能既是图片又是视频。想同时保留两类文件请改用「任意」，或在「文件类型」里多选。' },
+        { t: 'WebP 无损 / 有损怎么选？', d: '无损（默认）画质与原图完全一致，适合截图、设计稿等对画质敏感的场景；有损体积更小（通常再省 20-40%），适合照片类内容。无论哪种模式，转换后体积没有变小都会自动保留原文件。' },
+        { t: '本地渠道改了对象前缀，旧文件还能访问吗？', d: '能。对象前缀只影响「之后新上传文件」的落盘目录，已上传文件的记录里保存的是当时的实际路径，外链照常可访问；新旧文件会分处不同目录层级。' },
+        { t: '目录 / 标签加密了，为什么外链还要输密码？（v3.0.0）', d: 'v3.0.0 起外链只认「文件自身的加密」：给目录或标签加密码只影响访客图库 / 分享页里的浏览权限，不会让 /file 外链也要求密码。如果外链仍然要密码，说明这个文件自己被单独加密了 —— 在文件详情页解除加密即可。' },
+        { t: '对外分享链接打不开怎么排查？（v3.0.0）', d: '按顺序看三处：①该目录 / 标签的「对外分享」开关是否仍为启用（也可能被账户的「对外分享」模块或管理员「分享权限」整体关掉）；②是否已过时限（分享记录页可看到到期时间）；③地址里的实例序号是否正确 —— 0 = 默认实例，1..n 按实例创建时间升序，切换实例后旧地址会指向另一个实例，需按当前实例重新复制链接。若设了访问密码，还需输入正确密码。' },
+        { t: '升级时提示 unique constraint 怎么办？（v3.0.0）', d: '不用手动加 --accept-data-loss。v3.0.0 起 db push 前会自动跑 compat-sync 做兼容处理（例如把重复标签合并成一条），推送过程中若仍触发唯一约束告警会自动重试；只有反复失败时才需要看日志确认是哪张表的重复数据，再手动清理。' }
+      ]
+    },
+    {
+      id: 'localFiles',
+      title: '十六、本地文件系统（v3.0.0 新增）',
+      intro: '「本地文件」页用来浏览服务器（或容器挂载目录）上已有的文件：默认只读，勾选后可一键复制进图床转成正常文件记录。',
+      items: [
+        { t: '新建渠道', d: '系统管理 → 上传设置 → 新建渠道，类型选「本地文件」，只需填「浏览根目录（容器内路径）」，例如 /data；Docker 部署时把宿主机目录挂到这个路径即可。「宿主机映射目录」仅作说明，不参与读写。该类型不参与上传：上传设置、备份渠道、Token 等所有渠道下拉都不会出现它，也不会出现在主渠道 / 备份渠道 / 渠道池里。v3.0.0（R5）起「本地文件」渠道仅管理员可用，不再提供渠道授权。' },
+        { t: '谁可以看', d: '「页面切换」里的「本地文件」入口对管理员恒显示（即使还没有建渠道，页面内会提示先去新建）；普通用户一律不可见 —— v3.0.0（R5）起该渠道不再支持授权，只有管理员能使用。' },
+        { t: '浏览方式', d: '左侧目录树可收起，支持面包屑、双击进目录、类型筛选（图片 / 视频 / 音频 / 文本 / PDF / 其它）、按名称 / 大小 / 修改时间排序、按文件名或路径搜索，以及分页。右上「设置」可改每页条数（默认 48）、单目录读取上限（默认 500）、在线预览大小上限（默认 500MB）。' },
+        { t: '顶栏与吸附（v3.0.0 第七轮）', d: '顶部工具栏：页面切换（含实例）、渠道下拉（选择后记忆，刷新 / 重进沿用，渠道被删或停用自动回落）、右侧依次为「上传到图床」、搜索、类型筛选、排序、升降序、刷新、设置与日间 / 夜间切换。页面向下滚动时顶栏自动上滑隐藏，向上回滚立即吸顶显示；左侧目录树占满视口剩余高度并随页吸顶，不再跟随页面滚动。目录树收起按钮改为固定尺寸的独立小方块，收起后不再被压扁变形。' },
+        { t: '视频缩略图与多选（v3.0.0 第七轮）', d: '视频文件直接用画面帧做缩略图（浏览器加载视频元数据后定位到第 0.5 秒画面），不再是灰色图标；每个文件左上角有多选勾选框，勾选后可批量「上传到图床」，点击勾选框不会误触发预览。' },
+        { t: '预览与下载', d: '图片 / 视频（支持拖动进度，走 Range）/ 音频 / PDF / 文本（txt、md、json 等，超过 200KB 截断）可直接预览，其它类型点缩略图即下载。预览接口只接受「渠道 ID + 相对路径」，必须登录会话，且不计入文件访问统计。' },
+        { t: '上传到图床', d: '勾选文件后点「上传到图床」，选目标渠道 / 归属实例 / 上传目录，逐个文件走主上传链路（MD5 去重 → 压缩或转码 → 写渠道 → 落库 → 签发外链），源文件不做任何修改。结果弹窗逐条列出文件 ID 与外链（可一键复制）、命中去重被跳过的项、失败项（可一键重试）。' },
+        { t: '已入库角标', d: '目录里已经上传过的文件会带「已入库」角标：先按文件大小比对，大小相同的再算 MD5，命中即标记，鼠标悬停可看到对应文件 ID。判断只做读取，不会改动源文件。' },
+        { t: '安全边界', d: '根目录必须存在且是目录，读取前用 realpath 复核（防符号链接绕过）；所有相对路径都会拒绝「..」与隐藏路径段，越界直接报错。.env、.git、node_modules 以及「#」开头的名称一律不列出、不可访问。本页只读：不提供删除、改名、移动，任何写操作都只发生在「上传到图床」这一条链路上。' },
+        { t: '手机端抽屉与分页（v3.0.0 第八轮）', d: '手机上目录树收进左侧抽屉（顶部按钮打开），顶栏改为两行：第一行页面切换与渠道，第二行搜索 / 类型 / 排序 / 刷新，搜索改为按钮展开以省出横向空间。列表默认每页 50 条、单目录最多读取 200 条，超出用底部「加载更多」逐段追加；文件名按「开头 + 结尾」中段省略，扩展名始终可见。' },
       ]
     }
   ]
@@ -366,7 +504,14 @@ const EN = {
         { t: 'New filter fields (v2.8.9)', d: 'In General: Validity (limited / expired / permanent) below Redirect, and Name Status (renamed / original name) below Backup status. In Size: a Current size / Original size basis switch (default Current), and clicking a preset now fills the custom inputs with the value converted to a suitable unit. The tab strip scrolls horizontally on phones.' },
         { t: 'Upload directory option (v2.8.9)', d: 'When Upload-related config → Upload directory option is off, the folder input in the top right of the upload page and the directory picker in the bottom right toolbar are both hidden (previously only the suggestions were disabled).' },
         { t: 'Mobile header (v2.8.9)', d: 'In the admin file manager on phones: the sound toggle moves into the More menu (above the language item, labelled Enable sound / Mute sound), a Search button appears left of Refresh and expands the search box (collapsed again after a reload), and Filter follows it. On desktop the Refresh / Trash / Sound buttons get 4px more spacing on each side.' },
-        { t: 'Register file improvements (v2.8.9)', d: 'The register dialog gains an optional Extension: use it when the source URL has no extension (e.g. Immich /api/assets/xxx); when the URL already has one the URL wins. Channel domains are no longer hard-coded — every access address in the channel config (public / internal / endpoint) is read, and when the host matches and there is no query string only the object path is stored, so the link is signed from the channel configuration exactly like a normal upload. External addresses keep their absolute URL.' }
+        { t: 'Register file improvements (v2.8.9)', d: 'The register dialog gains an optional Extension: use it when the source URL has no extension (e.g. Immich /api/assets/xxx); when the URL already has one the URL wins. Channel domains are no longer hard-coded — every access address in the channel config (public / internal / endpoint) is read, and when the host matches and there is no query string only the object path is stored, so the link is signed from the channel configuration exactly like a normal upload. External addresses keep their absolute URL.' },
+        { t: 'Mobile swipe gestures (v3.0.0)', d: 'On phones the upload page list items support left/right swipes to quickly flip between entries and jump between the file-upload and link-transfer inputs, without tapping the top toggle.' },
+        { t: 'Auto config refresh before upload (v3.0.0)', d: 'When the upload page opens and again right before each submit, the frontend re-fetches the latest settings (channels, compression / WebP / naming). Admin changes apply without the user manually reloading.' },
+        { t: 'WebP conversion mode (v3.0.0)', d: 'When the WebP Conversion master switch is on, a WebP Conversion Mode item appears underneath (Lossless / Lossy, default Lossless); the upload settings can override it with Follow global / Lossless / Lossy. Lossless keeps the exact quality (slightly larger); lossy is smaller with minor quality loss. WebP and compression share the keep-the-original-if-bigger policy: if the result is not smaller, the original file is uploaded.' },
+        { t: 'Instance switch (v3.0.0)', d: 'The avatar at the top-left of the upload page opens the Switch Instance dialog (default instance plus instances you own or joined); the small badge on the avatar is the number of the current instance. The choice is stored locally (localStorage goimgbed_instance_id) and subsequent uploads belong to that instance. The dialog footer also links to User Management and instance management. Each instance name in the dialog is prefixed with its number (the default instance shows none).' },
+        { t: 'Register file (v3.0.0)', d: 'Domain matching now behaves the same for every channel: the source URL is tried against internal domain → public domain → Endpoint / service address, automatically falling through when one is empty. The file name prefers the real source file name and only falls back to "record-<timestamp>" when none can be read.' },
+        { t: 'Camera capture with a live preview (v3.0.0 R8 / R8.1)', d: 'The camera button above Register file opens a real live camera preview (not a file picker): press Capture and the photo goes into the normal upload pipeline - uploaded immediately in auto mode, queued in manual mode; front and rear lenses can be switched. When the browser cannot use a camera or the page is not HTTPS, the dialog explains why and offers Use system camera (phones open the camera app directly).' },
+        { t: 'Owner instance in upload settings (v3.0.0 R8)', d: 'Upload settings gains an Owner Instance dropdown under the backup channel: follow the current instance, force the default instance, or pin a specific one. The choice is saved with the upload settings and applies to every upload from that page (single file, chunked upload, link transfer).' },
       ]
     },
     {
@@ -397,9 +542,21 @@ const EN = {
         { t: 'Custom Web channel', d: 'Only three things are required: upload endpoint, file form field name and response URL path. Use the custom headers / extra form fields JSON for auth or extra params. Legacy token/headers/extraFields fields are still accepted.' },
         { t: 'Main & backup channel', d: 'The main channel uploads synchronously (drives latency); the backup channel is written asynchronously and never blocks the response. Each channel can be enabled independently.' },
         { t: 'Disabled channels (v2.8.6)', d: 'Turning a channel off removes it from every channel dropdown / picker (upload settings, tokens, user management, status page) and it no longer accepts uploads from any source: web, WebDAV or API requests that name it explicitly get a clear "channel disabled" error instead of silently landing on another channel.' },
-        { t: 'Public / internal domain (v2.8.7)', d: 'Channel domain fields are now uniformly labeled "public access domain". EasyImages, Lsky, Immich, MinIO, S3, WebDAV and custom Web channels also support an optional "internal communication domain": set it to a container IP or container name and every internal file load (file manager, detail, history, public gallery, proxy fetching for issued links) prefers the internal address - faster and saves public traffic; falls back to the public domain, then the endpoint. The detail page "storage / backup channel" source links always use the public domain, and 302 redirect mode also uses the public domain.' },
+        { t: 'Public / internal domain (v2.8.7)', d: 'Channel domain fields are now uniformly labeled "public access domain". EasyImages, Lsky, Immich, MinIO, S3, WebDAV and custom Web channels also support an optional "internal communication domain": set it to a container IP or container name and every internal file load (file manager, detail, history, public gallery, proxy fetching for issued links) prefers the internal address - faster and saves public traffic; falls back to the public domain, then the endpoint. The detail page "storage / backup channel" source links always use the public domain, and 302 redirect mode also uses the public domain. Since v3.0.0 a MinIO channel expects a bare domain in both fields — do not append /bucket. The bucket is inserted by the backend when building the link, so the final address is always domain/bucket/object-prefix/file (e.g. https://minio.example.com/imgbed/2026/10/xxx.png). Stored object keys never contain the bucket (the S3 API takes Bucket separately; repeating it in the key would create bucket/bucket/...), so the bucket is added only at link-building time — consistently for streaming, 302 redirects and the detail-page source link. Legacy values that still contain /bucket are stripped on read, and legacy registered files whose key lacks the bucket get it added, so neither form produces a duplicated bucket.' },
         { t: 'Quota', d: 'Enable the quota switch to reveal the limit and alert threshold. Channels above the threshold stop receiving new uploads.' },
+        { t: 'Local storage channel (v3.0.0)', d: 'Besides the built-in local channel you can now add a Local storage (custom path) channel: the storage address is a path inside the container (rootPath, pick a suggestion like /data, /app/uploads, /mnt or type your own), with an optional host-mapped directory (hostPath). Object prefix and custom naming work like any other channel, and a size limit can be enabled.' },
+        { t: 'Built-in local channel path rule (v3.0.0)', d: 'The built-in channel (ID 999999) has a fixed storage address uploads (not editable). Files land as uploads / username / instance / object prefix: grouped by uploader first, then by instance when multi-instance is used, then the object prefix.' },
+        { t: 'Multiple browse roots for local storage (v3.0.0 R8)', d: 'A Local files channel can now define several browse roots (one per line). The Local Files page lists all of them in the folder tree and switching a root only swaps the tree - the page is not rebuilt. Old single-root configs are read as a one-element list, so no migration is needed; the in-library check compares full paths, so roots never shadow each other.' },
+        {
+          t: 'Placeholder variables (v3.0.0 / expanded in round 9)',
+          sub: [
+            'Custom storage prefix supports: {y} year (4 digits), {m} month (2 digits), {d} day (2 digits), {ID} channel ID, {user} uploader name + 3 random digits (abc123 becomes abc123524), {domain} channel public domain (empty when not configured). Quick buttons next to the field (Channel ID / Username / Domain / Year / Month / Day) append the placeholder, including its leading slash.',
+            'Custom naming supports: {hash} first 16 chars of the content hash, {filename} original name (no extension, sanitised), {uuid} random UUID (unique ID), {md5} file MD5, {timestamp} 13-digit millisecond timestamp, {ext} extension. Quick buttons: Hash / Filename / Unique ID / MD5 / Timestamp / Extension (inserts .{ext}).',
+            '{filename} keeps only letters, digits, CJK characters, - _ and .; leading and trailing spaces are trimmed and inner spaces become -. When the template omits {ext} the original extension is appended automatically; an empty template now falls back to {hash} (first 16 chars of the content hash).'
+          ]
+        },
         { t: 'Test connection', d: 'Use "Test connection" when adding or editing a channel; a successful test returns a clickable direct link.' },
+        { t: 'Unified field name "Endpoint / service address" (v3.0.0)', d: 'The field that used to be called Upload API address, service address or WebDAV address depending on the channel type is now uniformly labelled Endpoint / service address in every channel. Meaning and validation are unchanged (the upstream address of object storage, WebDAV and custom web channels) and existing values are kept as-is — nothing to migrate.' },
         {
           t: 'LAN / internal addresses (faster uploads)',
           sub: [
@@ -466,6 +623,11 @@ const EN = {
         { t: 'View count', d: 'Incremented on every real external access; admin previews are excluded so refreshing the console does not inflate it. Hover a card to see it, or check the list column.' },
         { t: 'Preview eye (v2.8.6)', d: 'The eye icon on the left of a card\'s third row: hover on PC to preview the full image/video; long-press on mobile to preview (centered, release to close). In list view, long-press the thumbnail on mobile for the same preview.' },
         { t: 'Trash (v2.8.6)', d: 'The trash banner clearly states files can be restored or permanently deleted (irreversible), highlighted with a stronger background.' },
+        { t: 'Trash pagination & delete spinner (v3.0.0 R12)', d: '① The trash is now server-paginated at 48 items per page (the normal file list stays at 24) with pager and "load more" appending; ② while deleting / restoring / purging in the file manager or trash, the affected card or row is covered by a spinner mask ("Deleting… / Processing…") to prevent double clicks; ③ registered empty folders can now really be deleted (previously only their files were trashed and the folder stayed), together with their folder properties.' },
+        { t: 'Folder rename & folder operations fixed (v3.0.0 R12)', d: '① The custom folder name from Folder properties now applies everywhere — folder cards, directory navigation (current chain / global tree) — and takes effect immediately after saving (the real path never changes); ② batch-moving folders accepts plain folder names like "Manga" without a leading slash (auto-prefixed); ③ registered empty folders move together with the batch move; ④ the success count includes folders and the directory navigation refreshes afterwards.' },
+        { t: 'Lightbox enhancements (v3.0.0 R12)', d: '① Image / video lightbox spans 100% width edge-to-edge and the zoom buttons lose their shared frame; ② arrow keys stay silent while controls are hidden and 3× long-press no longer lights them up; ③ on mobile, swipe up plays a random video and swipe down opens the file detail without scrolling the page; ④ the TXT lightbox is full-height with larger left-aligned text and a "copy all" button; ⑤ video "TOC / settings" buttons align with the prev/next arrows; ⑥ a heart button below "next" opens a rating / level / tags panel without leaving the lightbox; ⑦ the PDF preload strip no longer covers the viewing area; ⑧ the video snapshot upload failure is fixed.' },
+        { t: 'Media compress/transcode guard (v3.0.0 R13)', d: 'Under Other settings → Upload config, a new "Media Compress/Transcode Guard" switch (on by default) sits below Frontend Concurrency. When on it reveals two inputs — "load1 Load Factor" (default 1.5) and "RAM Floor (MB)" (default 256): before compressing or transcoding a video/audio file the server checks load and free memory; if load1 exceeds factor × CPU cores OR free memory is below the floor, the job is skipped, the file uploads normally with the original kept, and the reason is logged. Set either input to 0 to disable that check; turn the master switch off to skip all resource checks. Image compression is unaffected; in Docker the readings reflect the host machine (WSL2).' },
+        { t: 'Cross-device polish (v3.0.0 R14)', d: '① Home: the upload directory row is right-aligned on desktop, the mobile directory tree loads reliably (timeout + retry, root expanded), capture uses a 3:4 portrait frame with burst shooting and reset zoom, and every upload re-reads the directory box; ② Local files: files already in the library are skipped (new "In library" filter), the tree can collapse / expand all, the desktop top bar stays pinned, and list rows get a permanent select circle; ③ File manager: deleted folders appear in the trash and can be recreated (restoring merges contents), selecting one folder reveals every folder checkbox, filters add TXT/PDF ("Other" excludes them), folder sharing defaults to read-only, edit-share users can rate, and the mobile back button walks up one directory at a time (root no longer leaves the page); ④ Lightbox: the favourite heart is gone, copy sits left of details, opening details pauses audio/video, mobile swipe-up picks a random image/audio, snapshots upload in the background without closing, TXT is full-height and centred; ⑤ Misc: whole-star rating only, "No rating / No level" wording, outline hearts by default, "Original Name" label, automatic "Local upload / Video snapshot" tags plus `#hashtag` extraction, and a 2FA prompt before purging trash.' },
         { t: 'File names (v2.8.6)', d: 'Cards / list / history / public pages all use the same middle-ellipsis: head and tail (with extension) are always kept.' },
         { t: 'Views & batch actions', d: 'Card / list views; batch copy links, download as zip, move, tag, block/whitelist, delete, and backup selected.' },
         { t: 'Click actions (v2.9.0)', d: 'Card cover / list thumbnail opens the media viewer (image lightbox, video player, audio player, or a generic dialog for other types); the file name still opens the file detail page. The hover-preview eye is unchanged.' },
@@ -480,7 +642,71 @@ const EN = {
         { t: 'Registered files (v2.9.0)', d: '① An empty folder field now defaults to "Record/current year/current month"; ② opening the dialog from the admin file manager prefills the current directory; ③ after registering on the upload page the record appears in the file list immediately with its signed link, no refresh needed; ④ links are resolved by matching the source URL against internal domain → public domain → API endpoint, dropping the matched part and keeping the rest as the storage path; if none matches, registration fails with a clear reason.' },
         { t: 'Rename (v2.9.0 fix)', d: 'The rename input is read-only: the button generates a 48-character random File_ID (upper/lower case + digits) that is checked against existing names, and typing is no longer possible. Renaming only changes the display name — it no longer clears the folder or moves the file to the root.' },
         { t: 'Toolbar buttons (v2.9.0)', d: 'Refresh / Trash / Sound now share the Filter button style (transparent, 32×32, themed icon); New folder / Register file / History share the Sort button palette; on phones their padding and margins are tightened and the group is right-aligned.' },
-        { t: 'Search scope entry (v2.9.0)', d: 'The "show folders / expand all" items that used to hide in the search icon dropdown moved next to the card/list switch as two icon buttons (folder tree / list), with the active one highlighted.' }
+        { t: 'Search scope entry (v2.9.0)', d: 'The "show folders / expand all" items that used to hide in the search icon dropdown moved next to the card/list switch as two icon buttons (folder tree / list), with the active one highlighted.' },
+        { t: 'Show folders / expand all & load more (v3.0.0)', d: 'In "show folders" mode directories render as cards and you enter one to see its files; "expand all" flattens every file regardless of folders. Long lists render the most recent slice first, keep loading as you scroll down and also back-fill an earlier slice when you return to the top (two-way lazy loading), staying smooth even with huge libraries.' },
+        { t: 'Batch edit: original name / expiry / redirect / encryption (v3.0.0)', d: 'With multiple files selected you can do all of this in one pass: restore / set the original name (the extension is preserved automatically, only the base name changes), set an expiry (links die at the deadline), toggle redirect, and encrypt / decrypt — all three in one dialog, confirmed from the bottom batch bar.' },
+        { t: 'Tag management modes (v3.0.0)', d: 'Tag management now uses a three-column card layout (all tags / editor / preview) with a search box on top; a tag can be split into several, given a note, and opened for public sharing, on top of drag-to-reorder, locking, merging and batch apply / remove.' },
+        { t: 'Folder properties (v3.0.0)', d: 'A folder\'s context / more menu opens Folder properties: rename, sharing (generates a share entry), public sharing (generates the guest gallery link), notes, and encrypting the whole folder.' },
+        { t: 'Directory scope: current / global (v3.0.0)', d: 'The folder dropdown can switch between "folders of the current instance" and "all folders on the site", so you can compare paths and move files across instances.' },
+        { t: 'Instance switch moved into the page dropdown (v3.0.0)', d: 'The instance switch no longer has its own button in the file manager; it lives in the top page-switch dropdown. Lists, filters and batch actions only touch files inside the selected instance.' },
+        { t: 'Mobile back key goes up one level (v3.0.0)', d: 'On a phone, pressing the system back key inside a folder returns to the parent folder instead of leaving the file manager.' },
+        {
+          t: 'Public sharing: folders & tags (v3.0.0)',
+          sub: [
+            'Folders and tags can each be opened for public sharing: a switch, an access password (leave empty for none) and a deadline after which the link stops working.',
+            'Folder share URL: /browse/username/instance-number/cate/folder-path',
+            'Tag share URL: /browse/username/instance-number/tag/tag-name',
+            'Instance number: 0 = the default instance, 1..n ordered by instance creation time (identical to the badge on the upload page avatar). The same folder / tag gets a different URL after switching instances.'
+          ]
+        },
+        { t: 'Share records page (v3.0.0)', d: 'File manager → Share records: enable / disable, set or change the password, encrypt and delete one by one, or in bulk (enable / disable / encrypt / delete), filtered by user and instance so stale shares are easy to clean up.' },
+        { t: 'Guest gallery is read-only (v3.0.0)', d: 'Visitors who open a share link can only browse: the folder input is gone, so they cannot jump to another path, and no management action is exposed.' },
+        { t: 'File link passwords only use the file\'s own encryption (v3.0.0)', d: 'Since v3.0.0 a /file link only honours the file\'s own encryption. Folder and tag passwords now only gate visibility inside the guest gallery / share page and no longer apply to the link itself — a password-protected folder still hands out password-free links.' },
+        { t: 'Filter "AND / OR" (v3.0.0)', d: 'The global switch on multi-condition filters (previously "All / Any") decides whether different condition groups must all match or any match. The Tags tab keeps its own AND / OR switch that only affects tag names, independent of the global one.' },
+        { t: 'Shared-by / shared-with and encrypted filters (v3.0.0)', d: 'The user dimension of the filter dialog gains "shared by me / shared with me"; the General tab gains an "encrypted" condition (encrypted / not encrypted) so files awaiting or already holding encryption are easy to find.' },
+        { t: 'Detail page: grouped processing records (v3.0.0)', d: 'Processing records are grouped: failure / retry / WebP / compression / transcode. Each group only lists entries relevant to this file (retry count, failure reason, the channel it switched to, status and durations, why a step was skipped); empty groups are hidden.' },
+        { t: 'Detail page: the three "did compression run?" cases (v3.0.0)', d: 'The compression row states exactly what happened: ① compression disabled (turned off globally / per account, or the format is in the excluded list); ② skipped because WebP ran (the file is already WebP, so it is not compressed again); ③ below the threshold (the original is smaller than the compression threshold).' },
+        { t: 'Detail page: instance / encryption / expiry / share thumbnail (v3.0.0)', d: 'The detail page adds "instance" and "file encryption" rows; expiry moved to its own line above the divider (next to redirect and processing records, much easier to scan); share card thumbnails are fixed to a 3:4 ratio.' },
+        { t: 'Lightbox: auto-hide / long-press 3x / directory (v3.0.0)', d: 'Lightbox controls fade out after 2 seconds of inactivity (any touch or movement brings them back); long-press an image to browse at 3x speed and release to restore; a new Directory button at the top jumps to the image list of the current page; in "actual size" mode the image is centred and pinned to the top; the back key / Esc closes the lightbox.' },
+        { t: 'Folder sharing loading rule (v3.0.0 R3)', d: 'Folders shared "to users" no longer appear in the normal list automatically - sharees must use Filter > User sharing > Shared with me to load them (sub-folders included). Shared files show a Shared badge at the bottom-right of cards and after the channel short name in list view; sharees can open shared files without hitting the 401 admin-preview check.' },
+        { t: 'Search / filter auto-expand (v3.0.0 R3)', d: 'Submitting a search or filter while in "show folders" mode automatically switches to "expand files"; switching back to folders manually is remembered and will not be overridden again.' },
+        { t: 'Mobile file management (v3.0.0 R3)', d: 'Enter in the search box now submits on mobile (fixed missing key events); New folder / Register file / History are icon-only buttons; the instance badge on the Page switcher floats on the icon corner instead of squeezing the title.' },
+        { t: 'Batch settings (v3.0.0 R3)', d: 'The combined Expiry / Redirect / Password batch dialog is renamed "Batch settings" with tab order Expiry > Password > Redirect.' },
+        { t: 'Detail page item order (v3.0.0 R3)', d: 'Fixed order: Name, Type, Size, Dimensions, Category, Tags, Status, Instance, Storage channel, Backup channels, Upload user, Upload source, Duration, Speed, IP, Views, Upload time, MD5, Encryption, Redirect. Closing the detail dialog now stops any playing video / audio.' },
+        { t: 'Lightbox swipe (v3.0.0 R3)', d: 'On mobile, when an image is in "actual size" or zoomed in, horizontal swipe pans the image instead of switching photos; swiping switches photos only in "fit window" mode.' },
+        { t: 'Register file: URLs with query strings (v3.0.0 R3)', d: 'Query strings (e.g. .../api/thumbnail?key=abc&size=preview&c=1&edited=true) are preserved end-to-end - issued links keep all parameters; when the path segment is an action word (thumbnail / preview / original), the real file name is also looked up in query values (key=2026/abc.webp > abc.webp).' },
+        { t: 'Shared badge on both sides (v3.0.0 R7)', d: 'The Shared badge now shows for the initiator and the sharee alike — on folder cards and file rows (card bottom-right / after the channel short name in list view), with the owner visible on hover. The sharee badge was missing because the frontend dropped the shared fields computed by the backend; fixed. Badges also survive the "all instances" scope.' },
+        { t: 'One-click reset via the stats button (v3.0.0 R7)', d: 'The "total files" readout at the top-right is now a button: with no search / filter / tag / user condition it just shows the count; once any condition exists (button lights up), one click clears the search box, #tags, -tags, filter dialog conditions and user filter, and leaves search mode (inside the trash it returns to the full trash list), with a success toast.' },
+        { t: 'Hover to expand the directory dropdown (v3.0.0 R7)', d: 'On desktop, hovering the directory navigation for ~0.3s expands the dropdown and loads all site-wide folders — no click needed; it closes on leave or after picking a folder. Touch devices and viewports ≤1023px keep click-to-open.' },
+        { t: 'Toolbar badges & state colors (v3.0.0 R7)', d: '① The trash button gains an orange-red dot in trash mode, with a light red background and red icon while active; ② the tag button uses a larger font and a more visible orange-red dot; ③ the filter badge is smaller on phones; ④ the AND / OR switch at the bottom of the mobile filter dialog is left-aligned.' },
+        { t: 'Mobile second-row panel (v3.0.0 R7)', d: 'The glass panel behind the mobile toolbar row (checkbox / views / sort / directory / new) has a 5px radius, 4px vertical and 3px horizontal padding, and sits closer to the top bar; expanding the mobile search box moves the search area into the first row and pushes the second row down, so they no longer overlap.' },
+        { t: 'Lightbox: mistouch guard / full-screen PDF / tables (v3.0.0 R7)', d: '① txt, PDF, audio, spreadsheet and other non-media viewers now fill the screen with a transparent backdrop; tapping empty space only restores the controls instead of closing the lightbox (use close or Esc to exit); ② the PDF area is truly full-screen with a floating gradient toolbar; ③ CSV / TSV files render as scrollable tables (sticky header) inside the lightbox, and text preview applies too.' },
+        { t: 'Folder sharing: switch + read-only / editable (v3.0.0 R8)', d: 'The Share block in folder properties is now a switch: turn it on, pick the users, then pick a permission - Editable lets them enter the folder and change properties but never delete it; Read-only hides the selection circle and the properties entry entirely (tapping the name just enters the folder, with a read-only toast). No sharee can delete a shared folder: the button is hidden for UX, and the backend rejects the request naming the owner. The owner is unaffected - their own folders and files can still be deleted; the restriction only applies to sharees.' },
+        { t: 'File rating and level (v3.0.0 R8)', d: 'The detail dialog gains two rows: Rating (five stars, half-star steps, clearable) and Level (five hearts, 1-5, tap again to clear). Both are dedicated columns rather than note metadata and are stored immediately. The permission matches notes: the uploader or an admin can edit, other sharees are read-only.' },
+        { t: 'Rating filter tab (v3.0.0 R8)', d: 'The filter dialog gains a Rating tab: quick chips for rating (5 stars / 4+ / 3+ / unrated) and level, plus custom 0-5 ranges (rating supports 0.5 steps). Unrated means exactly 0 (set both range boxes to 0); leaving the boxes empty means no restriction. Works in the list and in the trash.' },
+        { t: 'Seven lightbox improvements (v3.0.0 R8)', d: '① Markdown files get an outline panel that scrolls the text to the chosen heading; ② PDFs keep a fixed close row at the top (never auto-hidden) and show a document navigation strip at the bottom on desktop; ③ closing the lightbox on mobile no longer bounces the page up one folder; ④ audio autoplays on open and when switching tracks; ⑤ a Detail button sits left of Close in every mode; ⑥ Actual size / Fit window moved to a centred bar above the thumbnail strip, flanked by zoom-out / zoom-in buttons (10% per click); ⑦ videos gain a snapshot button that saves the current frame as PNG. (R8.1) Images, video and audio no longer show the extra copy / open / detail block - that generic panel only appears for file types that cannot be previewed.' },
+        { t: 'Mobile lightbox no longer goes up a folder (v3.0.0 R8)', d: 'Closing the lightbox used to occasionally navigate one folder up on phones. Closing calls history.back() to drop the lightbox history sentinel, which fires a popstate that the page treated as a user back press. The lightbox now stamps a timestamp before doing so, and the page ignores such programmatic popstate events for half a second.' },
+        { t: 'Storage settings and the three-domain model (v3.0.0 R10)', d: '"Upload data settings" is renamed "Storage general settings", and "Custom access domain" becomes "Signing domain" — every link issued by this site uses it, falling back to X-Forwarded-Host → Host → localhost when empty. It never overrides a channel public domain. The three domains now have distinct jobs: signing domain (site /file output), file load domain (per channel: internal domain first in proxy mode, otherwise public domain) and public domain (storage/backup links in file details, 302 target).' },
+        { t: 'Links store only the tail (v3.0.0 R10)', d: 'Each copy now stores objectPath (URL without scheme://host) and urlQuery (file-level query such as Immich key/size/edited); the domain is never persisted. URLs are built as dynamic domain + frozen path + query, so changing a domain takes effect immediately while changing a bucket, prefix, name template or album id does not break existing files. Special characters and extension-less links are encoded per segment, never double-encoded.' },
+        { t: 'Dedup clones instead of borrowing links (v3.0.0 R10)', d: 'A dedup hit clones a record (and copy rows pointing at the same remote object) for the current uploader or instance. Password, expiry, redirect, link permission and view counts are fully independent, and remote objects are deleted only when the last reference is purged.' },
+        { t: 'Registered files strip the domain (v3.0.0 R10)', d: 'The source URL is compared by URL.host against the channel load domain (or the signing domain for local storage); the matched domain segment is removed and only the tail is stored. Deleting a registered record still never touches the remote file.' },
+        { t: 'Built-in local-files channel 999990 (v3.0.0 R10)', d: 'The system creates a built-in local file browser channel with code 999990 at startup. Its root is fixed to the built-in uploads directory and it cannot be deleted or re-pointed; administrator-created local-file channels keep working independently.' },
+        { t: 'Channel deletion is stricter (v3.0.0 R10)', d: 'A channel cannot be deleted while any copy references it, including trash items and registered files across all users and instances. The message breaks down totals, trash and registered counts.' },
+        { t: 'Admin thumbnails use proxy + resize (v3.0.0 R10)', d: 'File manager cards/lists, history and recent uploads now request /file?thumb=320: the server fetches through the internal domain, resizes with sharp and caches for 30 days. Local storage thumbnails are resized too, and nothing depends on the admin browser reaching an internal address.' },
+        { t: 'Local storage honours the name template (v3.0.0 R10)', d: 'Fixed: local storage ignored the custom prefix / name template because it used the legacy key branch. It now follows the same placeholder rules as other channels, defaulting to {hash} when empty.' },
+        { t: 'EasyImages / Lsky remote delete (v3.0.0 R10)', d: 'Delete credentials from the upload response are now kept: EasyImages uses the signed del URL, Lsky calls DELETE /api/v1/images/:key with the stored data.key. Both previously lacked credentials, so remote files were left behind.' },
+        { t: 'Storage prefix & user archiving (v3.0.0 R11)', d: 'The {user} placeholder now renders the current account username directly (no random digits), and the quick-insert buttons are Channel ID / Username / Year / Month / Day, appending /{ID}, /{user}, /{y}, /{m}, /{d} to the input. Local storage defaults to {user}/{ID}/{y}/{m} when the prefix is empty; the custom local channel storage path is a plain input (autocomplete no longer forced off).' },
+        { t: 'Delete links drop the domain too (v3.0.0 R11)', d: 'The EasyImages delete URL used to be stored with its domain, breaking remote deletion after a domain change. Only the path and query (deletePath/deleteQuery) are persisted now and the URL is rebuilt from the current channel domain; existing records get the same treatment.' },
+        { t: 'Local-files channel creation fixed (v3.0.0 R11)', d: 'Creating a local-files channel no longer fails with a bogus rootPath requirement: the browse directories (rootPaths, one per line) are validated instead, and the host mapping stays optional. The built-in 999990 channel shows its browse directory read-only.' },
+        { t: 'Immich registered-file thumbnails fixed (v3.0.0 R11)', d: 'Registered Immich files failed to render thumbnails/previews because the share-auth query (?key=…) was dropped when building fetch candidates. Fetching now uses the same dynamic domain + frozen path + full query as detail links.' },
+        { t: 'Frontend concurrency (v3.0.0 R11)', d: 'A new "Frontend concurrency" setting (in Other settings → upload config, right above Auto retry) controls how many files the browser uploads at once; empty means 3. It refreshes automatically each time you click Upload / Transfer.' },
+        { t: 'Mobile toolbar spacing (v3.0.0 R11)', d: 'On mobile the second toolbar row (select-all / view toggle) sits 8px below the header and 10px above the file area; when stuck it keeps the same 8px gap and exactly the same width as normal. Scrolling down hides it with the header; it resets when you scroll back. Header bars on all admin pages turn fully opaque (glass blur off) once the page is scrolled, and return to glass at the top.' },
+        { t: 'Detail page address semantics (v3.0.0 R11)', d: 'In the file detail dialog the Storage / Backup channel links use the public access domain (the external address), the "Source" uses the file loading domain (the address the server actually fetches from), and the preview loads via the site-issued signed link.' },
+        { t: 'Lightbox: bigger images, snapshot, stacked detail (v3.0.0 round 9)', d: '① Images now use the whole area between the title row and the thumbnail strip (the zoom bar no longer takes its own row) and the zoom-out / size-toggle / zoom-in buttons float above the image; ② the PDF document strip hides together with the other controls while the close row stays visible; ③ the video snapshot button moved from the bottom-right to the top bar, left of Detail, and More settings / Table of contents now line up vertically with the next / previous arrows; ④ snapshots are saved under the original file name, with (1) (2) suffixes on duplicates; ⑤ after saving, the viewer asks whether to upload the snapshot to the image bed in one click; ⑥ Detail no longer closes the lightbox - the detail dialog is stacked above it and the lightbox (including video playback) is kept when the dialog closes.' },
+        { t: 'Channel Settings rename and trash icon (v3.0.0 round 9)', d: 'The admin Upload Settings tab is now called Channel Settings (related hints updated too); Object prefix is renamed Custom storage prefix (optional) in every channel type; the trash Restore button finally shows an icon (the undo icon had never been registered).' },
+        { t: 'File manager: rating filters and card badges (v3.0.0 round 9)', d: '① Rating / level quick filters now offer six steps (five stars / four and up / three / two / one / unrated; five hearts / four and up / three / two / one / unrated); ② the Rating tab moved right after Tags; ③ cards show an empty star and heart at the bottom-left with the value overlaid when set, and the eye button / hover preview was removed everywhere; ④ the channel-name filter no longer lists Local Files; ⑤ the top sentinel auto-loader is gone - only the Load more button loads more; ⑥ the directory nav button now shows the full path (the desktop breadcrumb was removed); ⑦ the second row spacing is halved and the mobile count / history buttons share one height (28px).' },
+        { t: 'Local Files: duplicated paths fixed (v3.0.0 round 9)', d: 'Fixes a path duplication introduced by the multi-root support: files inside sub folders got their full relative path repeated (lf-test/sub/sub/inner.txt), so previews returned 404 and the tree showed phantom folders. The list endpoint now returns paths relative to the current folder plus bare folder names, and the client joins them. On mobile the folder button uses a folder icon in the first row, and thumbnails are square (1:1).' },
+        { t: 'Upload page and sharing (v3.0.0 round 9)', d: '① The mobile camera dialog is full screen (100dvh), the shutter moves into an auto-hiding bar toggled by tapping the frame, and the rear lens is the default; ② the upload settings button shows the selected owner-instance number in a badge (default instance = 0); ③ share recipients (read-only or editable) no longer see edit / delete in the detail dialog and batch delete is blocked; ④ email verification codes accept six letters or digits (backend validation relaxed to match).' },
       ]
     },
     {
@@ -492,7 +718,8 @@ const EN = {
         { t: 'Upload method (v2.8.6)', d: 'Every file records the entry it came from: Default = legacy web uploads before v2.8.6; Upload = the upload page in "file" mode; Fetch = the upload page in "link" mode (saved from URL); WebDAV / API-Web / API-S3 = external channels. The file detail "upload method" field, the file manager filter and the status page distribution all use these values.' },
         { t: 'Logs', d: 'Records writes (upload / save / delete) plus 4xx, 5xx and slow requests, with level/scope/keyword filters and export.' },
         { t: 'Mobile (v2.8.6)', d: 'Upload trend tabs scroll horizontally when they overflow; History / Access log top bars scroll away with the page instead of staying pinned.' },
-        { t: 'Access log date filter (v2.8.8)', d: 'On phones the two-month range picker always overflowed the screen, so it is now a button that opens a single-month panel (the same calendar used by Status → Trend preview). With a range selected the button is highlighted and shows the start/end dates, and the small cross on the right clears it back to "all time". Desktop keeps the original range picker.' }
+        { t: 'Access log date filter (v2.8.8)', d: 'On phones the two-month range picker always overflowed the screen, so it is now a button that opens a single-month panel (the same calendar used by Status → Trend preview). With a range selected the button is highlighted and shows the start/end dates, and the small cross on the right clears it back to "all time". Desktop keeps the original range picker.' },
+        { t: 'History instance names (v3.0.0 R7)', d: 'With "All instances" selected, each record now shows the instance it really belongs to (the backend returns the instance id and name with the list) instead of labelling everything "default instance"; records of the default instance still read "default instance".' }
       ]
     },
     {
@@ -503,8 +730,21 @@ const EN = {
         { t: 'Whitelist mode', d: 'Only whitelisted files stay reachable; other requests get the whitelist notice image.' },
         { t: 'Allowed source hosts', d: 'One "host:port" per line, e.g. 192.168.1.3:5505 or img.example.com:8443. Matching is exact on the source host + port; paths and query strings are ignored, and the same host on another port counts as a different source. Pasting a full URL works too — only the host part is kept.' },
         { t: 'Image review & IP lookup', d: 'Optional review provider tags uploads so you can block rejected content.' },
+        { t: 'Public share permission (v3.0.0)', d: 'The admin decides which accounts may create public shares in the Share permission section; the account-level switch lives in the Public sharing module of the user edit page. When it is off the account sees no share entry and existing shares stop being publicly reachable (records are not deleted — turning it back on restores them).' },
         { t: 'API tokens', d: 'Issue scoped, expiring tokens for scripts and third-party tools; revoke any time. Both "S3 protocol" and "Web generic" access are supported.' },
         { t: 'compress field (Web generic)', d: 'Send compress=true or 1 in the custom Body to compress (images via sharp, video/audio via ffmpeg, GIF skipped); omit it to upload as-is — the global "default compression" setting does not apply to this channel. compressPercent optionally sets the target size (10-100 % of the original).' }
+      ]
+    },
+    {
+      id: 'instances',
+      title: '10. Instances (v3.0.0)',
+      intro: 'An instance is an isolated grouping of files: one account can create several instances to organise files by purpose, while channels and global settings stay shared.',
+      items: [
+        { t: 'Create / invite / join', d: 'In User edit → Instance management: create an instance (name required and unique; the note is visible to the owner only). The owner issues an 8-character invite code; anyone can join by entering the code and can then upload into that instance.' },
+        { t: 'Data isolation', d: 'Every instance has its own file space: files, trash and history are isolated per instance, and regular members only see instances they joined. The built-in local channel also separates directories by username / instance.' },
+        { t: 'Shared configuration', d: 'Storage channels, upload-related settings and system settings remain global / account-level; switching instances never changes them. Only the file layer is isolated.' },
+        { t: 'Deletion precondition', d: 'An instance that still contains files (trash included) cannot be deleted; you must empty it first. Deleting an instance removes only the grouping, never member accounts.' },
+        { t: 'History instance filter', d: 'The history page can filter by instance and defaults to "All instances" (no instance filter, and the last choice is no longer remembered); picking one shows only records of that instance. Pagination at the bottom is a manual "Load more" button instead of infinite scroll. The page loads only your own records by default; an admin arriving from User management → Collect by user → View records lands here with that user in a new tab.' }
       ]
     },
     {
@@ -529,7 +769,15 @@ const EN = {
         { t: 'frontend/src/components/config/', d: 'Settings sections: SysCogStatus, SysCogUpload (channels), SysCogSecurity (security / tokens), SysCogLog, SysCogOthers (includes WebDAV), SysCogPage, SysCogAI.' },
         { t: 'frontend/src/utils/', d: 'Utilities: fileManager (list query params), clipboard (compatibility layer), fetchWithAuth, upload/urlBuilder (link formats).' },
         { t: 'backend/src/common/record-link.ts (v2.9.0)', d: 'Link rules for registered files: recordDomainCandidates collects the three channel domains (internal / public / API endpoint), matchRecordSource matches by content segment and strips it to get the path, recordLoadOrigin decides which domain is used when reading (internal first, falling back to public / endpoint), and joinRecordUrl builds the final link.' },
-        { t: 'frontend/src/components/dashboard/MediaPreviewOverlay.vue (v2.9.0)', d: 'Media viewer: image lightbox (slideshow, actual size, thumbnail reel), video player (speed, loop single / shuffle / sequential), audio playlist for the current page, and a generic dialog for other types; controls auto-hide after two seconds. FileCard / FileListItem only emit the previewMedia event and never build links themselves.' }
+        { t: 'frontend/src/components/dashboard/MediaPreviewOverlay.vue (v2.9.0)', d: 'Media viewer: image lightbox (slideshow, actual size, thumbnail reel), video player (speed, loop single / shuffle / sequential), audio playlist for the current page, and a generic dialog for other types; controls auto-hide after two seconds. FileCard / FileListItem only emit the previewMedia event and never build links themselves.' },
+        { t: 'backend/src/instances/* (v3.0.0)', d: 'Multi-instance: instances.controller.ts exposes the /api/instances endpoints (list / create / rename / delete / invite codes / join / member management); instances.service.ts owns instance & membership data and validates deletion preconditions (instances with files, trash included, are refused).' },
+        { t: 'backend/src/files/folder-meta.service.ts (v3.0.0)', d: 'Folder metadata service: persistence and validation for renaming, encryption, notes, sharing and guest-gallery properties of folders.' },
+        { t: 'frontend/src/components/dashboard/FolderPropsDialog.vue (v3.0.0)', d: 'The Folder properties dialog: rename / encrypt / notes / share / guest gallery in one place.' },
+        { t: 'frontend/src/components/dashboard/ShareDialog.vue (v3.0.0)', d: 'The Share dialog: builds a share card with thumbnail and expiry and copies the share link.' },
+        { t: 'frontend/src/components/dashboard/TagModePanel.vue (v3.0.0)', d: 'The tag management panel: drag ordering, tag locking, merging and batch apply / remove.' },
+        { t: 'backend/src/shares/* (v3.0.0)', d: 'Public sharing: shares.controller.ts exposes the /api/shares endpoints (list / create / edit / batch enable·disable·password·delete) plus the visitor side /api/shares/public/access and /api/shares/public/list. shares.service.ts handles password checks, deadline evaluation, instance numbering and path resolution, and sets the goimgbed_share_pw cookie (httpOnly, 7 days) once a password check passes.' },
+        { t: 'backend/prisma/compat-sync.js (v3.0.0)', d: 'Schema upgrade compatibility script: before db push it cleans up historical duplicate data that would trip unique constraints (duplicate tags merged into one, duplicate names suffixed) and retries automatically when db push still reports a unique-constraint warning — so upgrades no longer need --accept-data-loss.' },
+        { t: 'frontend/src/views/ShareRecordsPage.vue (v3.0.0)', d: 'Share records page: enable, disable, encrypt and delete shares one by one or in bulk, filtered by user and instance; it reuses the shares API instead of keeping its own copy of the data.' }
       ]
     },
     {
@@ -541,7 +789,7 @@ const EN = {
         { t: 'Step 2: understand one upload', d: 'Start from POST /upload, then follow upload.controller.ts → upload.service.ts upload(): channel resolution → dedup → compression → primary upload → backup → FileRecord / FileCopy.' },
         { t: 'Step 3: add a channel type', d: 'Add an adapter under backend/src/adapters/, register it in adapter.factory.ts, add config fields and labels in channel-schema.js, and add the type to CHANNEL_TYPES in SysCogUpload.vue.' },
         { t: 'Step 4: add a setting', d: 'Settings use section JSON: add defaults in sysconfig.service.ts defaults(section), then read/write it from the matching SysCog*.vue — no database change needed.' },
-        { t: 'Step 5: change the schema', d: 'Edit backend/prisma/schema.prisma → npx prisma db push → npx prisma generate, then restart the backend.' },
+        { t: 'Step 5: change the schema', d: 'Edit backend/prisma/schema.prisma → npx prisma db push → npx prisma generate, then restart the backend. Since v3.0.0 db push first runs backend/prisma/compat-sync.js (duplicate tags merged, and so on) and retries on failure, so --accept-data-loss is no longer needed.' },
         { t: 'Step 6: add a page', d: 'Create the page in frontend/src/views/, then register the route in router/index.js with the proper guard (userAuthGuard / manageAuthGuard / adminAuthGuard / superAuthGuard).' },
         { t: 'Convention (important)', d: 'Field names for channel types, roles and settings must stay identical across frontend and backend. Channel display names are duplicated in backend/src/common/file-view.ts (CHANNEL_LABEL) and frontend/src/components/config/channel-schema.js (CHANNEL_SHORT_LABEL).' }
       ]
@@ -573,6 +821,7 @@ const EN = {
         },
         { t: 'Persist these', d: 'backend/data (SQLite database) and backend/logs (logs, automatically pruned to the last 7 days). Mount ./data when using Docker.' },
         { t: 'Upgrading', d: 'Docker: docker compose pull then docker compose up -d --build. Non-Docker: rebuild the backend and restart it, then rebuild the frontend and replace the static directory.' },
+        { t: 'Database upgrade (v3.0.0)', d: 'Since v3.0.0 db push runs compatibility clean-up first (duplicate tags merged and similar), so no manual --accept-data-loss is required. If a unique-constraint warning still appears the script retries automatically and normally needs no manual intervention.' },
         { t: 'Reverse proxy notes', d: 'Forward Host, X-Forwarded-For and X-Forwarded-Proto. WebDAV needs non-standard methods (PROPFIND / MKCOL / PUT) to pass through — Nginx allows them by default, some cloud gateways need explicit rules.' }
       ]
     },
@@ -597,7 +846,31 @@ const EN = {
         { t: 'Does the extension break anything?', d: 'No — it is purely cosmetic. Proxy, 302 and access-source switching all work off the File_ID.' },
         { t: 'Uploads feel slow?', d: 'The main channel uploads synchronously. Prefer a faster channel, or offload via the backup channel. For large files use object storage (COS / MinIO / R2 / S3).' },
         { t: 'Why does the thumbnail no longer open the detail page?', d: 'Since v2.9.0 thumbnails and covers are for viewing (lightbox / players) while the file name is for managing (detail page). Click the name to rename, tag or copy links.' },
-        { t: 'Registration says the source URL does not belong to the channel?', d: 'None of the domains configured on that channel appear in the URL. Check that the right channel is selected and that the URL contains the channel\'s internal domain, public domain or API endpoint (ports and paths are fine, the host must match). Nothing is recorded when all three miss — the record would not be loadable anyway.' }
+        { t: 'Registration says the source URL does not belong to the channel?', d: 'None of the domains configured on that channel appear in the URL. Check that the right channel is selected and that the URL contains the channel\'s internal domain, public domain or API endpoint (ports and paths are fine, the host must match). Nothing is recorded when all three miss — the record would not be loadable anyway.' },
+        { t: 'Are instances isolated? Do settings need to be redone?', d: 'Files (including trash and history) are isolated per instance and regular members only see instances they joined. Storage channels and upload settings stay global / account-level and are shared by every instance — nothing to configure twice.' },
+        { t: 'Why does "All" mode return nothing when I pick images + videos?', d: '"All" means every condition group must match, but a single file has exactly one type — it cannot be both an image and a video. Use "Any" for mixed results, or multi-select within the file type group.' },
+        { t: 'Lossless or lossy WebP?', d: 'Lossless (default) is pixel-identical to the original — best for screenshots and design assets. Lossy is typically 20-40% smaller, ideal for photos. Either way, if the converted file is not smaller the original is kept automatically.' },
+        { t: 'Changed a local channel\'s object prefix — do old files still work?', d: 'Yes. The prefix only affects where NEW uploads are stored. Existing records keep their actual stored path, so links keep working; old and new files simply live at different path levels.' },
+        { t: 'A folder / tag is password-protected — why does the file link still ask for a password? (v3.0.0)', d: 'Since v3.0.0 a /file link only honours the file\'s own encryption. A folder or tag password only gates browsing inside the guest gallery / share page and no longer applies to the link. If the link still asks for a password, that single file is encrypted — decrypt it from the file detail page.' },
+        { t: 'A public share link does not open — where to look? (v3.0.0)', d: 'Check three things in order: ① the Public sharing switch of that folder / tag is still on (it may also be turned off globally by the account\'s Public sharing module or the admin Share permission); ② the deadline has not passed (the share records page shows it); ③ the instance number in the URL is correct — 0 is the default instance and 1..n follow instance creation time, so after switching instances an old URL points at another instance and the link must be copied again under the current one. If a password was set, it must be entered too.' },
+        { t: 'Upgrading shows a unique constraint error — what now? (v3.0.0)', d: 'Do not add --accept-data-loss. Since v3.0.0 db push runs compat-sync first (duplicate tags merged into one, for example), and a unique-constraint warning during the push triggers an automatic retry. Only a repeatedly failing upgrade needs the log inspected to find the table with duplicate data.' }
+      ]
+    },
+    {
+      id: 'localFiles',
+      title: '16. Local Files (new in v3.0.0)',
+      intro: 'The Local Files page browses files that already exist on the server (or in a mounted directory). It is read-only by default; selected files can be copied into the image bed as normal records.',
+      items: [
+        { t: 'Create the channel', d: 'System settings → Upload → New channel, type "Local files". Only the browse root (a path inside the container, e.g. /data) is required — map a host directory there when running in Docker. Host mount directory is documentation only and is never read or written. This type never takes part in uploads: it is filtered out of every channel dropdown and cannot be set as main / backup channel or enabled in the pool. Since v3.0.0 (R5) the Local Files channel is admin-only and no longer supports authorisation.' },
+        { t: 'Who can see it', d: 'The Local Files entry in the page switcher is always visible to admins (even before any channel exists — the page then prompts to create one); regular users never see it. Since v3.0.0 (R5) the channel no longer supports per-user authorisation.' },
+        { t: 'Browsing', d: 'Collapsible folder tree, breadcrumbs, double-click to enter a folder, type filter (images / videos / audio / text / PDF / other), sorting by name / size / modified time, search by name or path, and pagination. Browse settings (top right) control items per page (default 48), max entries per folder (default 500) and inline preview limit (default 500 MB).' },
+        { t: 'Top bar & scroll behaviour (v3.0.0 R7)', d: 'The toolbar holds the page switcher (with instances), a channel dropdown (remembered across refreshes and revisits; falls back automatically if the channel is deleted or disabled), then Upload to image host, search, type filter, sort, asc/desc, refresh, settings and the day/night toggle. Scrolling down slides the bar out of the way; scrolling up snaps it back immediately. The folder tree fills the remaining viewport height and stays pinned while the page scrolls, and its collapse button is now a fixed-size square that no longer squashes.' },
+        { t: 'Video thumbnails & multi-select (v3.0.0 R7)', d: 'Videos show a real frame as the thumbnail (the browser seeks to 0.5s once metadata loads) instead of a grey icon; every file has a checkbox at its top-left for batch "Upload to image host", and clicking the checkbox never triggers the preview.' },
+        { t: 'Preview and download', d: 'Images, videos (seekable via Range requests), audio, PDF and text files (txt, md, json… truncated beyond 200 KB) preview inline; other types download when their thumbnail is clicked. The preview endpoint only accepts a channel ID plus a relative path, requires a logged-in session and is excluded from file access statistics.' },
+        { t: 'Upload to the image bed', d: 'After selecting files, choose the target channel / instance / upload folder. Every file runs through the normal upload chain (MD5 dedup → compression or transcode → write to channel → record → issue link) and the source file is left untouched. The result dialog lists the file ID and link (one-click copy), duplicates skipped, and failures (one-click retry).' },
+        { t: 'In-library badge', d: 'Files already uploaded show an "In library" badge: sizes are compared first and only matching files are hashed, so a page never hashes everything. Hovering shows the matching file ID. Detection is read-only.' },
+        { t: 'Drawer and paging on phones (v3.0.0 R8)', d: 'On phones the folder tree moves into a left drawer; the toolbar becomes two rows (page switcher and channel, then search / type / sort / refresh) and the search box collapses behind a button. Lists load 50 items per page with a 200-item cap per folder and a Load more button; file names elide in the middle (head + tail) so the extension is always visible.' },
+        { t: 'Safety boundaries', d: 'The root must exist and be a directory and is re-checked with realpath before use (symlink escapes are refused). Every relative path rejects ".." and hidden segments and is rejected when it escapes the root. .env, .git, node_modules and names starting with "#" are never listed or served. The page is read-only: the only write path is "upload to image bed".' }
       ]
     }
   ]
@@ -739,11 +1012,16 @@ export default {
 }
 
 .docs-toc {
+  /*
+   * v3.0.0：左侧大纲粘滞固定（滚动页面时大纲不跟着滚，自身超高时可独立滚动）。
+   * 顶栏高度：文档页的顶栏是普通流式头部（随正文滚走、无 fixed/sticky 顶栏），
+   * 因此 --docs-topbar-height 记为 0；若日后头部改为吸顶，只需改这一个变量。
+   */
+  --docs-topbar-height: 0px;
   position: sticky;
-  top: 20px;
+  top: calc(var(--docs-topbar-height) + 16px);
   align-self: start;
-  /* 章节较多时目录自身可滚动，但整体始终固定在左栏 */
-  max-height: calc(100vh - 40px);
+  max-height: calc(100vh - var(--docs-topbar-height) - 32px);
   overflow-y: auto;
   overscroll-behavior: contain;
   display: flex;
@@ -857,7 +1135,11 @@ export default {
   }
 
   .docs-toc {
+    /* 移动端大纲是横向折叠条（不是抽屉），保持原样式、不做 sticky */
     position: static;
+    top: auto;
+    max-height: none;
+    overflow: visible;
     flex-direction: row;
     flex-wrap: wrap;
     gap: 6px;
@@ -867,5 +1149,23 @@ export default {
     width: 100%;
     margin-bottom: 0;
   }
+}
+</style>
+
+<!--
+  v3.0.0：让「查看文档」页左侧大纲真正 sticky（不是 scoped，作用于 body）。
+  原因：全局 OverlayScrollbars 挂在 document.body 上，给它加了 overflow: hidden auto，
+  于是 body 成了一个「自身并不滚动的滚动容器」，position: sticky 相对它计算时永不移位，
+  大纲就跟着整页一起滚走了（已实测：放开 body overflow 后 top 由 -1469 变回 16）。
+  处理：仅当文档页挂载期间（body 内含 .docs-page）放开 body 的 overflow，
+  让滚动重新由文档根元素承担，sticky 立即生效；OverlayScrollbars 的悬浮滚动条仍随滚动更新。
+  两个注意点：
+  1) 必须同时放开 x 与 y —— 只放开 y 时，浏览器会把 y 的 visible 折算成 auto，sticky 依旧失效；
+  2) 图片预览灯箱打开时（存在 .el-image-viewer__wrapper）不做覆盖，
+     保证灯箱期间背景仍被锁定、不能被滚动。
+-->
+<style>
+body:has(.docs-page):not(:has(.el-image-viewer__wrapper)) {
+  overflow: visible !important;
 }
 </style>

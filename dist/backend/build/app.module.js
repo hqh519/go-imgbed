@@ -25,11 +25,15 @@ const access_controller_1 = require("./access/access.controller");
 const access_service_1 = require("./access/access.service");
 const mail_controller_1 = require("./mail/mail.controller");
 const mail_service_1 = require("./mail/mail.service");
+const instances_module_1 = require("./instances/instances.module");
+const shares_module_1 = require("./shares/shares.module");
+const localfiles_controller_1 = require("./localfiles/localfiles.controller");
 let AppModule = class AppModule {
 };
 exports.AppModule = AppModule;
 exports.AppModule = AppModule = __decorate([
     (0, common_1.Module)({
+        imports: [instances_module_1.InstancesModule, shares_module_1.SharesModule],
         controllers: [
             auth_controller_1.AuthController,
             channels_controller_1.ChannelsController,
@@ -49,6 +53,7 @@ exports.AppModule = AppModule = __decorate([
             access_controller_1.AccessController,
             access_controller_1.AccessAdminController,
             mail_controller_1.MailController,
+            localfiles_controller_1.LocalFilesController,
         ],
         providers: [
             settings_service_1.SettingsService,

@@ -7,15 +7,21 @@
     -->
     <div
         class="list-item"
-        :class="{ 'is-selected': localSelected }"
+        :class="{ 'is-selected': localSelected, 'is-deleting': deleting }"
         @contextmenu.prevent
         @touchstart="$emit('touchstart', $event)"
         @touchend="$emit('touchend', $event)"
         @touchmove="$emit('touchmove', $event)"
     >
-        <!-- 1. 选择按钮 -->
+        <!-- v3.0.0（R12，需求 43）：删除中 → 整行遮罩 + 转圈 -->
+        <div v-if="deleting" class="card-deleting-mask" role="status" aria-live="polite">
+            <span class="card-deleting-spinner"></span>
+            <span class="card-deleting-text">{{ deletingLabel || $t('dashboard.deletingHint') }}</span>
+        </div>
+        <!-- 1. 选择按钮（v3.0.0 R8：只读共享不可选中 → 隐藏） -->
         <div class="list-col list-col-checkbox">
             <el-checkbox
+                v-if="!sharedReadonly"
                 v-model="localSelected"
                 @click.stop
                 @change="handleSelectChange"
@@ -34,7 +40,7 @@
                 <video :src="fileLink" class="list-preview-img" muted preload="metadata"></video>
             </template>
             <template v-else-if="isImage">
-                <img :src="fileLink" class="list-preview-img" loading="lazy" decoding="async" />
+                <img :src="imageThumb" class="list-preview-img" loading="lazy" decoding="async" />
             </template>
             <template v-else>
                 <font-awesome-icon icon="file" class="list-file-icon"/>
@@ -42,7 +48,7 @@
         </div>
         <!-- 3. 文件名（上行）+ 渠道简称 / 文件夹统计（下行）—— 点击打开文件详情页（行为不变） -->
         <div class="list-col list-col-name" @click="handleNameClick">
-            <div class="name-line" :title="displayName">
+            <div class="name-line" :title="isFolder ? displayName + ' · ' + $t('fileManager.folderPropsHint') : displayName">
                 <span class="filename-start">{{ fileNameStart }}</span><span class="filename-end">{{ fileNameEnd }}</span>
             </div>
             <!-- v2.6.0：文件夹名称下加「子文件夹 / 文件数」统计行
@@ -52,26 +58,9 @@
             </div>
             <div v-if="!isFolder" class="channel-line">
                 <!--
-                    v2.8.6b：预览小眼睛回到渠道行起始位置（存储渠道简称图标前面）——
-                    PC 悬停即预览、移动端长按 350ms 预览；锚定眼睛矩形弹出（不覆盖眼睛）。
-                    缩略图恢复「点击打开详情页」。
+                    v3.0.0（R9）：预览小眼睛已移除（悬停预览浮层整体下线）——
+                    缩略图点击打开详情页（handlePreviewClick），渠道行直接从简称图标开始。
                 -->
-                <button
-                    v-if="isImage || isVideo"
-                    type="button"
-                    class="list-eye-btn"
-                    data-role="preview-eye"
-                    :aria-label="$t('dashboard.hoverPreview')"
-                    @click.stop
-                    @mouseenter="handleEyeEnter"
-                    @mouseleave="$emit('previewEnd')"
-                    @touchstart.stop.prevent="handleEyeTouchStart"
-                    @touchmove.stop="handleEyeTouchMove"
-                    @touchend.stop="handleEyeTouchEnd"
-                    @touchcancel.stop="handleEyeTouchEnd"
-                >
-                    <font-awesome-icon icon="eye"/>
-                </button>
                 <span class="channel-short" :title="storageChannelText">{{ storageChannelShort || '-' }}</span>
                 <template v-if="backupTags.length">
                     <span
@@ -81,8 +70,18 @@
                         :title="bk.full"
                     >{{ bk.short }}</span>
                 </template>
+                <!-- v3.0.0：「共享」标识 —— 名称下面一行、存储渠道简称之后 -->
+                <span
+                    v-if="item.shared"
+                    class="shared-badge"
+                    :title="item.sharedSelf ? $t('fileManager.sharedBadgeSelfTitle') : $t('fileManager.sharedBadgeTitle', { owner: item.sharedOwner || '' })"
+                >{{ $t('fileManager.sharedBadge') }}</span>
                 <!-- v2.8.7：移动端在渠道简称后面补文件大小（PC 端第三列已有大小，隐藏避免重复） -->
                 <span class="channel-size">{{ fileSizeDisplay }}</span>
+                <!-- v3.0.0（R15）：回收站里标出原目录（层级关系） -->
+                <span v-if="folderHint" class="trash-folder-hint" :title="folderHint">
+                    <font-awesome-icon icon="folder"></font-awesome-icon>{{ folderHint }}
+                </span>
             </div>
         </div>
         <!-- 4. 大小（上）/ 上传用户（中）/ 上传时间（下）
@@ -143,23 +142,38 @@
 
 <script>
 import { splitFileName } from '../../utils/fileName';
+import { thumbUrl } from '../../utils/thumb';
 export default {
     name: 'FileListItem',
     props: {
         item: { type: Object, required: true },
         selected: { type: Boolean, default: false },
-        fileLink: { type: String, default: '' }
+        fileLink: { type: String, default: '' },
+        // v3.0.0（R8）：是否「别人共享给我且为只读」—— 不可选中（隐藏选择框）、文件夹无属性入口
+        sharedReadonly: { type: Boolean, default: false },
+        /** v3.0.0（R12）：正在删除（显示转圈遮罩） */
+        deleting: { type: Boolean, default: false },
+        /** v3.0.0（R12）：遮罩文案（默认「正在删除…」） */
+        deletingLabel: { type: String, default: '' },
+        /**
+         * v3.0.0（R15）：回收站里显示「原所在目录」——
+         * 目录被删除后里面的文件仍是散条，靠这行提示让用户看出
+         * 「恢复这个目录会把这些文件一起带回去」的层级关系。
+         */
+        folderHint: { type: String, default: '' }
     },
-    emits: ['update:selected', 'enter', 'detail', 'previewMedia', 'copy', 'folderCopy', 'move', 'delete', 'download', 'openLink', 'touchstart', 'touchend', 'touchmove', 'preview', 'previewMove', 'previewEnd'],
+    // v3.0.0：新增 props（文件夹行点名称 = 目录属性）
+    emits: ['update:selected', 'enter', 'props', 'detail', 'previewMedia', 'copy', 'folderCopy', 'move', 'delete', 'download', 'openLink', 'touchstart', 'touchend', 'touchmove'],
     data() {
         return {
-            localSelected: this.selected,
-            // v2.8.6b：渠道行小眼睛长按预览（移动端）
-            eyePressTimer: null,
-            eyePreviewing: false
+            localSelected: this.selected
         }
     },
     computed: {
+        /** v3.0.0（R10）：列表缩略图用 240 宽（行高约 56px，2x 屏够用） */
+        imageThumb() {
+            return thumbUrl(this.fileLink, 240);
+        },
         isFolder() {
             // 检查 isFolder 属性或名称以 / 结尾
             return this.item.isFolder || this.item.name?.endsWith('/');
@@ -217,8 +231,11 @@ export default {
         },
         displayName() {
             if (this.isFolder) {
-                const parts = this.item.name.split('/').filter(Boolean);
-                return parts[parts.length - 1] || this.item.name;
+                // v3.0.0（R12）：优先用目录属性里的自定义名称
+                return this.item.displayName || this.item.metadata?.FileName || (() => {
+                    const parts = this.item.name.split('/').filter(Boolean);
+                    return parts[parts.length - 1] || this.item.name;
+                })();
             }
             return this.item.metadata?.FileName || this.getFileName(this.item.name);
         },
@@ -253,7 +270,7 @@ export default {
             if (type && name) return `${type} / ${name}`;
             return type || name || '';
         },
-        /** 存储渠道简称（COS / ALI / EI …） */
+        /** 存储渠道简称（COS / OSS / EI …） */
         storageChannelShort() {
             return this.item.metadata?.ChannelShort || '';
         },
@@ -300,56 +317,9 @@ export default {
         }
     },
     beforeUnmount() {
-        this.clearEyePressTimer();
+        /* v3.0.0（R9）：预览小眼睛已移除，长按计时器清理不再需要 */
     },
     methods: {
-        /* v2.8.6b：PC 悬停小眼睛 → 预览锚定在眼睛矩形上 */
-        handleEyeEnter(e) {
-            this.$emit('preview', e, { rect: e.currentTarget.getBoundingClientRect() });
-        },
-        /* v2.8.6b：移动端长按小眼睛预览（触屏无 hover）——
-           按住 350ms 弹出预览，松手/明显滑动（>10px）收起；
-           微抖不取消（真机手指按下必然有 touchmove，此前一刀切导致长按弹不出来）。
-           锚点用眼睛矩形，浮层贴着眼睛弹出且不覆盖眼睛。 */
-        handleEyeTouchStart(e) {
-            if (this.isFolder || (!this.isImage && !this.isVideo)) return;
-            this.clearEyePressTimer();
-            const point = e.touches && e.touches[0] ? e.touches[0] : e;
-            this._eyeStartX = point.clientX || 0;
-            this._eyeStartY = point.clientY || 0;
-            // currentTarget 在事件派发结束后会被置空，必须在定时器外先取好
-            const btnRect = e.currentTarget ? e.currentTarget.getBoundingClientRect() : null;
-            this.eyePressTimer = setTimeout(() => {
-                this.eyePressTimer = null;
-                this.eyePreviewing = true;
-                const rect = btnRect || { left: this._eyeStartX, top: this._eyeStartY, right: this._eyeStartX, bottom: this._eyeStartY };
-                this.$emit('preview', { clientX: this._eyeStartX, clientY: this._eyeStartY }, { touch: true, rect });
-            }, 350);
-        },
-        handleEyeTouchMove(e) {
-            const point = e.touches && e.touches[0];
-            if (point && typeof this._eyeStartX === 'number') {
-                const dx = point.clientX - this._eyeStartX;
-                const dy = point.clientY - this._eyeStartY;
-                if (dx * dx + dy * dy > 100) {
-                    this.clearEyePressTimer();
-                    if (this.eyePreviewing) this.handleEyeTouchEnd();
-                }
-            }
-        },
-        handleEyeTouchEnd() {
-            this.clearEyePressTimer();
-            if (this.eyePreviewing) {
-                this.eyePreviewing = false;
-                this.$emit('previewEnd');
-            }
-        },
-        clearEyePressTimer() {
-            if (this.eyePressTimer) {
-                clearTimeout(this.eyePressTimer);
-                this.eyePressTimer = null;
-            }
-        },
         handleSelectChange(value) {
             this.localSelected = value;
             this.$emit('update:selected', value);
@@ -367,9 +337,12 @@ export default {
                 this.$emit('previewMedia', this.item);
             }
         },
+        /* v3.0.0：文件夹行点名称 → 目录属性面板（进入目录改点缩略图）
+           v3.0.0（R8）：只读共享目录没有「属性」入口，点名称改为进入目录 */
         handleNameClick() {
             if (this.isFolder) {
-                this.$emit('enter');
+                if (this.sharedReadonly) this.$emit('enter');
+                else this.$emit('props');
             } else {
                 this.$emit('detail');
             }
@@ -386,6 +359,7 @@ export default {
 /* ── 历史记录风格的圆角卡片行（无表头、纵向留缝）────────────────── */
 .list-item {
     display: grid;
+    position: relative;
     /* 选择 / 缩略图 / 文件名+渠道 / 大小+用户+时间 / 操作 */
     grid-template-columns: 40px 48px minmax(200px, 1fr) 180px auto;
     gap: 14px;
@@ -400,6 +374,32 @@ export default {
     contain: layout paint style;
     contain-intrinsic-size: 70px;
     min-width: fit-content;
+}
+/* v3.0.0（R12，需求 43）：删除中遮罩 + 转圈（整行覆盖） */
+.card-deleting-mask {
+    position: absolute;
+    inset: 0;
+    z-index: 6;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    border-radius: 12px;
+    background: rgba(0, 0, 0, 0.42);
+    color: #fff;
+    font-size: 12px;
+    cursor: progress;
+}
+.card-deleting-spinner {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    border: 2px solid rgba(255, 255, 255, 0.35);
+    border-top-color: #fff;
+    animation: card-deleting-spin 0.8s linear infinite;
+}
+@keyframes card-deleting-spin {
+    to { transform: rotate(360deg); }
 }
 .list-item.is-selected {
     border-color: var(--el-color-primary);
@@ -467,39 +467,26 @@ export default {
     flex-shrink: 0;
     white-space: nowrap;
 }
+/* v3.0.0（R14）：文件夹行名称右侧的「属性」提示图标已按需求移除 */
+.name-props-icon {
+    flex: 0 0 auto;
+    align-self: center;
+    margin-left: 6px;
+    font-size: 11px;
+    opacity: 0.5;
+    transition: opacity 0.2s ease, color 0.2s ease;
+}
+.list-col-name:hover .name-props-icon {
+    opacity: 1;
+    color: var(--primary-color-accent);
+}
 .channel-line {
     display: flex;
     align-items: center;
     gap: 6px;
     min-width: 0;
 }
-/* v2.8.6b：预览小眼睛（渠道行起始位置）—— 颜色与文件名文本一致，悬停轻微提亮 */
-.list-eye-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 18px;
-    height: 18px;
-    padding: 0;
-    border: none;
-    border-radius: 5px;
-    background: transparent;
-    color: var(--upload-text-color);
-    opacity: 0.7;
-    font-size: 12px;
-    line-height: 1;
-    cursor: pointer;
-    flex-shrink: 0;
-    transition: opacity 0.2s ease, color 0.2s ease, background-color 0.2s ease;
-}
-.list-eye-btn:hover {
-    opacity: 1;
-    color: var(--primary-color-accent);
-    background: color-mix(in srgb, var(--primary-color) 12%, transparent);
-}
-.list-eye-btn svg {
-    display: block;
-}
+/* v3.0.0（R9）：预览小眼睛已移除（悬停预览浮层整体下线） */
 /* 渠道简称徽标（沿用列表视图原来的品牌配色语义：备份渠道橙色调） */
 /* v2.8.9：渠道简称（存储 / 备份）改为与「预览小眼睛」同一套配色 ——
    文字用 --upload-text-color + 0.7 透明度，去掉绿/橙底色，只留同色系细边框 */
@@ -524,6 +511,22 @@ export default {
     border-color: color-mix(in srgb, var(--upload-text-color) 32%, transparent);
     opacity: 0.7;
 }
+/* v3.0.0（第三轮）：「共享」标识 —— 尺寸与相邻渠道简称一致，仅换主色以便一眼区分 */
+.shared-badge {
+    display: inline-flex;
+    align-items: center;
+    height: 18px;
+    padding: 0 7px;
+    border-radius: 5px;
+    font-size: 11px;
+    font-weight: 500;
+    line-height: 1;
+    white-space: nowrap;
+    flex-shrink: 0;
+    color: var(--primary-color, #2563EB);
+    background: color-mix(in srgb, var(--primary-color, #2563EB) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--primary-color, #2563EB) 30%, transparent);
+}
 
 /* v2.8.7：渠道行内文件大小 —— 只在移动端显示（PC 端右侧第三列已有大小列） */
 .channel-size {
@@ -539,11 +542,32 @@ export default {
     }
 }
 
+/*
+ * v3.0.0（R15）：回收站「原所在目录」提示 ——
+ * 目录被删后其内部文件仍是散条，这里标出路径，直观表达层级与「连带恢复」范围。
+ */
+.trash-folder-hint {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    max-width: 150px;
+    font-size: 11px;
+    line-height: 1.3;
+    color: var(--el-text-color-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex-shrink: 1;
+}
+.trash-folder-hint .svg-inline--fa {
+    font-size: 9px;
+    opacity: 0.8;
+}
+
 /* v2.6.0：文件夹统计行（名称下方） */
 .folder-stat-line {
     font-size: 11px;
-    opacity: 0.65;
-    white-space: nowrap;
+    opacity: 0.65;    white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
 }

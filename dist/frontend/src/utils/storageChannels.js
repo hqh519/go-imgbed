@@ -50,6 +50,8 @@ export const CHANNEL_TYPE_CODE = {
     webdav: 180,
     custom: 190,
     local: 999,
+    // v3.0.0：本地文件（只读浏览）—— 排在所有本地存储之后
+    localfiles: 1000,
 };
 
 /** 取渠道类型编号（未知类型排最后） */
@@ -87,6 +89,11 @@ export async function fetchStorageChannels(force = false) {
                      * 都不会被渲染成可选项。
                      */
                     if (c.enabled === false) continue;
+                    /*
+                     * v3.0.0：本地文件渠道（localfiles）只用于「本地文件」页浏览，
+                     * 不参与上传 —— 所有上传渠道下拉（上传设置 / 备份渠道 / Token）都要排除它。
+                     */
+                    if ((c.type || type) === 'localfiles') continue;
                     list.push({
                         id: value,
                         code: c.code || value,

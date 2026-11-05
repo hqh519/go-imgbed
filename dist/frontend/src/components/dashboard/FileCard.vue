@@ -7,16 +7,29 @@
     -->
     <div
         class="file-card"
-        :class="{ 'is-selected': localSelected }"
+        :class="{ 'is-selected': localSelected, 'is-force-select': showSelect, 'is-deleting': deleting }"
         @contextmenu.prevent
         @touchstart="$emit('touchstart', $event)"
         @touchend="$emit('touchend', $event)"
         @touchmove="$emit('touchmove', $event)"
     >
+        <!-- v3.0.0（R12，需求 43）：删除中 → 整卡遮罩 + 转圈 -->
+        <div v-if="deleting" class="card-deleting-mask" role="status" aria-live="polite">
+            <span class="card-deleting-spinner"></span>
+            <span class="card-deleting-text">{{ deletingLabel || $t('dashboard.deletingHint') }}</span>
+        </div>
         <!-- 上半部分：缩略图（v2.9.0：点击打开媒体预览 —— 图片灯箱 / 视频 / 音频 / 通用弹窗） -->
         <div class="card-preview" @click="$emit('previewMedia', item)">
+            <!-- 文件夹（v3.0.0 R14：回收站里的已删除文件夹条目复用本卡片外观） -->
+            <div v-if="isFolderItem" class="file-preview folder-card-preview">
+                <div class="file-icon-wrapper">
+                    <font-awesome-icon icon="folder" class="file-icon"/>
+                    <span class="file-ext">{{ $t('fileManager.folder') || 'folder' }}</span>
+                </div>
+            </div>
+
             <!-- 视频预览 -->
-            <template v-if="isVideo">
+            <template v-else-if="isVideo">
                 <div v-if="videoLoading" class="skeleton-wrapper"></div>
                 <div v-else-if="videoError" class="error-wrapper">
                     <font-awesome-icon icon="exclamation-triangle" class="error-icon"/>
@@ -44,7 +57,7 @@
             <!-- 图片预览 -->
             <el-image
                 v-else-if="isImage"
-                :src="fileLink"
+                :src="imageThumb"
                 fit="cover"
                 lazy
                 decoding="async"
@@ -87,7 +100,7 @@
                     </div>
                 </div>
 
-                <div class="overlay-actions" @click.stop>
+                <div v-if="!isFolderItem" class="overlay-actions" @click.stop>
                     <el-tooltip :disabled="disableTooltip" :content="$t('dashboard.copyLink')" placement="top" :show-after="600">
                         <button class="overlay-btn" @click.stop="$emit('copy')">
                             <font-awesome-icon icon="copy"></font-awesome-icon>
@@ -109,8 +122,10 @@
             <!--
                 v2.8.5：选择圆圈从悬浮层移出来单独定位 —— 悬浮层整体 opacity 0，
                 选中项即使鼠标不在卡片上也要能看见勾选状态，只能脱离悬浮层。
+                v3.0.0（R8）：只读共享文件不可选中（隐藏选择圆圈）。
             -->
             <el-checkbox
+                v-if="!sharedReadonly"
                 v-model="localSelected"
                 class="card-select"
                 @click.stop
@@ -128,35 +143,41 @@
                 <span class="upload-time">{{ uploadDate }}</span>
                 <span class="upload-size">{{ fileSizeDisplay }}</span>
             </div>
-            <!-- v2.8.6：第三行 —— 左侧预览小眼睛（与上传用户同色），右侧上传用户 -->
+            <!--
+                v3.0.0（R9）：第三行左侧改为「评分（星）/ 级别（爱心）」——
+                原预览小眼睛及悬停预览浮层已整体移除；
+                评分 / 级别值 > 0 时把数字叠在图标中间，0 = 空图标（未评分 / 未评级）。
+            -->
             <div class="card-footer">
-                <el-tooltip
-                    v-if="isImage || isVideo"
-                    :disabled="disableTooltip"
-                    :content="$t('dashboard.hoverPreview')"
-                    placement="top"
-                    :show-after="600"
-                >
-                    <button
-                        type="button"
-                        class="card-eye-btn"
-                        data-role="preview-eye"
-                        :aria-label="$t('dashboard.hoverPreview')"
-                        @click.stop
-                        @mouseenter="handleEyeEnter"
-                        @mouseleave="$emit('previewEnd')"
-                        @touchstart.stop.prevent="handleEyeTouchStart"
-                        @touchmove.stop="handleEyeTouchMove"
-                        @touchend.stop="handleEyeTouchEnd"
-                        @touchcancel.stop="handleEyeTouchEnd"
+                <div class="card-rating-level">
+                    <span
+                        class="rating-level-icon is-star"
+                        :class="{ 'has-value': itemRating > 0 }"
+                        :title="$t('filter.ratingLabel')"
                     >
-                        <font-awesome-icon icon="eye"></font-awesome-icon>
-                    </button>
-                </el-tooltip>
+                        <!-- v3.0.0（R12）：图标恒为空心（regular），有分值时数字叠在中间 -->
+                        <font-awesome-icon :icon="['far', 'star']"></font-awesome-icon>
+                        <b v-if="itemRating > 0" class="rating-level-num">{{ itemRating }}</b>
+                    </span>
+                    <span
+                        class="rating-level-icon is-heart"
+                        :class="{ 'has-value': itemLevel > 0 }"
+                        :title="$t('filter.levelLabel')"
+                    >
+                        <font-awesome-icon :icon="['far', 'heart']"></font-awesome-icon>
+                        <b v-if="itemLevel > 0" class="rating-level-num">{{ itemLevel }}</b>
+                    </span>
+                </div>
                 <span v-if="uploadUser" class="upload-user" :title="uploadUser">
                     <font-awesome-icon icon="user" />
                     {{ uploadUser }}
                 </span>
+                <!-- v3.0.0：「共享」标识（发起方显示「你的共享文件」，接收方显示「由 X 共享给你」） -->
+                <span
+                    v-if="item.shared"
+                    class="shared-badge"
+                    :title="item.sharedSelf ? $t('fileManager.sharedBadgeSelfTitle') : $t('fileManager.sharedBadgeTitle', { owner: item.sharedOwner || '' })"
+                >{{ $t('fileManager.sharedBadge') }}</span>
             </div>
         </div>
     </div>
@@ -164,6 +185,7 @@
 
 <script>
 import { splitFileName } from '../../utils/fileName';
+import { thumbUrl } from '../../utils/thumb';
 export default {
     name: 'FileCard',
     props: {
@@ -171,21 +193,37 @@ export default {
         selected: { type: Boolean, default: false },
         fileLink: { type: String, required: true },
         previewSrcList: { type: Array, default: () => [] },
-        disableTooltip: { type: Boolean, default: false }
+        disableTooltip: { type: Boolean, default: false },
+        /** v3.0.0：列表里已有文件被选中 → 所有卡片都常显右上角勾选框 */
+        showSelect: { type: Boolean, default: false },
+        // v3.0.0（R8）：是否「别人共享给我且为只读」—— 不可选中（隐藏选择圆圈）
+        sharedReadonly: { type: Boolean, default: false },
+        /** v3.0.0（R12）：正在删除（显示转圈遮罩） */
+        deleting: { type: Boolean, default: false },
+        /** v3.0.0（R12）：遮罩文案（默认「正在删除…」） */
+        deletingLabel: { type: String, default: '' }
     },
-    emits: ['update:selected', 'detail', 'previewMedia', 'openLink', 'copy', 'move', 'delete', 'download', 'touchstart', 'touchend', 'touchmove', 'preview', 'previewMove', 'previewEnd'],
+    emits: ['update:selected', 'detail', 'previewMedia', 'openLink', 'copy', 'move', 'delete', 'download', 'touchstart', 'touchend', 'touchmove'],
     data() {
         return {
             localSelected: this.selected,
             videoLoading: true,
-            videoError: false,
-            // v2.8.6：小眼睛长按预览计时器（移动端）
-            eyePressTimer: null,
-            eyePreviewing: false
+            videoError: false
         }
     },
     computed: {
-        /** 主渠道简称：由后端 metadata.ChannelShort 统一下发（COS / ALI / EI / LS / IM / MI / R2 / S3 / WD / DIY） */
+        /** v3.0.0（R14）：回收站里的已删除文件夹条目（复用文件卡片外观，图标显示为文件夹） */
+        isFolderItem() {
+            return !!(this.item?.isFolder || this.item?.metadata?.FileType === 'folder');
+        },
+        /** v3.0.0（R9）：评分（星）与级别（爱心）数值 —— 0 = 未评分 / 未评级（显示空图标） */
+        itemRating() {
+            return Number(this.item?.metadata?.Rating) || 0;
+        },
+        itemLevel() {
+            return Number(this.item?.metadata?.Level) || 0;
+        },
+        /** 主渠道简称：由后端 metadata.ChannelShort 统一下发（COS / OSS / EI / LS / IM / MI / R2 / S3 / WD / DIY） */
         channelTag() {
             return this.item.metadata?.ChannelShort || this.item.channelTag || '';
         },
@@ -278,6 +316,13 @@ export default {
             if (sizeMB) return `${sizeMB} MB`;
             return '-';
         },
+        /**
+         * v3.0.0（R10）：后台卡片缩略图 —— 走本站 /file 代理 + thumb 参数。
+         * 卡片尺寸约 200~300px，取 320 宽足够清晰，体积比原图小一个数量级。
+         */
+        imageThumb() {
+            return thumbUrl(this.fileLink, 320);
+        },
         /** 上传用户（账户名；未登录上传为空） */
         uploadUser() {
             return this.item.metadata?.UploadUser || '';
@@ -294,57 +339,9 @@ export default {
         }
     },
     beforeUnmount() {
-        this.clearEyePressTimer();
+        /* v3.0.0（R9）：预览小眼睛已移除，长按计时器清理不再需要 */
     },
     methods: {
-        /* v2.8.6b：PC 悬停小眼睛 → 预览锚定在眼睛矩形上（不再跟随鼠标移动） */
-        handleEyeEnter(e) {
-            this.$emit('preview', e, { rect: e.currentTarget.getBoundingClientRect() });
-        },
-        /* v2.8.6：移动端长按小眼睛预览 —— 触屏没有 hover，按住 350ms 后弹预览，
-           松手/明显滑动即收起；.stop 阻止冒泡到卡片，避免同时触发「长按打开操作面板」。
-           v2.8.6b 修复：真机上手指按下时的微小抖动也会触发 touchmove，
-           之前只要一动就取消计时 → 长按永远弹不出来；现在 10px 内的移动不算滑动 */
-        handleEyeTouchStart(e) {
-            this.clearEyePressTimer();
-            const point = e.touches && e.touches[0] ? e.touches[0] : e;
-            this._eyeStartX = point.clientX || 0;
-            this._eyeStartY = point.clientY || 0;
-            // currentTarget 在事件派发结束后会被置空，必须在定时器外先取好
-            const btnRect = e.currentTarget ? e.currentTarget.getBoundingClientRect() : null;
-            this.eyePressTimer = setTimeout(() => {
-                this.eyePressTimer = null;
-                this.eyePreviewing = true;
-                // 锚点用眼睛按钮自身的矩形（而非触点），保证浮层贴着眼睛弹出
-                const rect = btnRect || { left: this._eyeStartX, top: this._eyeStartY, right: this._eyeStartX, bottom: this._eyeStartY };
-                this.$emit('preview', { clientX: this._eyeStartX, clientY: this._eyeStartY }, { touch: true, rect });
-            }, 350);
-        },
-        handleEyeTouchMove(e) {
-            // 手指明显滑动（>10px）才视为滚动页面，取消长按；微抖不取消
-            const point = e.touches && e.touches[0];
-            if (point && typeof this._eyeStartX === 'number') {
-                const dx = point.clientX - this._eyeStartX;
-                const dy = point.clientY - this._eyeStartY;
-                if (dx * dx + dy * dy > 100) {
-                    this.clearEyePressTimer();
-                    if (this.eyePreviewing) this.handleEyeTouchEnd();
-                }
-            }
-        },
-        handleEyeTouchEnd() {
-            this.clearEyePressTimer();
-            if (this.eyePreviewing) {
-                this.eyePreviewing = false;
-                this.$emit('previewEnd');
-            }
-        },
-        clearEyePressTimer() {
-            if (this.eyePressTimer) {
-                clearTimeout(this.eyePressTimer);
-                this.eyePressTimer = null;
-            }
-        },
         handleVideoError() {
             this.videoLoading = false;
             this.videoError = true;
@@ -367,6 +364,7 @@ export default {
 .file-card {
     box-sizing: border-box;
     width: 100%;
+    position: relative;
     background: var(--toolbar-button-bg-color);
     border-radius: 12px;
     overflow: hidden;
@@ -384,6 +382,33 @@ export default {
 .file-card.is-selected {
     border-color: var(--el-color-primary);
     box-shadow: 0 0 0 1px var(--el-color-primary);
+}
+/* v3.0.0（R12，需求 43）：删除中遮罩 + 转圈 */
+.card-deleting-mask {
+    position: absolute;
+    inset: 0;
+    z-index: 6;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    background: rgba(0, 0, 0, 0.42);
+    backdrop-filter: blur(1px);
+    color: #fff;
+    font-size: 12px;
+    cursor: progress;
+}
+.card-deleting-spinner {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    border: 2px solid rgba(255, 255, 255, 0.35);
+    border-top-color: #fff;
+    animation: card-deleting-spin 0.8s linear infinite;
+}
+@keyframes card-deleting-spin {
+    to { transform: rotate(360deg); }
 }
 
 /* ── 上半部分：缩略图 ──────────────────────────────────────────── */
@@ -523,7 +548,9 @@ export default {
 }
 .file-card:hover .card-select,
 .file-card:focus-within .card-select,
-.file-card.is-selected .card-select {
+.file-card.is-selected .card-select,
+/* v3.0.0：只要列表里有一个文件被选中，其余卡片也常显勾选框（批量操作更直观） */
+.file-card.is-force-select .card-select {
     opacity: 1;
     pointer-events: auto;
 }
@@ -534,10 +561,11 @@ export default {
     }
 }
 .card-select :deep(.el-checkbox__inner) {
-    width: 16px !important;
-    min-width: 16px;
-    height: 16px !important;
-    min-height: 16px;
+    /* v3.0.0（R14）：卡片右上角选中按钮调大一点（16 → 18px） */
+    width: 18px !important;
+    min-width: 18px;
+    height: 18px !important;
+    min-height: 18px;
     border-radius: 50% !important;
     /* v2.8.0：未选中时圆圈内部透明（不填充白色） */
     background: transparent;
@@ -639,7 +667,7 @@ export default {
     opacity: 0.65;
     color: var(--upload-text-color);
 }
-/* v2.8.6：第三行 —— 左：预览小眼睛（与上传用户同色），右：上传用户 */
+/* v3.0.0（R9）：第三行 —— 左：评分（星）/ 级别（爱心），右：上传用户（原预览小眼睛已移除） */
 .card-footer {
     display: flex;
     align-items: center;
@@ -647,40 +675,50 @@ export default {
     min-height: 18px;
     margin-top: 4px;
 }
-.card-eye-btn {
+/* 评分 / 级别图标组：默认灰色空图标，有值时点亮并把数字叠在图标中间 */
+.card-rating-level {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
     flex: 0 0 auto;
-    width: 18px;
-    height: 18px;
-    padding: 0;
-    border: none;
-    background: none;
+    /*
+     * v3.0.0（R19）：与上一行「上传日期 / 文件大小」(.card-meta) 保持完全一致 ——
+     * 同色 + 同透明度（0.65），不再比日期行更抢眼。
+     */
+    color: var(--upload-text-color);
+    opacity: 0.65;
+}
+.rating-level-icon {
+    position: relative;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    font-size: 12px;
+    width: 16px;
+    height: 16px;
+    font-size: 13px;
     line-height: 1;
-    /* 与上传用户文本同色同透明度，视觉上属于同一行信息 */
+    /* v3.0.0（R14）：有值/无值统一使用与用户名相同的颜色（不再点亮金黄 / 红色） */
     color: var(--upload-text-color);
-    opacity: 0.7;
-    cursor: pointer;
-    transition: opacity 0.2s ease, transform 0.2s ease;
-    /* 触屏长按预览：禁止系统「长按选中/弹出菜单」 */
-    -webkit-touch-callout: none;
-    -webkit-user-select: none;
-    user-select: none;
 }
-.card-eye-btn:hover {
-    opacity: 1;
-    transform: scale(1.08);
-}
-.card-eye-btn:active {
-    transform: scale(0.95);
-}
-.card-eye-btn:focus-visible {
-    outline: none;
-    opacity: 1;
-    box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary-color, #2563EB) 28%, transparent);
-    border-radius: 5px;
+.rating-level-num {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    /* v3.0.0（R19）：数字比图标小一号（8px → 7px），且不再加粗 */
+    font-size: 7px;
+    font-weight: 400;
+    font-style: normal;
+    line-height: 1;
+    /*
+     * v3.0.0（R15）：数字改用与文件名一致的正文色 ——
+     * 之前固定 #fff，白天模式下卡片信息区是浅底，白色数字几乎看不见。
+     * 光晕改成卡片底色，保证叠在空心图标上仍然清晰。
+     */
+    color: var(--upload-text-color);
+    text-shadow: 0 0 2px var(--toolbar-button-bg-color), 0 0 3px var(--toolbar-button-bg-color);
+    pointer-events: none;
 }
 .upload-user {
     display: inline-flex;
@@ -695,6 +733,20 @@ export default {
     white-space: nowrap;
     text-overflow: ellipsis;
     color: var(--upload-text-color);
+}
+/* v3.0.0（第三轮）：右下角「共享」标识 —— 与上传用户同一行、居最右，尺寸沿用同一行的 12px 信息级 */
+.shared-badge {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    padding: 0 6px;
+    border-radius: 999px;
+    font-size: 11px;
+    line-height: 17px;
+    white-space: nowrap;
+    color: var(--primary-color, #2563EB);
+    background: color-mix(in srgb, var(--primary-color, #2563EB) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--primary-color, #2563EB) 30%, transparent);
 }
 
 /* 骨架图加载动画 */

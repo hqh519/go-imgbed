@@ -1,12 +1,20 @@
 <template>
-    <el-dialog :title="$t('fileDetail.title')" v-model="visible" :width="dialogWidth">
+    <el-dialog
+        :title="$t('fileDetail.title')"
+        v-model="visible"
+        :width="dialogWidth"
+        ref="detailDialog"
+        @closed="stopAllMedia"
+    >
         <!-- 详情内容统一包一层：任一加载值超过 80 字符时整体字号降一号 -->
         <div class="detail-body" :class="{ 'detail-compact': hasLongValue }">
-        <div class="detail-actions">
-            <el-button type="primary" @click="$emit('download')" round size="small" class="detail-action" v-if="!isEditing && !trashMode">
-                <font-awesome-icon icon="download" style="margin-right: 3px;"></font-awesome-icon> {{ $t('fileDetail.download') }}
-            </el-button>
+        <!-- v3.0.0：下载按钮移到下方「二维码 / 分享」同一行的最后面（见 preview-toolbar） -->
+        <!-- v3.0.0（R12）：只读共享 → 顶部一行按钮整行不渲染（不只是逐个隐藏） -->
+        <div class="detail-actions" v-if="!readonlyShared">
             <!--
+                v3.0.0：顶行按钮顺序统一为 ——
+                标签 → 黑名单 → 白名单 → 编辑 → 重命名 → 删除 → 限时 → 加密 → 重定向
+                （二维码 / 分享 / 下载 保留在下方另一行；回收站只保留「恢复 / 彻底删除」）
                 标签管理 / 黑名单 / 白名单属于「文件管理」页的批量能力：
                 其它页面（如历史记录）复用本详情弹窗时可通过 showAdvanced=false 隐藏它们。
                 普通用户还须拥有「可编辑」权限，否则不加载这些按钮（后端同样校验）。
@@ -21,6 +29,12 @@
             <el-button v-if="showAdvanced && !isEditing && canEditAction && !trashMode" :type="isWhitelisted ? 'success' : 'primary'" @click="$emit('white')" round size="small" class="detail-action">
                 <font-awesome-icon icon="shield-alt" style="margin-right: 3px;"></font-awesome-icon> {{ isWhitelisted ? $t('fileDetail.removeFromWhitelist') : $t('fileDetail.whitelist') }}
             </el-button>
+            <el-button type="warning" @click="startEdit()" round size="small" class="detail-action" v-if="!isEditing && canEditAction && !trashMode">
+                <font-awesome-icon icon="edit" style="margin-right: 3px;"></font-awesome-icon> {{ $t('fileDetail.edit') }}
+            </el-button>
+            <el-button type="info" @click="openRenameDialog()" round size="small" class="detail-action" v-if="!isEditing && canEditAction && !trashMode">
+                <font-awesome-icon icon="i-cursor" style="margin-right: 3px;"></font-awesome-icon> {{ $t('fileDetail.rename') }}
+            </el-button>
             <!-- 回收站模式：删除按钮替换为「恢复」+「彻底删除」 -->
             <template v-if="trashMode">
                 <el-button type="success" @click="$emit('restore')" round size="small" class="detail-action" v-if="canDeleteAction">
@@ -31,22 +45,29 @@
                 </el-button>
             </template>
             <!-- 删除：须拥有「可删除」权限，否则不加载删除按钮 -->
-            <el-button type="danger" @click="$emit('delete')" round size="small" class="detail-action" v-else-if="!isEditing && canDeleteAction">
+            <el-button v-if="!trashMode && !isEditing && canDeleteAction" type="danger" @click="$emit('delete')" round size="small" class="detail-action">
                 <font-awesome-icon icon="trash-alt" style="margin-right: 3px;"></font-awesome-icon> {{ $t('fileDetail.deleteBtn') }}
-            </el-button>
-            <el-button type="warning" @click="startEdit()" round size="small" class="detail-action" v-if="!isEditing && canEditAction && !trashMode">
-                <font-awesome-icon icon="edit" style="margin-right: 3px;"></font-awesome-icon> {{ $t('fileDetail.edit') }}
-            </el-button>
-            <el-button type="info" @click="openRenameDialog()" round size="small" class="detail-action" v-if="!isEditing && canEditAction && !trashMode">
-                <font-awesome-icon icon="i-cursor" style="margin-right: 3px;"></font-awesome-icon> {{ $t('fileDetail.rename') }}
-            </el-button>
-            <!-- 重定向：用自定义链接替换真实文件源（清空即恢复渠道直链） -->
-            <el-button type="primary" plain @click="openRedirectDialog()" round size="small" class="detail-action" v-if="!isEditing && canEditAction && !trashMode">
-                <font-awesome-icon icon="exchange-alt" style="margin-right: 3px;"></font-awesome-icon> {{ $t('dashboard.redirect') }}
             </el-button>
             <!-- 限时：设置链接有效期（到时外链自动 410，旧链接同样失效） -->
             <el-button type="warning" plain @click="openExpiryDialog()" round size="small" class="detail-action" v-if="!isEditing && canEditAction && !trashMode && noteLoaded">
                 <font-awesome-icon icon="clock" style="margin-right: 3px;"></font-awesome-icon> {{ $t('fileDetail.expiryButton') }}
+            </el-button>
+            <!-- v3.0.0：文件级加密 —— 已加密时按钮为激活态，弹窗内可改密码 / 清除密码 -->
+            <el-button
+                :type="fileEncrypted ? 'success' : 'info'"
+                :plain="!fileEncrypted"
+                @click="openPasswordDialog()"
+                round
+                size="small"
+                class="detail-action"
+                v-if="!isEditing && canEditAction && !trashMode && noteLoaded"
+            >
+                <font-awesome-icon :icon="fileEncrypted ? 'shield-alt' : 'key'" style="margin-right: 3px;"></font-awesome-icon>
+                {{ fileEncrypted ? $t('fileDetail.encryptOn') : $t('fileDetail.encrypt') }}
+            </el-button>
+            <!-- 重定向：用自定义链接替换真实文件源（清空即恢复渠道直链） -->
+            <el-button type="primary" plain @click="openRedirectDialog()" round size="small" class="detail-action" v-if="!isEditing && canEditAction && !trashMode">
+                <font-awesome-icon icon="exchange-alt" style="margin-right: 3px;"></font-awesome-icon> {{ $t('dashboard.redirect') }}
             </el-button>
             <el-button type="success" @click="saveMetadata()" round size="small" class="detail-action" v-if="isEditing" :loading="editSaving">
                 <font-awesome-icon icon="save" style="margin-right: 3px;" v-if="!editSaving"></font-awesome-icon> {{ $t('fileDetail.save') }}
@@ -84,6 +105,47 @@
                 </el-tab-pane>
             </el-tabs>
         </div>
+
+        <!--
+            v3.0.0（R8）：评分 / 等级 —— 点星 / 点心直接存库（FileRecord.rating / level 列）。
+            评分 = 五颗星（v3.0.0 R14 起取消半星，点一次一星）；等级 = 五个爱心（1-5，默认空心）。
+            权限（v3.0.0 R14 放宽）：作者本人 / 管理员 / 可编辑共享目录的接收方（canRate）。
+        -->
+        <div class="detail-rating" v-if="!trashMode">
+            <div class="detail-rating-row">
+                <span class="detail-rating-label">{{ $t('fileDetail.ratingLabel') }}</span>
+                <el-rate
+                    v-model="ratingValue"
+                    :disabled="!canRate"
+                    :clearable="true"
+                    @change="saveRatingLevel"
+                />
+                <span class="detail-rating-value">{{ ratingValue > 0 ? ratingValue : $t('fileDetail.ratingNone') }}</span>
+            </div>
+            <div class="detail-rating-row">
+                <span class="detail-rating-label">{{ $t('fileDetail.levelLabel') }}</span>
+                <!-- 等级 = 五个爱心（1-5 整数）：默认空心灰，选中（有评级值）后变红色实心 -->
+                <span class="detail-level-stars" :class="{ 'is-disabled': !canRate }">
+                    <button
+                        v-for="i in 5"
+                        :key="'lv-' + i"
+                        type="button"
+                        class="detail-level-heart"
+                        :class="{ 'is-on': levelValue >= i, 'is-hover': canRate && levelHover >= i }"
+                        :disabled="!canRate"
+                        :aria-label="$t('fileDetail.levelLabel') + ' ' + i"
+                        @click="setLevel(i)"
+                        @mouseenter="levelHover = i"
+                        @mouseleave="levelHover = 0"
+                    >
+                        <!-- v3.0.0（R14）：未选中 = 空心（far/heart），选中 = 实心（heart，红色） -->
+                        <font-awesome-icon :icon="levelValue >= i ? 'heart' : ['far', 'heart']" />
+                    </button>
+                </span>
+                <span class="detail-rating-value">{{ levelValue > 0 ? levelValue : $t('fileDetail.levelNone') }}</span>
+            </div>
+            <div v-if="!canRate" class="detail-rating-hint">{{ $t('fileDetail.ratingReadonlyHint') }}</div>
+        </div>
         <!-- 文件预览区域 -->
         <div class="preview-section">
             <!-- 二维码不再单开标签页：直接在这个「文件加载区域」里替换文件显示（v2.3.0） -->
@@ -96,7 +158,54 @@
                 >
                     <font-awesome-icon icon="qrcode" class="preview-toolbar-icon" />{{ $t('fileDetail.qrCode') }}
                 </el-button>
-                <span class="preview-toolbar-hint">{{ showQr ? $t('fileDetail.qrHint') : '' }}</span>
+                <!-- v3.0.0：分享 —— 二维码 + 可选信息卡片，可保存为图片 -->
+                <el-button size="small" plain class="preview-toolbar-share" @click="openShareDialog">
+                    <font-awesome-icon icon="share-alt" class="preview-toolbar-icon" />{{ $t('fileDetail.share') }}
+                </el-button>
+                <!-- v3.0.0：二维码区的「手机扫码即可打开…」长句已整句移除，只保留二维码本身 -->
+                <!--
+                    v3.0.0（R10）：「源」按钮 —— 显示「文件加载域名 + 固化地址」
+                    （代理模式=内网通信域名，重定向模式=公开访问域名），点击复制。
+                    存储渠道 / 备份渠道两项另用「公开访问域名」，供对外分享。
+                -->
+                <el-button
+                    v-if="!isEditing && !trashMode && storageSourceUrl"
+                    size="small"
+                    plain
+                    class="preview-toolbar-source"
+                    :title="storageSourceUrl"
+                    @click="copyStorageSource"
+                >
+                    <font-awesome-icon icon="link" class="preview-toolbar-icon" />{{ $t('fileDetail.sourceUrl') }}
+                </el-button>
+                <!-- v3.0.0：下载按钮从顶部左侧移到这里，排在最后并靠右；
+                     v3.0.0（R5）：样式与前面的「二维码」按钮完全一致（plain + small + 同圆角/内边距） -->
+                <el-button
+                    v-if="!isEditing && !trashMode"
+                    class="preview-toolbar-download"
+                    size="small"
+                    plain
+                    @click="$emit('download')"
+                >
+                    <font-awesome-icon icon="download" class="preview-toolbar-icon" />{{ $t('fileDetail.download') }}
+                </el-button>
+                <!--
+                    v3.0.0（R14）：声音开关从「图床文件管理页右上角」迁到这里（下载按钮后面）——
+                    同一份全局状态（store.globalVideoMuted），统一控制预览浮层视频 / 详情页视频
+                    以及详情页音频的播放声音。
+                -->
+                <el-button
+                    v-if="!isEditing && !trashMode && (isVideo || isAudio)"
+                    class="preview-toolbar-mute"
+                    :class="{ 'is-active': !videoMuted }"
+                    size="small"
+                    plain
+                    :title="videoMuted ? $t('dashboard.videoMutedOn') : $t('dashboard.videoMutedOff')"
+                    :aria-label="videoMuted ? $t('dashboard.videoMutedOn') : $t('dashboard.videoMutedOff')"
+                    @click="toggleMediaSound"
+                >
+                    <font-awesome-icon :icon="videoMuted ? 'volume-mute' : 'volume-up'" class="preview-toolbar-icon" />
+                </el-button>
             </div>
             <div class="preview-content" :class="{ 'is-qr': showQr }">
                 <!-- v2.4.0：二维码改为真实 <img> 渲染（见 QRCodeBox），
@@ -110,7 +219,7 @@
                     <!-- v2.8.7c：mediaMounted 控制 —— 关闭弹窗即销毁媒体元素（彻底停止播放、
                          不会再被后台缓冲的 canplay 触发复活），重新打开时重建元素并主动起播 -->
                     <video v-if="isVideo && mediaMounted" ref="detailVideo" :src="fileLink" muted loop class="video-preview" @click="openImageLink" @canplay="startDetailVideo"></video>
-                    <audio v-else-if="isAudio && mediaMounted" ref="detailAudio" :src="fileLink" controls class="audio-preview" @canplay="startDetailAudio"></audio>
+                    <audio v-else-if="isAudio && mediaMounted" ref="detailAudio" :src="fileLink" controls class="audio-preview" :muted="videoMuted" @canplay="startDetailAudio"></audio>
                     <el-image
                         v-else-if="isImage"
                         :src="fileLink"
@@ -123,6 +232,14 @@
                     <font-awesome-icon v-else icon="file" class="file-icon-detail"></font-awesome-icon>
                 </template>
             </div>
+        </div>
+        <!--
+            v3.0.0：缩略图与文件信息之间的分隔行 —— 有效期以「细信息条」的形式压在这条线上，
+            原「有效期」独立行已移除，不再重复出现。
+        -->
+        <div class="detail-divider-bar">
+            <span class="detail-divider-label">{{ $t('fileDetail.expiryCurrent') }}</span>
+            <span class="detail-divider-value" :class="{ 'is-expired': expiryExpired }">{{ expiryBarText }}</span>
         </div>
         <!-- 详细信息 -->
         <el-descriptions border :column="descColumn">
@@ -150,95 +267,6 @@
                     <el-tag size="small" type="info" style="display: inline-flex; align-items: center; justify-content: center;">{{ orientationIcon }}</el-tag>
                 </div>
                 <span v-else style="color: var(--el-text-color-secondary);">{{ $t('fileDetail.noDimensions') }}</span>
-            </el-descriptions-item>
-            <el-descriptions-item :label="$t('fileDetail.uploadTimeLabel')">{{ uploadTime }}</el-descriptions-item>
-            <!-- MD5 紧随「上传时间」之后 -->
-            <el-descriptions-item :label="$t('fileDetail.md5')">
-                <span class="md5-value" :title="file?.metadata?.MD5">{{ file?.metadata?.MD5 || $t('fileDetail.unknown') }}</span>
-            </el-descriptions-item>
-            <!-- 「存储渠道」与「备份渠道」同一行，存储在前；值可点击打开该文件对应渠道的直链，右侧可复制该直链 -->
-            <el-descriptions-item :label="$t('fileDetail.storageChannel')">
-                <div class="channel-row">
-                    <a v-if="storageChannelUrl" class="channel-link" :href="storageChannelUrl" target="_blank" rel="noopener noreferrer" :title="storageChannelUrl">
-                        <el-tag size="small" type="info">{{ file?.metadata?.Channel || $t('fileDetail.unknown') }}</el-tag>
-                        <span class="channel-name">{{ file?.metadata?.ChannelName || '-' }}</span>
-                    </a>
-                    <span v-else class="channel-link is-static">
-                        <el-tag size="small" type="info">{{ file?.metadata?.Channel || $t('fileDetail.unknown') }}</el-tag>
-                        <span class="channel-name">{{ file?.metadata?.ChannelName || '-' }}</span>
-                    </span>
-                    <el-button
-                        v-if="storageChannelUrl"
-                        size="small"
-                        text
-                        class="channel-copy-btn"
-                        :title="$t('fileDetail.copyChannelUrl')"
-                        @click="copyChannelUrl(storageChannelUrl)"
-                    >
-                        <font-awesome-icon icon="copy"></font-awesome-icon>
-                    </el-button>
-                </div>
-            </el-descriptions-item>
-            <el-descriptions-item :label="$t('fileDetail.backupChannels')">
-                <div v-if="backupChannelList.length > 0" style="display: flex; flex-wrap: wrap; gap: 6px;">
-                    <div v-for="(b, idx) in backupChannelList" :key="idx" class="channel-row">
-                        <!--
-                            v2.5.0：备份渠道格式与「存储渠道」统一 ——
-                            渠道类型保持原有带背景块的 tag（warning 底色不变），渠道名改为纯文本。
-                        -->
-                        <a
-                            class="channel-link"
-                            :href="channelFileUrl(b.id, b.url)"
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            :title="channelFileUrl(b.id, b.url) || ''"
-                        >
-                            <el-tag size="small" type="warning">{{ b.label }}</el-tag>
-                            <span class="channel-name">{{ b.name || '-' }}</span>
-                        </a>
-                        <el-button
-                            v-if="channelFileUrl(b.id, b.url)"
-                            size="small"
-                            text
-                            class="channel-copy-btn"
-                            :title="$t('fileDetail.copyChannelUrl')"
-                            @click="copyChannelUrl(channelFileUrl(b.id, b.url))"
-                        >
-                            <font-awesome-icon icon="copy"></font-awesome-icon>
-                        </el-button>
-                    </div>
-                </div>
-                <span v-else style="color: var(--el-text-color-secondary);">{{ $t('fileDetail.noBackup') }}</span>
-            </el-descriptions-item>
-            <!-- 「文件标签」紧随「访问状态/审查」之后 -->
-            <el-descriptions-item :label="$t('fileDetail.accessStatusAndReview')">
-                <el-tag size="small" :type="accessTagType" style="margin-right: 6px;">{{ accessType }}</el-tag>
-                <span>{{ file?.metadata?.Label || $t('fileDetail.noTags') }}</span>
-            </el-descriptions-item>
-            <el-descriptions-item :label="$t('fileDetail.fileTags')">
-                <div v-if="file?.metadata?.Tags && file?.metadata?.Tags.length > 0" style="display: flex; flex-wrap: wrap; gap: 5px;">
-                    <!-- 点击标签 → 跳到文件管理页并按该标签筛选 -->
-                    <el-tag
-                        v-for="tag in file?.metadata?.Tags"
-                        :key="tag"
-                        size="small"
-                        class="detail-tag-link"
-                        :title="$t('fileDetail.jumpToTag')"
-                        @click="jumpToTag(tag)"
-                    >{{ tag }}</el-tag>
-                </div>
-                <span v-else style="color: var(--el-text-color-secondary);">{{ $t('fileDetail.noTags') }}</span>
-            </el-descriptions-item>
-            <!-- 上传用户：记录该文件由哪个账户上传 -->
-            <el-descriptions-item :label="$t('dashboard.uploadUser')">{{ file?.metadata?.UploadUser || $t('fileDetail.unknown') }}</el-descriptions-item>
-            <!-- 上传渠道：Default（历史网页上传）/ Upload（文件模式）/ Fetch（链接模式）/ WebDAV / API-Web / API-S3 -->
-            <el-descriptions-item :label="$t('fileDetail.uploadChannel')">{{ uploadSourceLabel(file?.metadata?.UploadSource) }}</el-descriptions-item>
-            <!-- 上传时长 / 上传速度：由后端记录的「开始 → 落库」时间差与文件体积算出 -->
-            <el-descriptions-item :label="$t('fileDetail.uploadDuration')">{{ uploadDurationText }}</el-descriptions-item>
-            <el-descriptions-item :label="$t('fileDetail.uploadSpeed')">{{ uploadSpeedText }}</el-descriptions-item>
-            <!-- v2.7.0：IP 归属地移到「上传速度」之后 —— 后端按「显示格式」拼好 IpDisplay（换行格式用 pre-wrap 呈现） -->
-            <el-descriptions-item :label="$t('fileDetail.ipDisplayLabel')">
-                <span :class="{ 'ip-display-multiline': String(file?.metadata?.IpDisplay || '').includes('\n') }">{{ file?.metadata?.IpDisplay || file?.metadata?.UploadAddress || file?.metadata?.UploadIP || $t('fileDetail.unknown') }}</span>
             </el-descriptions-item>
             <!-- 文件分类：编辑态下可重新选择（等价于文件管理的「移动」），非编辑态只读展示 -->
             <el-descriptions-item :label="$t('fileDetail.fileCategory')">
@@ -268,9 +296,116 @@
                     <span v-else style="color: var(--el-text-color-secondary);">{{ $t('fileDetail.noCategory') }}</span>
                 </template>
             </el-descriptions-item>
-            <!-- v2.7.0：「访问次数」在「文件分类」之后 —— 后端 serializeFile 已下发 metadata.Views -->
+            <!-- v3.0.0：加载项顺序 —— 文件标签在「文件状态」之前 -->
+            <el-descriptions-item :label="$t('fileDetail.fileTags')">
+                <div v-if="file?.metadata?.Tags && file?.metadata?.Tags.length > 0" style="display: flex; flex-wrap: wrap; gap: 5px;">
+                    <!-- 点击标签 → 跳到文件管理页并按该标签筛选 -->
+                    <el-tag
+                        v-for="tag in file?.metadata?.Tags"
+                        :key="tag"
+                        size="small"
+                        class="detail-tag-link"
+                        :title="$t('fileDetail.jumpToTag')"
+                        @click="jumpToTag(tag)"
+                    >{{ tag }}</el-tag>
+                </div>
+                <span v-else style="color: var(--el-text-color-secondary);">{{ $t('fileDetail.noTags') }}</span>
+            </el-descriptions-item>
+            <el-descriptions-item :label="$t('fileDetail.accessStatusAndReview')">
+                <el-tag size="small" :type="accessTagType" style="margin-right: 6px;">{{ accessType }}</el-tag>
+                <span>{{ file?.metadata?.Label || $t('fileDetail.noTags') }}</span>
+            </el-descriptions-item>
+            <!-- v3.0.0：所属实例（取文件数据的 instanceId → GET /api/instances 映射「实例名（序号）」，空串 = 默认） -->
+            <el-descriptions-item :label="$t('fileDetail.instanceLabel')">
+                <el-tag size="small" :type="currentInstanceId ? 'primary' : 'info'">{{ instanceDisplay }}</el-tag>
+            </el-descriptions-item>
+            <!-- 「存储渠道」与「备份渠道」同一行，存储在前；值可点击打开该文件对应渠道的直链，右侧可复制该直链 -->
+            <el-descriptions-item :label="$t('fileDetail.storageChannel')">
+                <div class="channel-row">
+                    <a v-if="storageChannelUrl" class="channel-link" :href="storageChannelUrl" target="_blank" rel="noopener noreferrer" :title="storageChannelUrl">
+                        <el-tag size="small" type="info">{{ file?.metadata?.Channel || $t('fileDetail.unknown') }}</el-tag>
+                        <span class="channel-name">{{ file?.metadata?.ChannelName || '-' }}</span>
+                    </a>
+                    <span v-else class="channel-link is-static" :title="$t('fileDetail.channelNoPublicUrl')">
+                        <el-tag size="small" type="info">{{ file?.metadata?.Channel || $t('fileDetail.unknown') }}</el-tag>
+                        <span class="channel-name">{{ file?.metadata?.ChannelName || '-' }}</span>
+                    </span>
+                    <el-button
+                        v-if="storageChannelUrl"
+                        size="small"
+                        text
+                        class="channel-copy-btn"
+                        :title="$t('fileDetail.copyChannelUrl')"
+                        @click="copyChannelUrl(storageChannelUrl)"
+                    >
+                        <font-awesome-icon icon="copy"></font-awesome-icon>
+                    </el-button>
+                </div>
+            </el-descriptions-item>
+            <el-descriptions-item :label="$t('fileDetail.backupChannels')">
+                <div v-if="backupChannelList.length > 0" style="display: flex; flex-wrap: wrap; gap: 6px;">
+                    <div v-for="(b, idx) in backupChannelList" :key="idx" class="channel-row">
+                        <!--
+                            v2.5.0：备份渠道格式与「存储渠道」统一 ——
+                            渠道类型保持原有带背景块的 tag（warning 底色不变），渠道名改为纯文本。
+                        -->
+                        <a
+                            v-if="channelFileUrl(b.id, b.url, b.type)"
+                            class="channel-link"
+                            :href="channelFileUrl(b.id, b.url, b.type)"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            :title="channelFileUrl(b.id, b.url, b.type)"
+                        >
+                            <el-tag size="small" type="warning">{{ b.label }}</el-tag>
+                            <span class="channel-name">{{ b.name || '-' }}</span>
+                        </a>
+                        <!-- v3.0.0（R15）：无对外直链时渲染为纯文本，避免空 href / 内网地址 -->
+                        <span v-else class="channel-link is-static" :title="$t('fileDetail.channelNoPublicUrl')">
+                            <el-tag size="small" type="warning">{{ b.label }}</el-tag>
+                            <span class="channel-name">{{ b.name || '-' }}</span>
+                        </span>
+                        <el-button
+                            v-if="channelFileUrl(b.id, b.url, b.type)"
+                            size="small"
+                            text
+                            class="channel-copy-btn"
+                            :title="$t('fileDetail.copyChannelUrl')"
+                            @click="copyChannelUrl(channelFileUrl(b.id, b.url, b.type))"
+                        >
+                            <font-awesome-icon icon="copy"></font-awesome-icon>
+                        </el-button>
+                    </div>
+                </div>
+                <span v-else style="color: var(--el-text-color-secondary);">{{ $t('fileDetail.noBackup') }}</span>
+            </el-descriptions-item>
+            <!-- 上传用户：记录该文件由哪个账户上传 -->
+            <el-descriptions-item :label="$t('dashboard.uploadUser')">{{ file?.metadata?.UploadUser || $t('fileDetail.unknown') }}</el-descriptions-item>
+            <!-- 上传渠道：Default（历史网页上传）/ Upload（文件模式）/ Fetch（链接模式）/ WebDAV / API-Web / API-S3 -->
+            <el-descriptions-item :label="$t('fileDetail.uploadChannel')">{{ uploadSourceLabel(file?.metadata?.UploadSource) }}</el-descriptions-item>
+            <!-- 上传时长 / 上传速度：由后端记录的「开始 → 落库」时间差与文件体积算出 -->
+            <el-descriptions-item :label="$t('fileDetail.uploadDuration')">{{ uploadDurationText }}</el-descriptions-item>
+            <el-descriptions-item :label="$t('fileDetail.uploadSpeed')">{{ uploadSpeedText }}</el-descriptions-item>
+            <!-- v3.0.0：「IP 归属地」更名为「上传 IP」—— 值仍是 IP，归属地文本保留在括号里 -->
+            <el-descriptions-item :label="$t('fileDetail.uploadIpLabel')">
+                <span :class="{ 'ip-display-multiline': String(uploadIpText || '').includes('\n') }">{{ uploadIpText }}</span>
+            </el-descriptions-item>
+            <!-- v2.7.0：「访问次数」—— 后端 serializeFile 已下发 metadata.Views -->
             <el-descriptions-item :label="$t('fileDetail.views')">{{ Number(file?.metadata?.Views) || 0 }}</el-descriptions-item>
-            <!-- 重定向状态：单独占满一整行（放在所有字段最后） -->
+            <!-- v3.0.0（第三轮）：上传时间 / MD5 排在「访问次数」之后、「文件加密」之前 -->
+            <el-descriptions-item :label="$t('fileDetail.uploadTimeLabel')">{{ uploadTime }}</el-descriptions-item>
+            <!-- MD5 紧随「上传时间」之后 -->
+            <el-descriptions-item :label="$t('fileDetail.md5')">
+                <span class="md5-value" :title="file?.metadata?.MD5">{{ file?.metadata?.MD5 || $t('fileDetail.unknown') }}</span>
+            </el-descriptions-item>
+            <!-- v3.0.0：文件加密（密码以 SHA-256 存储、不可逆，只显示是否已设置，不显示明文） -->
+            <el-descriptions-item :label="$t('fileDetail.fileEncryptLabel')">
+                <div class="detail-encrypt-row">
+                    <el-tag size="small" :type="fileEncrypted ? 'success' : 'info'">{{ fileEncrypted ? $t('fileDetail.encryptOn') : $t('fileDetail.encryptOff') }}</el-tag>
+                    <span v-if="fileEncrypted" class="detail-encrypt-hint">{{ $t('fileDetail.encryptHashHint') }}</span>
+                </div>
+            </el-descriptions-item>
+            <!-- 重定向状态：单独占满一整行（放在加密项之后） -->
             <el-descriptions-item :label="$t('dashboard.redirect')" :span="descColumn">
                 <a v-if="file?.metadata?.RedirectUrl" class="channel-link" :href="file.metadata.RedirectUrl" target="_blank" rel="noopener noreferrer" :title="file.metadata.RedirectUrl">
                     <el-tag size="small" type="success">{{ $t('dashboard.redirectSet') }}</el-tag>
@@ -278,20 +413,26 @@
                 </a>
                 <span v-else style="color: var(--el-text-color-secondary);">{{ $t('dashboard.filterRedirectNo') }}</span>
             </el-descriptions-item>
+
             <!--
-                v2.8.9：文件处理记录 —— 紧跟「重定向」之后单独占一行，
-                内容由后端 metas.ProcessEvent 提供（失败/重试/渠道切换/压缩/转码/WebP）。
+                v3.0.0：文件处理记录 —— 按「失败 → 重试 → WebP → 压缩 → 转码」分组渲染，
+                每组内为「label + value」信息行；整组无数据时隐藏，保持清爽。
+                数据源：metas.ProcessEvent（旧记录只有部分字段也能正常显示）。
             -->
-            <el-descriptions-item v-if="processEventLine" :label="$t('fileDetail.processEvent')" :span="descColumn">
-                <span class="process-event-line" :title="processEventLine">{{ processEventLine }}</span>
+            <el-descriptions-item v-if="processGroups.length > 0" :label="$t('fileDetail.processEvent')" :span="descColumn">
+                <div class="process-groups">
+                    <div v-for="group in processGroups" :key="group.key" class="process-group">
+                        <div class="process-group-title">{{ group.title }}</div>
+                        <div class="process-group-rows">
+                            <div v-for="row in group.rows" :key="row.label" class="process-group-row">
+                                <span class="process-group-label">{{ row.label }}</span>
+                                <span class="process-group-value">{{ row.value }}</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </el-descriptions-item>
         </el-descriptions>
-        <!-- 限时状态：有效期中 / 已过期 / 永久有效 -->
-        <div class="detail-expiry-line">
-            <span class="detail-expiry-label">{{ $t('fileDetail.expiryCurrent') }}：</span>
-            <el-tag v-if="expiryAt" size="small" :type="expiryExpired ? 'danger' : 'success'">{{ expiryText }}</el-tag>
-            <span v-else class="detail-note-muted">{{ $t('fileDetail.expiryNever') }}</span>
-        </div>
         <!-- 备注：仅上传者本人可见可改，后端也只对作者下发该字段 -->
         <div class="detail-note" v-if="noteVisible && !trashMode">
             <div class="detail-note-head">
@@ -406,11 +547,14 @@
                 </el-select>
             </div>
             <div v-if="expiryForm.mode === 'datetime'" class="expiry-row">
+                <!-- v3.0.0：移动端截止时间选择改为居中弹层（面板固定居中、不被输入框裁切），桌面端保持现状 -->
                 <el-date-picker
                     v-model="expiryForm.at"
                     type="datetime"
                     :placeholder="$t('fileDetail.expiryDatetime')"
                     value-format="YYYY-MM-DDTHH:mm:ss"
+                    :teleported="true"
+                    :popper-class="expiryPickerPopperClass"
                     style="width: 100%;"
                 />
             </div>
@@ -420,6 +564,51 @@
                 <el-button type="primary" :loading="expirySaving" @click="submitExpiry">{{ $t('common.save') }}</el-button>
             </template>
         </el-dialog>
+        <!-- v3.0.0：文件加密弹窗（设置 / 修改 / 清除访问密码） -->
+        <el-dialog v-model="showPasswordDialog" :title="$t('fileDetail.encryptTitle')" :width="dialogWidth" append-to-body>
+            <div class="encrypt-status">
+                <span class="encrypt-status-label">{{ $t('fileDetail.encryptStatus') }}</span>
+                <el-tag size="small" :type="fileEncrypted ? 'success' : 'info'">{{ fileEncrypted ? $t('fileDetail.encryptOn') : $t('fileDetail.encryptOff') }}</el-tag>
+            </div>
+            <!--
+                v3.0.0：输入框与后缀区改成 flex 布局（输入框 flex:1 + min-width:0），
+                后缀按钮不会再被输入框压住；窄屏自动换到下一行。
+            -->
+            <div class="encrypt-field">
+                <div class="encrypt-field-main">
+                    <el-input
+                        class="encrypt-input"
+                        v-model="passwordForm.password"
+                        type="password"
+                        show-password
+                        clearable
+                        :placeholder="$t('fileDetail.encryptPlaceholder')"
+                        @keyup.enter="submitPassword"
+                    >
+                        <template #prefix><font-awesome-icon icon="key" /></template>
+                    </el-input>
+                    <el-button
+                        v-if="fileEncrypted"
+                        class="encrypt-clear-btn"
+                        :loading="passwordSaving"
+                        @click="submitPassword(true)"
+                    >{{ $t('fileDetail.encryptClear') }}</el-button>
+                </div>
+                <div class="encrypt-field-hint">{{ $t('fileDetail.encryptHint') }}</div>
+            </div>
+            <template #footer>
+                <el-button @click="showPasswordDialog = false">{{ $t('common.cancel') }}</el-button>
+                <el-button type="primary" :loading="passwordSaving" @click="submitPassword(false)">{{ $t('common.save') }}</el-button>
+            </template>
+        </el-dialog>
+        <!-- v3.0.0：分享卡片弹窗 -->
+        <ShareDialog
+            v-model="showShareDialog"
+            :file="file"
+            :fileLink="fileLink"
+            :qrValue="qrValue"
+            :urls="urls"
+        />
         </div>
     </el-dialog>
 </template>
@@ -431,10 +620,11 @@ import { validateFileId } from '@/utils/fileIdValidator';
 import { copyText } from '@/utils/clipboard';
 import { fileLink } from '@/utils/fileLink';
 import QRCodeBox from '@/components/common/QRCodeBox.vue';
+import ShareDialog from '@/components/dashboard/ShareDialog.vue';
 
 export default {
     name: 'FileDetailDialog',
-    components: { QRCodeBox },
+    components: { QRCodeBox, ShareDialog },
     props: {
         modelValue: { type: Boolean, default: false },
         file: { type: Object, default: null },
@@ -460,18 +650,26 @@ export default {
                 this.startDetailAudio();
             });
         },
+        /** v3.0.0：同一实例换文件时，子状态一并回到初始（不再沿用上一个文件的展开态） */
+        'file.name'(val, oldVal) {
+            if (!this.visible || !val || val === oldVal) return;
+            this.resetDetailState();
+        },
         visible(val) {
             if (!val) {
-                // 关闭弹窗时退出编辑状态
+                // v3.0.0：关闭弹窗时退出编辑状态
                 this.isEditing = false;
                 this.editSaving = false;
                 this.noteLoaded = false;
                 this.noteVisible = false;
                 this.noteText = '';
                 this.expiryAt = 0;
+                this.showQr = false;
                 // v2.8.7c：关闭弹窗先暂停、再销毁媒体元素 —— 彻底结束视频 / 音频，
                 // 不留后台元素等 canplay / 重渲染把它再拉起来
                 this.pauseDetailMedia();
+                // v3.0.0：关闭瞬间再兜底扫一遍（暂停 + 清 src），确保没有声音继续播放
+                this.stopAllMedia();
                 this.mediaMounted = false;
                 return;
             }
@@ -483,12 +681,27 @@ export default {
                 this.startDetailVideo();
                 this.startDetailAudio();
             });
+            // v3.0.0：每次打开都回到全新初始状态（已移除「打开记忆」）
+            this.resetDetailState();
             // 打开时补拉一次元数据：限时截止时间 / 作者备注只在详情接口下发
             this.loadExtraMeta();
+            // v3.0.0：「所属实例」需要实例名 + 序号，按需拉一次列表（失败不影响详情）
+            this.loadInstances();
         }
     },
     data() {
         return {
+            // v3.0.0：文件级加密（状态来自详情接口的 metas.AccessPasswordHash）
+            fileEncrypted: false,
+            showPasswordDialog: false,
+            passwordForm: { password: '' },
+            passwordSaving: false,
+            // v3.0.0：分享卡片弹窗
+            showShareDialog: false,
+            // v3.0.0：「所属实例」行 —— GET /api/instances 的缓存（同一会话内只拉一次）
+            instances: [],
+            instancesLoaded: false,
+            instancesLoading: false,
             // v2.8.7c：媒体元素挂载开关 —— 只在弹窗打开时渲染 video / audio，
             // 关闭即销毁（彻底停止播放、杜绝后台复活），重开重建保证重新加载
             mediaMounted: false,
@@ -496,6 +709,11 @@ export default {
             // 用户手动暂停的视频再拉起来）
             mediaAutoStarted: false,
             activeTab: 'originUrl',
+            // v3.0.0（R8）：评分（0-5，半星）/ 等级（0-5 爱心）—— 打开弹窗时从 metadata 回填
+            ratingValue: 0,
+            levelValue: 0,
+            levelHover: 0,
+            ratingSaving: false,
             isEditing: false,
             editForm: {
                 FileName: '',
@@ -568,11 +786,42 @@ export default {
         },
         /** 可编辑：可改文件信息 / 加标签 / 重命名 / 设置重定向 */
         canEditAction() {
-            return this.isAdminRole || this.$store?.getters?.canEdit !== false;
+            /*
+             * v3.0.0（R9）：别人共享给我的「只读」目录 → 不加载任何编辑类按钮
+             * （标签 / 黑白名单 / 编辑 / 重命名 / 限时 / 加密 / 重定向），与批量口径一致。
+             * v3.0.0（R12）：这条判定前置到管理员豁免之前 —— 只读是共享归属者设定的语义，
+             * 任何接收方（含管理员账号）都不应绕过。
+             */
+            const f = this.file || {};
+            if (f.shared && !f.sharedSelf && f.sharedPerm === 'readonly') return false;
+            if (this.isAdminRole) return true;
+            return this.$store?.getters?.canEdit !== false;
         },
-        /** 可删除 */
-        canDeleteAction() {
-            return this.isAdminRole || this.$store?.getters?.canDelete !== false;
+        /**
+         * v3.0.0（R12）：是否「别人共享给我且只读」。
+         * 用真值判断而不是 canEditAction —— 管理员虽然不受普通开关约束，
+         * 但共享目录的只读语义对任何接收方都成立，顶部动作行应整行不渲染。
+         */
+        readonlyShared() {
+            const f = this.file || {};
+            return !!(f.shared && !f.sharedSelf && f.sharedPerm === 'readonly');
+        },
+        /**
+         * v3.0.0（R14）：评分 / 评级可编辑 ——
+         * 作者本人或管理员（noteVisible，由详情接口是否下发 Note 决定），
+         * 或「别人共享给我且权限为可编辑」的目录接收方（后端 canRate 同口径）。
+         */
+        canRate() {
+            if (this.noteVisible) return true;
+            const f = this.file || {};
+            return !!(f.shared && !f.sharedSelf && f.sharedPerm === 'edit');
+        },
+        /** 可删除：v3.0.0（R9）别人共享给我的目录（只读或编辑）→ 一律不加载删除按钮 */
+        canDeleteAction() {            const f = this.file || {};
+            // v3.0.0（R12）：共享接收方（含管理员账号）一律看不到删除 —— 归属者内容不可被接收方删除
+            if (f.shared && !f.sharedSelf) return false;
+            if (this.isAdminRole) return true;
+            return this.$store?.getters?.canDelete !== false;
         },
         /**
          * 详情里所有「加载值」的文本。
@@ -639,13 +888,63 @@ export default {
         expiryExpired() {
             return this.expiryAt > 0 && Date.now() > this.expiryAt;
         },
-        /** 限时展示文本：永久 / 已过期 / 具体到期时间 */
-        expiryText() {
+        /**
+         * v3.0.0：分隔行上的有效期文案 —— 永久 / 「yyyy-MM-dd HH:mm 到期」/「已过期（…）」。
+         * 「有效期」已从加载项里移除，只在这里出现一次。
+         */
+        expiryBarText() {
             if (!this.expiryAt) return this.$t('fileDetail.expiryNever');
             const d = new Date(this.expiryAt);
             const pad = (n) => String(n).padStart(2, '0');
             const text = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-            return this.expiryExpired ? `${this.$t('fileDetail.expiryExpired')}（${text}）` : text;
+            return this.expiryExpired
+                ? `${this.$t('fileDetail.expiryExpired')}（${text}）`
+                : this.$t('fileDetail.expiryDueFormat', { time: text });
+        },
+        /**
+         * v3.0.0：当前文件所属实例 id。
+         * 优先取文件数据自带的 instanceId（后端补字段后即生效）；
+         * 缺失时退回「当前浏览实例」（localStorage goimgbed_instance_id，'' = 默认实例）。
+         */
+        currentInstanceId() {
+            const m = this.file?.metadata || {};
+            let raw = m.InstanceId;
+            if (raw === undefined || raw === null) raw = m.instanceId;
+            if (raw === undefined || raw === null) raw = this.file?.instanceId;
+            if (raw !== undefined && raw !== null) return String(raw);
+            try {
+                return String(localStorage.getItem('goimgbed_instance_id') || '');
+            } catch {
+                return '';
+            }
+        },
+        /** v3.0.0：「实例名（序号）」；空串显示「默认」 */
+        instanceDisplay() {
+            const id = this.currentInstanceId;
+            if (!id) return this.$t('fileDetail.instanceDefault');
+            const hit = (this.instances || []).find((it) => String(it?.id) === id);
+            if (!hit) return id;
+            const name = String(hit.name || id);
+            const index = hit.index === undefined || hit.index === null ? '' : String(hit.index);
+            return index ? this.$t('fileDetail.instanceNameWithIndex', { name, index }) : name;
+        },
+        /**
+         * v3.0.0：「上传 IP」—— 值仍然是 IP，归属地文本保留在括号里。
+         * 优先用结构化的 UploadIP / UploadAddress；缺失时从 IpDisplay 里把 IP 抠出来。
+         */
+        uploadIpText() {
+            const m = this.file?.metadata || {};
+            const raw = String(m.IpDisplay || '').trim();
+            let ip = String(m.UploadIP || '').trim();
+            const address = String(m.UploadAddress || '').trim();
+            if (!ip && raw) {
+                const hit = /(\d{1,3}(?:\.\d{1,3}){3}|[0-9a-fA-F]{0,4}(?::[0-9a-fA-F]{0,4}){2,})/.exec(raw);
+                if (hit) ip = hit[1];
+            }
+            if (!ip && !address) return raw || this.$t('fileDetail.unknown');
+            if (!ip) return address;
+            if (!address || address === ip) return ip;
+            return `${ip}（${address}）`;
         },
         /** 文件类型展示值：MIME / 扩展名，如 image/jpeg / jpeg */
         fileTypeDisplay() {
@@ -658,7 +957,17 @@ export default {
         storageChannelUrl() {
             const direct = this.file?.metadata?.StorageUrl;
             if (direct) return String(direct);
-            return this.channelFileUrl(this.file?.metadata?.ChannelId);
+            /*
+             * v3.0.0（R15）：只有「本地存储」渠道的对外地址就是本站外链。
+             * 其它渠道（尤其 immich：serverUrl 常是内网 / 容器名）拿不到公开访问域名时
+             * 一律不回退本站地址 —— 本站本身也常是内网 IP，
+             * 否则就会出现「存储渠道显示内网域名」的问题。
+             */
+            return this.channelFileUrl(
+                this.file?.metadata?.ChannelId,
+                '',
+                this.file?.metadata?.ChannelType,
+            );
         },
         isImage() {
             // 先通过 content-type 判断
@@ -727,29 +1036,176 @@ export default {
             return 'success';
         },
         /**
-         * v2.8.9：把 metas.ProcessEvent 压成一行简短中文（详情页「处理记录」）。
-         * 没有处理事件时返回空串 —— 整行不渲染。
+         * v3.0.0：把 metas.ProcessEvent 拆成「失败 → 重试 → WebP → 压缩 → 转码」分组，
+         * 每组内是「label + value」信息行。整组无数据时隐藏，旧记录字段缺失也能兼容。
          */
-        processEventLine() {
+        processGroups() {
             const ev = this.file?.metadata?.ProcessEvent;
-            if (!ev || typeof ev !== 'object') return '';
-            const parts = [];
-            const push = (key, params) => parts.push(this.$t(key, params));
-            if (Number(ev.retries) > 0) push('fileDetail.processRetries', { n: Number(ev.retries) });
-            if (ev.failReason) push('fileDetail.processFailReason', { reason: ev.failReason });
-            if (ev.switchedTo) push('fileDetail.processSwitched', { name: ev.switchedTo });
-            const step = (obj, doneKey, skipKey, failKey) => {
-                if (!obj || !obj.status) return;
-                if (obj.status === 'done') push(doneKey, { ms: this.formatProcessMs(obj.ms) });
-                else if (obj.status === 'failed') push(failKey, { reason: obj.reason || '-' });
-                else push(skipKey, { reason: obj.reason || '-' });
+            if (!ev || typeof ev !== 'object') return [];
+            const t = (k, p) => this.$t(k, p);
+            const groups = [];
+            const yesNo = (v) => (v ? t('fileDetail.processYes') : t('fileDetail.processNo'));
+            /**
+             * 压缩的 reason 是后端下发的语义值，必须翻译成可读文案，不能直接渲染英文代码：
+             *   off       = 未开启压缩功能
+             *   webp      = 已走 WebP 转换因此跳过压缩
+             *   threshold = 未达压缩阈值 / 判定不值得压缩
+             *   ''        = 正常压缩（已压缩）
+             */
+            const compressReasonText = (reason) => {
+                const r = String(reason || '').trim();
+                if (r === 'off') return t('fileDetail.processCompressOff');
+                if (r === 'webp') return t('fileDetail.processCompressSkipWebp');
+                if (r === 'threshold') return t('fileDetail.processCompressSkipThreshold');
+                // v3.0.0（R8）：音频 / 视频走后置队列，跳过原因见 detail 行
+                if (r === 'media') return t('fileDetail.processCompressSkipMedia');
+                return r; // 旧记录里可能是自由文本，原样展示
             };
-            step(ev.compress, 'fileDetail.processCompressDone', 'fileDetail.processCompressSkipped', 'fileDetail.processCompressFailed');
-            step(ev.transcode, 'fileDetail.processTranscodeDone', 'fileDetail.processTranscodeSkipped', 'fileDetail.processTranscodeFailed');
-            if (ev.webp && ev.webp.status && ev.webp.status !== 'done') {
-                push('fileDetail.processWebpSkipped', { reason: ev.webp.reason || '-' });
+            /** 压缩组的「是否触发」：区分未开启 / 因 WebP 跳过 / 未达阈值 / 后置队列放弃 / 已压缩 */
+            const compressTriggerText = (c) => {
+                const r = String(c.reason || '').trim();
+                if (r === 'off') return t('fileDetail.processCompressOff');
+                if (r === 'webp') return t('fileDetail.processCompressSkipWebp');
+                if (r === 'threshold') return t('fileDetail.processCompressSkipThreshold');
+                if (r === 'media') return t('fileDetail.processCompressSkipMedia');
+                if (c.enabled === false) return t('fileDetail.processCompressOff');
+                if (c.status === 'done' || c.status === 'failed') return t('fileDetail.processCompressTriggered');
+                if (c.status === 'skipped') return t('fileDetail.processCompressSkippedGeneric');
+                return t('fileDetail.processNotExecuted');
+            };
+            /**
+             * done / skipped / failed → 「完成 / 放弃 / 失败（原因）」。
+             * mapReason=true 时把 reason 里的语义 code 翻译成可读文案（压缩组用）。
+             */
+            const resultText = (obj, mapReason = false) => {
+                if (!obj || !obj.status) return t('fileDetail.processNotExecuted');
+                const base = obj.status === 'done'
+                    ? t('fileDetail.processResultDone')
+                    : obj.status === 'failed'
+                        ? t('fileDetail.processResultFailed')
+                        : t('fileDetail.processResultSkipped');
+                const raw = String(obj.reason || '').trim();
+                const reason = mapReason ? compressReasonText(raw) : raw;
+                return reason && obj.status !== 'done' ? `${base}（${reason}）` : base;
+            };
+            /** 毫秒 → 「x.x 秒」 */
+            const seconds = (ms) => {
+                const n = Number(ms);
+                if (!Number.isFinite(n) || n <= 0) return '-';
+                return `${(n / 1000).toFixed(1)} ${t('fileDetail.processSecondUnit')}`;
+            };
+            const sizeText = (bytes) => {
+                const n = Number(bytes) || 0;
+                return n > 0 ? this.formatBytes(n) : '-';
+            };
+
+            // ① 失败（次数 / 原因）
+            const failRows = [];
+            const failCount = Number(ev.failCount) || 0;
+            if (failCount > 0) {
+                failRows.push({ label: t('fileDetail.processFailCount'), value: t('fileDetail.processTimesUnit', { n: failCount }) });
             }
-            return parts.join(' · ');
+            if (ev.failReason) {
+                failRows.push({ label: t('fileDetail.processFailReasonLabel'), value: String(ev.failReason) });
+            }
+            if (failRows.length) groups.push({ key: 'fail', title: t('fileDetail.processGroupFail'), rows: failRows });
+
+            // ② 重试（次数 / 自动切换渠道）
+            const retryRows = [];
+            const retries = Number(ev.retries) || 0;
+            if (retries > 0) {
+                retryRows.push({ label: t('fileDetail.processRetryCount'), value: t('fileDetail.processTimesUnit', { n: retries }) });
+            }
+            if (ev.switchedTo) {
+                retryRows.push({ label: t('fileDetail.processSwitchedTo'), value: String(ev.switchedTo) });
+            }
+            if (retryRows.length) groups.push({ key: 'retry', title: t('fileDetail.processGroupRetry'), rows: retryRows });
+
+            // ③ WebP（是否启用 / 无损或有损 / 结果 / 转换后大小）
+            if (ev.webp && typeof ev.webp === 'object') {
+                const w = ev.webp;
+                groups.push({
+                    key: 'webp',
+                    title: t('fileDetail.processGroupWebp'),
+                    rows: [
+                        { label: t('fileDetail.processEnabled'), value: yesNo(w.enabled) },
+                        {
+                            label: t('fileDetail.processWebpMode'),
+                            value: w.mode === 'lossless'
+                                ? t('fileDetail.processWebpLossless')
+                                : w.mode === 'lossy'
+                                    ? t('fileDetail.processWebpLossy')
+                                    : '-',
+                        },
+                        { label: t('fileDetail.processResult'), value: resultText(w) },
+                        { label: t('fileDetail.processConvertedSize'), value: sizeText(w.size) },
+                    ],
+                });
+            }
+
+            // ④ 压缩（是否触发 / 时长 / 结果 / 压缩后大小）
+            if (ev.compress && typeof ev.compress === 'object') {
+                const c = ev.compress;
+                groups.push({
+                    key: 'compress',
+                    title: t('fileDetail.processGroupCompress'),
+                    rows: [
+                        { label: t('fileDetail.processTriggered'), value: compressTriggerText(c) },
+                        { label: t('fileDetail.processDuration'), value: c.status === 'done' ? seconds(c.ms) : t('fileDetail.processNotExecuted') },
+                        {
+                            label: t('fileDetail.processResult'),
+                            // v3.0.0：没有执行结果时明确写「未执行压缩功能」，与「是否触发」区分开
+                            value: c.status ? resultText(c, true) : t('fileDetail.sourceResultNotExecuted'),
+                        },
+                        { label: t('fileDetail.processCompressedSize'), value: sizeText(c.size) },
+                        // v3.0.0（R8）：音频/视频后置处理放弃压缩的具体原因（未装 ffmpeg / 超时 / 资源不足…）
+                        ...(c.detail ? [{ label: t('fileDetail.processSkipDetail'), value: String(c.detail) }] : []),
+                    ],
+                });
+            }
+
+            // ⑤ 转码（仅视频；启用 / 时长 / 结果）
+            if (ev.transcode && typeof ev.transcode === 'object' && (this.isVideo || ev.transcode.enabled)) {
+                const tr = ev.transcode;
+                groups.push({
+                    key: 'transcode',
+                    title: t('fileDetail.processGroupTranscode'),
+                    rows: [
+                        { label: t('fileDetail.processEnabled'), value: yesNo(tr.enabled) },
+                        { label: t('fileDetail.processDuration'), value: tr.status === 'done' ? seconds(tr.ms) : t('fileDetail.processNotExecuted') },
+                        { label: t('fileDetail.processResult'), value: resultText(tr) },
+                    ],
+                });
+            } else if (this.isVideo && groups.length) {
+                // 视频但没有转码记录：明确告知未执行
+                groups.push({
+                    key: 'transcode',
+                    title: t('fileDetail.processGroupTranscode'),
+                    rows: [{ label: t('fileDetail.processResult'), value: t('fileDetail.processNotExecuted') }],
+                });
+            }
+
+            return groups;
+        },
+        /** v3.0.0：仅移动端把截止时间面板改成居中弹层（桌面端保持现状） */
+        expiryPickerPopperClass() {
+            return window.innerWidth < 768 ? 'expiry-date-popper expiry-date-popper--center' : '';
+        },
+        /**
+         * v3.0.0（R10）：签发链接背后的「源地址」——「文件加载域名 + 固化地址」。
+         *
+         * 与 StorageUrl（公开访问域名，给外部分享用）刻意区分：
+         *   · 代理模式下后端从「内网通信域名」取流，这里展示的正是那条真实取流地址；
+         *   · 便于排查「外链打不开到底是域名问题还是存储问题」。
+         */
+        storageSourceUrl() {
+            const meta = this.file?.metadata || {};
+            /*
+             * 本地存储渠道没有「渠道直链」（后端 buildDirectUrl 返回 null），
+             * 它的「源」就是本站签发地址本身（外链访问域名 + /file/...），
+             * 因此最后回退 fileLink，保证本地文件的「源」按钮同样可用。
+             */
+            return String(meta.LoadUrl || meta.StorageUrl || this.fileLink || '');
         },
         imageDimensions() {
             const width = this.file?.metadata?.Width;
@@ -813,6 +1269,139 @@ export default {
             if (!Number.isFinite(n) || n <= 0) return '-';
             return n < 1000 ? `${Math.round(n)}ms` : `${(n / 1000).toFixed(1)}s`;
         },
+        /* ---------------- v3.0.0：详情弹窗初始状态 ---------------- */
+        /** 详情弹窗的滚动容器（.el-dialog__body） */
+        detailBodyEl() {
+            const root = this.$refs.detailDialog?.$el;
+            /*
+             * v3.0.0（R19）修复：el-dialog 走 teleport 时 $el 可能是注释占位节点，
+             * 注释节点没有 querySelector → 每次打开详情都抛
+             * 「xx.querySelector is not a function」，滚动复位随之失效。
+             * 这里先确认是元素节点，取不到时再从当前可见弹窗兜底。
+             */
+            const body = root && root.nodeType === 1 ? root.querySelector('.el-dialog__body') : null;
+            return body || document.querySelector('.el-dialog .el-dialog__body');
+        },
+        /**
+         * v3.0.0：移除「打开记忆」—— 每次打开详情都回到全新的初始状态
+         * （二维码收起 / 标签页回到「原始链接」/ 滚动回顶部），
+         * 既不读取也不写入 sessionStorage，避免复用旧文件的展开状态造成困惑。
+         */
+        resetDetailState() {
+            this.showQr = false;
+            this.activeTab = 'originUrl';
+            this.showShareDialog = false;
+            // v3.0.0（R8）：评分 / 等级回到当前文件的库值
+            this.ratingValue = Number(this.file?.metadata?.Rating) || 0;
+            this.levelValue = Number(this.file?.metadata?.Level) || 0;
+            this.levelHover = 0;
+            this.$nextTick(() => {
+                this.$nextTick(() => {
+                    const el = this.detailBodyEl();
+                    if (el) el.scrollTop = 0;
+                });
+            });
+        },
+        /* ---------------- v3.0.0（R8）：评分 / 等级 ---------------- */
+        /**
+         * v3.0.0（R14）：声音开关（视频 / 音频共用）——
+         * 切换 store 的 globalVideoMuted，视频与音频的 muted 都跟随该状态；
+         * 切换后立即同步当前正在播放的媒体元素，不必关闭重开详情。
+         */
+        toggleMediaSound() {
+            const next = !this.videoMuted;
+            this.$store?.commit?.('setGlobalVideoMuted', next);
+            const v = this.$refs.detailVideo;
+            if (v) v.muted = next;
+            const a = this.$refs.detailAudio;
+            if (a) a.muted = next;
+        },
+        /** 点第 i 颗心：再点同一个取消（0 = 未设等级），立即存库 */
+        setLevel(i) {
+            this.levelValue = this.levelValue === i ? 0 : i;
+            this.saveRatingLevel();
+        },
+        /** 评分（el-rate 半星）/ 等级（爱心）变化 → PATCH metadata 直接存库 */
+        async saveRatingLevel() {
+            const name = this.file?.name;
+            if (!name) return;
+            this.ratingSaving = true;
+            try {
+                const res = await fetchWithAuth(`/api/manage/metadata/${encodeURIComponent(name)}`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ Rating: Number(this.ratingValue) || 0, Level: Number(this.levelValue) || 0 })
+                });
+                const json = await res.json().catch(() => ({}));
+                if (!res.ok || json.success === false) throw new Error(json.message || this.$t('fileDetail.metadataSaveFailed'));
+                if (json?.data?.metadata) {
+                    if (this.file) this.file.metadata = { ...this.file.metadata, ...(json.data.metadata.Rating !== undefined ? { Rating: json.data.metadata.Rating, Level: json.data.metadata.Level } : {}) };
+                }
+                this.$emit('metadataUpdated', name, { Rating: Number(this.ratingValue) || 0, Level: Number(this.levelValue) || 0 });
+                ElMessage.success(this.$t('fileDetail.ratingSaved'));
+            } catch (err) {
+                ElMessage.error(err.message || this.$t('fileDetail.metadataSaveFailed'));
+            } finally {
+                this.ratingSaving = false;
+            }
+        },
+        /* ---------------- v3.0.0：文件级加密 ---------------- */
+        openPasswordDialog() {
+            this.passwordForm.password = '';
+            this.showPasswordDialog = true;
+        },
+        /** clear=true → 清除密码；否则设置 / 修改 */
+        async submitPassword(clear = false) {
+            const name = this.file?.name;
+            if (!name) return;
+            const password = clear ? '' : String(this.passwordForm.password || '').trim();
+            if (!clear && !password) {
+                ElMessage.warning(this.$t('fileDetail.encryptRequired'));
+                return;
+            }
+            this.passwordSaving = true;
+            try {
+                const res = await fetchWithAuth(`/api/manage/${encodeURIComponent(name)}/password`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ password }),
+                });
+                const json = await res.json().catch(() => ({}));
+                if (!res.ok || json.success === false) throw new Error(json.message || this.$t('fileDetail.encryptFailed'));
+                this.fileEncrypted = !!password;
+                if (this.file?.metadata) this.file.metadata.Encrypted = this.fileEncrypted;
+                this.passwordForm.password = '';
+                this.showPasswordDialog = false;
+                ElMessage.success(password ? this.$t('fileDetail.encryptSaved') : this.$t('fileDetail.encryptCleared'));
+            } catch (err) {
+                ElMessage.error(err.message || this.$t('fileDetail.encryptFailed'));
+            } finally {
+                this.passwordSaving = false;
+            }
+        },
+        /** v3.0.0：打开分享卡片弹窗 */
+        openShareDialog() {
+            this.showShareDialog = true;
+        },
+        /**
+         * v3.0.0：「所属实例」—— GET /api/instances 返回数组，每项含 id / name / index（1-based 序号）。
+         * 同一会话内只需拉一次；失败时静默降级（仍显示实例 id 或「默认」）。
+         */
+        async loadInstances() {
+            if (this.instancesLoaded || this.instancesLoading) return;
+            this.instancesLoading = true;
+            try {
+                const res = await fetchWithAuth('/api/instances', { method: 'GET' });
+                const json = await res.json().catch(() => []);
+                const list = Array.isArray(json) ? json : (Array.isArray(json?.data) ? json.data : []);
+                this.instances = list;
+                this.instancesLoaded = true;
+            } catch {
+                this.instances = [];
+            } finally {
+                this.instancesLoading = false;
+            }
+        },
         uploadSourceLabel(raw) {
             const key = String(raw || 'Default');
             const map = {
@@ -836,6 +1425,7 @@ export default {
             this.noteVisible = false;
             this.noteText = '';
             this.expiryAt = 0;
+            this.fileEncrypted = false;
             const name = this.file?.name;
             if (!name) {
                 this.noteLoaded = true;
@@ -846,6 +1436,15 @@ export default {
                 const json = await res.json().catch(() => ({}));
                 const data = json?.data || {};
                 this.expiryAt = Number(data?.metadata?.LinkExpiresAt || data?.LinkExpiresAt || 0) || 0;
+                // v3.0.0：文件级加密状态 —— 详情接口回传原始 metas 字符串，里面有 AccessPasswordHash
+                let encrypted = false;
+                try {
+                    const metas = typeof data?.metas === 'string' ? JSON.parse(data.metas) : (data?.metas || {});
+                    encrypted = !!metas?.AccessPasswordHash;
+                } catch {
+                    encrypted = false;
+                }
+                this.fileEncrypted = encrypted || data?.metadata?.Encrypted === true;
                 if (data.Note !== undefined) {
                     this.noteVisible = true;
                     this.noteText = String(data.Note || '');
@@ -969,7 +1568,41 @@ export default {
             const a = this.$refs.detailAudio;
             if (a && !a.paused) a.pause();
         },
+        /**
+         * v3.0.0（第三轮）：关闭详情页后彻底停掉视频 / 音频。
+         * 只靠 refs + mediaMounted 在部分关闭路径下不够（弹窗关闭有 ~300ms 过渡，元素仍在
+         * DOM 里；refs 也可能因重建而指向新元素）→ 关闭动画结束时再扫一遍弹窗内的媒体元素，
+         * 暂停 + 归零 + 清 src + load()，确保退出后不会还有声音在后台继续放。
+         */
+        stopAllMedia() {
+            const root = this.$refs.detailDialog && this.$refs.detailDialog.$el;
+            const nodes = [];
+            if (root && root.querySelectorAll) nodes.push(...root.querySelectorAll('video, audio'));
+            // 详情页里拉起的媒体预览层（若有）一并回收
+            document.querySelectorAll('.media-preview-overlay video, .media-preview-overlay audio').forEach((el) => nodes.push(el));
+            nodes.forEach((el) => {
+                try {
+                    el.pause();
+                    el.currentTime = 0;
+                    el.removeAttribute('src');
+                    el.load();
+                } catch (err) {
+                    /* 老浏览器 / 已被销毁的元素：忽略即可 */
+                }
+            });
+        },
         handleTabClick() {},
+        /**
+         * v3.0.0：「源」按钮 —— 复制签发链接背后的源地址（存储渠道内的真实直链）。
+         * 没有源地址时按钮不渲染（见模板 v-if）。
+         */
+        async copyStorageSource() {
+            const url = this.storageSourceUrl;
+            if (!url) return;
+            const ok = await copyText(url);
+            if (ok) ElMessage.success(this.$t('fileDetail.sourceUrlCopied'));
+            else ElMessage.warning(this.$t('fileDetail.copyFailed'));
+        },
         async handleUrlClick(e) {
             const input = e.target;
             input.select();
@@ -1009,8 +1642,16 @@ export default {
          *   1) 优先用后端算好的渠道内真实地址（S3 对象 URL / WebDAV 真实路径 / 自定义原始外链）
          *   2) 拿不到时回退本站 /file/:name?channel=<渠道ID>（代理或 302，仍是该渠道的资源）
          */
-        channelFileUrl(channelId, directUrl) {
+        /**
+         * 渠道直链 → 可点击地址。
+         * v3.0.0（R15）：直链缺失时只对「本地存储」渠道回退本站外链
+         * （本地文件本来就没有独立域名，本站地址就是它的对外地址）。
+         * 其它渠道没有公开访问域名时返回空串 → 该行渲染为纯文本，
+         * 不出现任何内网 / 容器名地址。
+         */
+        channelFileUrl(channelId, directUrl, channelType) {
             if (directUrl) return String(directUrl);
+            if (String(channelType || '') !== 'local') return '';
             const name = this.file?.name;
             if (!name || !channelId) return '';
             // 全站统一出口（自定义访问域名优先）
@@ -1055,12 +1696,14 @@ export default {
             this.loadFolderOptions();
         },
         /** 拉取可选的分类目录（目录树 → 扁平路径列表）
+         *  v3.0.0：带上当前实例 id（?instanceId=），只显示该实例下的目录，避免选到别的实例目录。
          *  注意接口前缀：目录树挂在 /api 根下（不是 /api/manage），
          *  用错路径会 404，表现为「编辑时分类下拉是空的、选不到已有目录」。 */
         async loadFolderOptions() {
             this.folderLoading = true;
             try {
-                const res = await fetchWithAuth('/api/directoryTree');
+                const instanceId = this.currentInstanceId || '';
+                const res = await fetchWithAuth(`/api/directoryTree?instanceId=${encodeURIComponent(instanceId)}`);
                 const json = await res.json().catch(() => ({}));
                 const out = [];
                 const walk = (node, prefix) => {
@@ -1296,6 +1939,71 @@ export default {
     font-size: 12px;
     color: var(--el-text-color-regular);
 }
+/* v3.0.0：处理记录分组（label + value 信息行，与详情现有信息行一致） */
+.process-groups {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    width: 100%;
+    min-width: 0;
+}
+.process-group {
+    min-width: 0;
+}
+.process-group-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--el-text-color-primary);
+    margin-bottom: 2px;
+}
+.process-group-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.process-group-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    font-size: 12px;
+    line-height: 1.6;
+    min-width: 0;
+}
+.process-group-label {
+    flex: 0 0 auto;
+    color: var(--el-text-color-secondary);
+}
+.process-group-label::after {
+    content: '：';
+}
+.process-group-value {
+    flex: 1 1 auto;
+    min-width: 0;
+    color: var(--el-text-color-regular);
+    word-break: break-all;
+}
+/* v3.0.0：加密弹窗状态行 */
+.encrypt-status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+    font-size: 13px;
+}
+.encrypt-status-label {
+    color: var(--el-text-color-regular);
+}
+/* v3.0.0（R5）：下载按钮只保留「靠右」，尺寸 / 颜色 / 背景 / 圆角全部交给 el-button 默认
+   （与前面的「二维码」按钮同为 size=small + plain，视觉完全一致） */
+.preview-toolbar-download {
+    margin-left: auto;
+}
+/* v3.0.0：分享 / 源 按钮左右外边距调小（与兄弟按钮间距 4px） */
+.preview-toolbar-share,
+.preview-toolbar-source {
+    margin-left: 0;
+    margin-right: 0;
+}
 /* v2.6.0 #301：换行格式（ip␤归属地）按多行展示 */
 .ip-display-multiline {
     white-space: pre-line;
@@ -1384,16 +2092,47 @@ export default {
 .preview-toolbar {
     display: flex;
     align-items: center;
-    gap: 10px;
+    /* v3.0.0：按钮间距 10px → 6px（「分享」左右外边距收小） */
+    gap: 6px;
     flex-wrap: wrap;
+}
+/* v3.0.0：按钮自身左右外边距清零 —— el-button 相邻默认各带 margin，会和 gap 叠成更大的间距 */
+.preview-toolbar :deep(.el-button + .el-button) {
+    margin-left: 0;
+}
+.preview-toolbar > *:not(.preview-toolbar-download) {
+    margin-left: 0;
+    margin-right: 0;
 }
 .preview-toolbar-icon {
     margin-right: 4px;
 }
-.preview-toolbar-hint {
-    font-size: 12px;
-    color: var(--el-text-color-secondary);
-    line-height: 1.5;
+/*
+ * v3.0.0（R7）：移动端「二维码 / 分享 / 源 / 下载」固定一行 ——
+ * 宽度不够时整行左右滑动（隐藏滚动条），不再折成两行把预览区顶下去。
+ * 下载按钮同时取消 margin-left:auto（否则会把整行撑开、第一屏看不见）。
+ */
+@media (max-width: 768px) {
+    .preview-toolbar {
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        overflow-y: hidden;
+        -webkit-overflow-scrolling: touch;
+        overscroll-behavior-x: contain;
+        scrollbar-width: none;
+        padding-bottom: 2px;
+    }
+    .preview-toolbar::-webkit-scrollbar {
+        display: none;
+    }
+    .preview-toolbar > * {
+        flex: 0 0 auto;
+        margin-left: 0;
+        margin-right: 0;
+    }
+    .preview-toolbar-download {
+        margin-left: 0;
+    }
 }
 .preview-content {
     display: flex;
@@ -1531,18 +2270,141 @@ export default {
     width: 100%;
 }
 
-/* 限时状态行 */
-.detail-expiry-line {
+/* v3.0.0：缩略图与文件信息之间的分隔行 —— 有效期以细信息条的形式压在这条线上 */
+.detail-divider-bar {
     display: flex;
     align-items: center;
     gap: 6px;
-    margin: 6px 0 10px;
-    font-size: 13px;
+    flex-wrap: wrap;
+    margin: 2px 0 10px;
+    padding: 7px 2px 0;
+    border-top: 1px solid var(--el-border-color-lighter);
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--el-text-color-secondary);
 }
-.detail-expiry-label {
+.detail-divider-label {
     color: var(--el-text-color-regular);
 }
+.detail-divider-label::after {
+    content: '：';
+}
+.detail-divider-value.is-expired {
+    color: var(--el-color-danger);
+}
+/* v3.0.0：详情里的「文件加密」行 */
+.detail-encrypt-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    min-width: 0;
+}
+.detail-encrypt-hint {
+    font-size: 12px;
+    color: var(--el-text-color-secondary);
+}
+/* v3.0.0：加密弹窗 —— 输入框与后缀区 flex 布局，后缀不再被输入框遮挡 */
+.encrypt-field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+}
+.encrypt-field-main {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+.encrypt-field-main .encrypt-input {
+    flex: 1 1 200px;
+    min-width: 0;
+}
+.encrypt-clear-btn {
+    flex: 0 0 auto;
+    margin-left: 0 !important;
+}
+.encrypt-field-hint {
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--el-text-color-secondary);
+    word-break: break-word;
+}
 /* 作者备注区 */
+/*
+ * v3.0.0（R8）：评分 / 等级行 —— 备注块上方，星（半星）与心两行。
+ */
+.detail-rating {
+    margin-top: 14px;
+    padding: 10px 12px;
+    border: 1px solid var(--el-border-color-lighter);
+    border-radius: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.detail-rating-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 26px;
+}
+.detail-rating-label {
+    flex: 0 0 auto;
+    width: 44px;
+    font-size: 12px;
+    color: var(--el-text-color-secondary);
+}
+.detail-rating-value {
+    flex: 0 0 auto;
+    font-size: 12px;
+    color: var(--el-text-color-secondary);
+}
+.detail-rating-hint {
+    font-size: 11px;
+    color: var(--el-text-color-placeholder);
+}
+/*
+ * v3.0.0（R9）：五个爱心（FA heart）与上一行 el-rate 星星「每颗对齐每颗」——
+ * 几何参数完全照抄 el-rate：图标 18px（--el-rate-icon-size）、间距 6px（--el-rate-icon-margin），
+ * 两行 label 同宽（44px），因此五颗图标逐列对齐。
+ * v3.0.0（R12）：补齐 el-rate 最后一颗星自带的 6px 右边距 ——
+ * el-rate 每个星项都有 margin-right，总宽 5×18+5×6=120；爱心行只有 4×6 间距（114），
+ * 导致两行「值文本」横向错位 6px，这里补同样的右边距对齐。
+ */
+.detail-level-stars {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--el-rate-icon-margin, 6px);
+    margin-right: var(--el-rate-icon-margin, 6px);
+}
+.detail-level-heart {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--el-rate-icon-size, 18px);
+    height: var(--el-rate-icon-size, 18px);
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--el-rate-void-color, var(--el-border-color-darker));
+    font-size: var(--el-rate-icon-size, 18px);
+    line-height: 1;
+    cursor: pointer;
+    transition: color 0.12s ease, transform 0.12s ease;
+}
+.detail-level-heart.is-hover,
+.detail-level-heart.is-on {
+    color: var(--el-color-danger, #f56c6c);
+}
+.detail-level-heart.is-hover:not(.is-on) {
+    transform: scale(1.12);
+}
+.detail-level-stars.is-disabled .detail-level-heart {
+    cursor: default;
+}
+
 .detail-note {
     margin-top: 4px;
     padding: 10px 12px;
@@ -1625,6 +2487,40 @@ export default {
     }
     .link-block {
         padding: 8px 8px 0;
+    }
+    /* v3.0.0：窄屏把加密弹窗的后缀按钮换到输入框下方一行，彻底避免遮挡 */
+    .encrypt-field-main {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    .encrypt-field-main .encrypt-input {
+        flex: 1 1 auto;
+    }
+    .encrypt-clear-btn {
+        width: 100%;
+    }
+}
+</style>
+
+<style>
+/* v3.0.0：移动端「截止时间」选择面板居中显示。
+   面板被 teleport 到 body，scoped 样式无法命中，因此放在全局样式块里。 */
+.expiry-date-popper--center.el-popper {
+    position: fixed !important;
+    left: 50% !important;
+    top: 50% !important;
+    right: auto !important;
+    bottom: auto !important;
+    transform: translate(-50%, -50%) !important;
+    margin: 0 !important;
+    max-width: 94vw;
+}
+.expiry-date-popper--center .el-picker-panel {
+    max-width: 94vw;
+}
+@media (max-width: 768px) {
+    .expiry-date-popper--center .el-date-picker.has-sidebar {
+        width: min(92vw, 340px) !important;
     }
 }
 </style>

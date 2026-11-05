@@ -55,16 +55,6 @@ exports.PAGE_CONFIG_DEFAULTS = {
             "category_en": "Global Settings"
         },
         {
-            "id": "logoLink",
-            "label": "Logo跳转链接",
-            "label_en": "Logo Link",
-            "placeholder": "https://github.com/hqh519/go-imgbed",
-            "tooltip": "点击Logo时跳转的链接，留空则使用默认GitHub链接",
-            "tooltip_en": "URL to navigate when clicking the logo. Leave empty for default GitHub link",
-            "category": "全局设置",
-            "category_en": "Global Settings"
-        },
-        {
             "id": "wallpaperEnabled",
             "label": "启用背景图",
             "label_en": "Enable Background Image",
@@ -191,6 +181,47 @@ exports.PAGE_CONFIG_DEFAULTS = {
             "category_en": "Client Settings"
         },
         {
+            "id": "defaultUploadConcurrency",
+            "label": "前端并发数",
+            "label_en": "Frontend Concurrency",
+            "placeholder": "3",
+            "tooltip": "留空默认 3。浏览器同时上传的文件数量：调大能更快传完一批文件，但会同时占用更多带宽与连接（图床/网络较弱时反而更容易超时）；调小排队更稳。建议 2~6",
+            "tooltip_en": "Defaults to 3 when empty. Number of files the browser uploads at the same time. Higher finishes a batch faster but uses more bandwidth and connections; lower is gentler on weak networks. 2-6 recommended",
+            "category": "客户端设置",
+            "category_en": "Client Settings"
+        },
+        {
+            "id": "mediaResourceGuardEnabled",
+            "label": "影音压缩/转码控制",
+            "label_en": "Media Compress/Transcode Guard",
+            "type": "boolean",
+            "default": true,
+            "tooltip": "开启后：视频/音频开始压缩或转码前先检测服务器负载与可用内存，任一项达到下方阈值即放弃处理（文件照常上传、保留原文件，原因写入系统日志）。图片压缩不受本开关影响；关闭后不再做资源检测，始终尝试压缩/转码",
+            "tooltip_en": "When on: before compressing or transcoding a video/audio file the server checks load and free memory; if either reaches the thresholds below the job is skipped (the file uploads normally and the original is kept, the reason is logged). Image compression is not affected. When off no resource check is made",
+            "category": "客户端设置",
+            "category_en": "Client Settings"
+        },
+        {
+            "id": "mediaResourceLoadLimit",
+            "label": "load1负载值",
+            "label_en": "load1 Load Factor",
+            "placeholder": "1.5",
+            "tooltip": "仅在「影音压缩/转码控制」开启时生效。最近 1 分钟平均负载（load1）超过「该值 × CPU 核数」时放弃视频/音频的压缩与转码，例如 4 核填 1.5 即 load1 > 6 时放弃。留空默认 1.5；填 0 表示不按负载检测",
+            "tooltip_en": "Effective only when the guard is on. Compression/transcoding is skipped when the 1-minute load average exceeds this factor × CPU cores (e.g. 4 cores × 1.5 = 6). Defaults to 1.5 when empty; 0 disables the load check",
+            "category": "客户端设置",
+            "category_en": "Client Settings"
+        },
+        {
+            "id": "mediaResourceRamLimit",
+            "label": "RAM安全值(MB)",
+            "label_en": "RAM Floor (MB)",
+            "placeholder": "256",
+            "tooltip": "仅在「影音压缩/转码控制」开启时生效。系统可用内存低于该值（MB）时放弃视频/音频的压缩与转码。留空默认 256；填 0 表示不按内存检测。Docker 部署时读到的是宿主机（WSL2 虚拟机）的可用内存",
+            "tooltip_en": "Effective only when the guard is on. Compression/transcoding is skipped when free memory drops below this value (MB). Defaults to 256 when empty; 0 disables the memory check. In Docker the value reflects the host machine (WSL2 VM)",
+            "category": "客户端设置",
+            "category_en": "Client Settings"
+        },
+        {
             "id": "defaultAutoRetry",
             "label": "失败自动重试",
             "label_en": "Auto Retry on Failure",
@@ -267,6 +298,29 @@ exports.PAGE_CONFIG_DEFAULTS = {
             "category_en": "Client Settings"
         },
         {
+            "id": "webpMode",
+            "label": "WebP转换模式",
+            "label_en": "WebP Conversion Mode",
+            "type": "select",
+            "options": [
+                {
+                    "label": "无损转换",
+                    "value": "lossless",
+                    "label_en": "Lossless"
+                },
+                {
+                    "label": "有损转换",
+                    "value": "lossy",
+                    "label_en": "Lossy"
+                }
+            ],
+            "default": "lossless",
+            "tooltip": "仅在「WebP转换」开启时显示并生效：无损转换画质完全保留（体积略大），有损转换体积更小（画质略有损失）。前台上传设置里可单独选择「跟随全局 / 无损 / 有损」覆盖本设置",
+            "tooltip_en": "Shown and effective only when WebP Conversion is on: lossless keeps full quality (slightly larger), lossy is smaller with minor quality loss. The upload page can override it with Follow global / Lossless / Lossy",
+            "category": "客户端设置",
+            "category_en": "Client Settings"
+        },
+        {
             "id": "defaultCustomerCompress",
             "label": "文件压缩",
             "label_en": "File Compression",
@@ -319,6 +373,8 @@ exports.PAGE_CONFIG_DEFAULTS = {
         },
         {
             "id": "uploadBkImg",
+            "type": "textarea",
+            "rows": 3,
             "label": "上传页背景图",
             "label_en": "Upload Background",
             "tooltip": "1.填写 bing 使用必应壁纸轮播 <br/> 2.填写 [\"url1\",\"url2\"] 使用多张图片轮播 <br/> 3.填写 [\"url\"] 使用单张图片",
@@ -328,6 +384,8 @@ exports.PAGE_CONFIG_DEFAULTS = {
         },
         {
             "id": "adminLoginBkImg",
+            "type": "textarea",
+            "rows": 3,
             "label": "登录页背景图",
             "label_en": "Login Background",
             "tooltip": "1.填写 bing 使用必应壁纸轮播 <br/> 2.填写 [\"url1\",\"url2\"] 使用多张图片轮播 <br/> 3.填写 [\"url\"] 使用单张图片",
@@ -337,6 +395,8 @@ exports.PAGE_CONFIG_DEFAULTS = {
         },
         {
             "id": "adminBkImg",
+            "type": "textarea",
+            "rows": 3,
             "label": "管理页背景图",
             "label_en": "Admin Background",
             "tooltip": "1.填写 bing 使用必应壁纸轮播 <br/> 2.填写 [\"url1\",\"url2\"] 使用多张图片轮播 <br/> 3.填写 [\"url\"] 使用单张图片",
@@ -372,8 +432,8 @@ exports.PAGE_CONFIG_DEFAULTS = {
             "label": "允许的上传格式",
             "label_en": "Allowed File Extensions",
             "placeholder": "jpg,png,gif,jpeg,webp,bmp,mp4,webm,mov,m4v,mp3,m4a,aac,ogg",
-            "tooltip": "英文逗号分隔，不带点号。前端会同时校验扩展名与文件真实类型（magic bytes），双重校验不通过将拒收",
-            "tooltip_en": "Comma-separated, without dots. Both extension and real file signature (magic bytes) are validated",
+            "tooltip": "英文逗号分隔，不带点号。v3.0.0 起只校验扩展名（不再用文件签名/magic bytes 拒收，签名不符仅记系统日志），因此头部不规范的 mp3、转封装视频也能正常上传",
+            "tooltip_en": "Comma-separated, without dots. Since v3.0.0 only the extension is validated (a signature mismatch is logged, never rejected), so MP3s with unusual headers and remuxed videos upload fine",
             "category": "客户端设置",
             "category_en": "Client Settings"
         },

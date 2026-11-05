@@ -4,6 +4,7 @@
             ref="inputRef"
             v-model="inputValue"
             :placeholder="placeholder"
+            autocomplete="on"
             @focus="handleFocus"
             @blur="handleBlur"
             @input="handleInput"

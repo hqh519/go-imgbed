@@ -63,11 +63,12 @@
                     class="inner-folder-input"
                     v-model="uploadFolder"
                     :placeholder="$t('upload.folderPlaceholder')"
+                    autocomplete="on"
                     @focus="handleFolderInputFocus"
                     @blur="handleFolderInputBlur"
                 />
             </div>
-            <!-- v2.8.0：右上角「选择目录」按钮已迁移至右下角快捷栏（文件管理下方、链接格式上方） -->
+            <!-- v3.0.0（R12）：目录树选择按钮现在位于「上传设置 → 上传目录」输入框前面 -->
         </div>
         <!-- 上传方式切换：由上「上传框上方」的标签页承担（原右上角按钮已迁移） -->
 
@@ -125,29 +126,31 @@
                             <font-awesome-icon icon="folder" class="quick-toolbar-icon"/>
                         </el-button>
                     </el-tooltip>
-                    <!-- v2.8.0：「选择目录」从右上角迁入快捷栏（文件管理下方、链接格式上方） -->
-                    <!-- v2.8.9：后台关闭「上传目录选项」时，右下角「目录选择」一并隐藏 -->
-                    <DirectoryTreePicker
-                        v-if="showDirectorySuggestions"
-                        :current-directory="uploadFolder"
-                        source="upload"
-                        @select="handleDirectorySelect"
-                    >
-                        <template #trigger>
-                            <el-tooltip :disabled="disableTooltip || !isQuickToolbarOpen" :content="$t('upload.selectFromDirectoryTree')" placement="left" :hide-after="0" :show-after="1000">
-                                <el-button class="quick-toolbar-button">
-                                    <font-awesome-icon icon="folder-tree" class="quick-toolbar-icon"/>
-                                </el-button>
-                            </el-tooltip>
-                        </template>
-                    </DirectoryTreePicker>
+                    <!--
+                        v3.0.0（R12）：「选择目录」按钮已迁入「上传设置 → 上传目录」输入框前面
+                        （用户要求把右下角的目录树选择移到上传目录输入框前），
+                        快捷栏不再保留这个按钮。
+                    -->
                     <el-tooltip :disabled="disableTooltip || !isQuickToolbarOpen" :content="$t('upload.linkFormat')" placement="left" :hide-after="0" :show-after="1000">
                         <el-button class="quick-toolbar-button" @click="handleQuickToolbarCommand('linkFormat')">
                             <font-awesome-icon icon="link" class="quick-toolbar-icon"/>
                         </el-button>
                     </el-tooltip>
+                    <!--
+                        v3.0.0（R12）：移动端「拍摄」按钮移进这个隐藏区（点击右下角箭头才展开），
+                        不再常驻悬浮栏上，避免误触；桌面端本来就不显示（快捷栏里没有相机入口）。
+                    -->
+                    <el-tooltip :disabled="disableTooltip || !isQuickToolbarOpen" :content="$t('upload.takePhoto')" placement="left" :hide-after="0" :show-after="1000">
+                        <el-button class="quick-toolbar-button quick-toolbar-camera" @click="openCamera">
+                            <font-awesome-icon icon="camera" class="quick-toolbar-icon"/>
+                        </el-button>
+                    </el-tooltip>
                 </div>
             </div>
+            <!--
+                v3.0.0（R8）：移动端「拍照」按钮 —— 点击调起相机拍照。
+                v3.0.0（R12）：已移入上面的快捷栏隐藏区（点箭头展开时才显示）。
+            -->
             <!-- v2.8.8：「登记文件」入口，位于「上传设置」正上方（同一快捷栏，同一按钮样式） -->
             <el-tooltip :disabled="disableTooltip" :content="$t('upload.recordFile')" placement="left" :hide-after="0" :show-after="1000">
                 <el-button class="quick-toolbar-button" @click="openRecordDialog">
@@ -155,8 +158,10 @@
                 </el-button>
             </el-tooltip>
             <el-tooltip :disabled="disableTooltip" :content="$t('upload.settings')" placement="left" :hide-after="0" :show-after="1000">
-                <el-button class="quick-toolbar-button" @click="openCompressDialog">
+                <el-button class="quick-toolbar-button quick-toolbar-settings" @click="openCompressDialog">
                     <font-awesome-icon icon="cloud-upload" class="quick-toolbar-icon"/>
+                    <!-- v3.0.0（R9）：上传设置选了「归属实例」后，按钮右上角显示所选实例序号（默认实例 = 0） -->
+                    <span v-if="uploadSettingsBadge !== null" class="settings-instance-badge">{{ uploadSettingsBadge }}</span>
                 </el-button>
             </el-tooltip>
             <el-tooltip :disabled="disableTooltip" :content="$t('upload.moreActions')" placement="left" :hide-after="0" :show-after="1000">
@@ -171,8 +176,64 @@
                 </el-button>
             </el-tooltip>
         </div>
-        <!-- 左上角 logo：优先显示当前用户头像；点击在新标签页打开「用户管理」页（v2.3.0） -->
-        <Logo href="/customerConfig" target="_blank" :useConfigLink="false" />
+        <!-- v3.0.0（R8）：拍照用的隐藏 input（capture 调起系统相机；视觉上不可见、不占位） -->
+        <input
+            ref="cameraInput"
+            type="file"
+            accept="image/*"
+            capture="environment"
+            class="camera-input-hidden"
+            @change="handleCameraCapture"
+        />
+        <!--
+            v3.0.0（R8.1）：拍照弹窗 —— 用 getUserMedia 做实时预览后拍照。
+            桌面浏览器会忽略 input 的 capture 属性（直接弹文件选择），所以不能只靠
+            <input capture>；这里优先真实摄像头，失败/不可用时再退回系统相机。
+        -->
+        <el-dialog
+            v-model="showCameraDialog"
+            :title="$t('upload.cameraTitle')"
+            class="camera-dialog"
+            width="min(560px, 94vw)"
+            append-to-body
+            destroy-on-close
+            :close-on-click-modal="false"
+            @closed="stopCamera"
+        >
+            <div class="camera-stage" @click="toggleCameraUi">
+                <video ref="cameraVideo" class="camera-video" autoplay playsinline muted></video>
+                <div v-if="cameraStarting" class="camera-mask">{{ $t('upload.cameraStarting') }}</div>
+                <div v-else-if="cameraError" class="camera-mask is-error">{{ cameraError }}</div>
+            </div>
+            <!--
+                v3.0.0（R9）：移动端「拍摄」等操作按钮放进隐藏区域 —— 默认收起，
+                点击画面显示 / 再点收起（沉浸式取景，避免误触）；桌面端不受影响始终显示。
+            -->
+            <div class="camera-actions" :class="{ 'is-ui-hidden': !cameraUiVisible }">
+                <el-button @click="openSystemCamera">
+                    <font-awesome-icon icon="camera" class="camera-action-icon"/>{{ $t('upload.cameraSystem') }}
+                </el-button>
+                <el-button :disabled="!cameraReady" @click="switchCamera">
+                    <font-awesome-icon icon="sync-alt" class="camera-action-icon"/>{{ $t('upload.cameraSwitch') }}
+                </el-button>
+                <el-button type="primary" :disabled="!cameraReady" @click="capturePhoto">
+                    <font-awesome-icon icon="camera" class="camera-action-icon"/>{{ $t('upload.cameraCapture') }}
+                </el-button>
+                <!-- v3.0.0（R14）：支持连拍 —— 拍完不再自动关窗，点「完成」才关闭摄像头 -->
+                <el-button @click="closeCameraDialog">
+                    <font-awesome-icon icon="check" class="camera-action-icon"/>{{ $t('upload.cameraDone') }}
+                </el-button>
+            </div>
+        </el-dialog>
+        <!--
+            v3.0.0：左上角头像 logo —— 点击弹出「切换实例」弹窗（不再直接跳转用户管理）；
+            右上角序号角标 = 按实例创建时间升序的序号（默认实例不显示，第一个创建的实例 = 1）。
+            @click.capture.prevent 在捕获阶段拦截 <a> 默认导航（Logo.vue 为公共组件不改）。
+        -->
+        <div class="logo-instance-wrap" :title="$t('instancePicker.title')" @click.capture.prevent="openInstanceDialog">
+            <Logo position="static" href="/customerConfig" target="_blank" :useConfigLink="false"/>
+            <span v-if="instanceBadgeNumber" class="instance-badge">{{ instanceBadgeNumber }}</span>
+        </div>
         <div class="header">
             <h1 class="title">
                 <span class="title-crayon-text" aria-hidden="true">{{ ownerName }}</span>
@@ -228,14 +289,17 @@
             :autoUpload="autoUpload"
             @update:autoUpload="autoUpload = $event"
             :backupChannel="backupChannel"
+            :instanceId="uploadInstanceId"
             :compressPercent="compressPercent"
             :limitCompressExts="limitCompressExts"
             :compressEnabled="compressEnabled"
             :webpEnabled="webpEnabled"
             :transcodeChoice="transcodeChoice"
             :retryTimes="retryTimes"
+            :uploadConcurrency="uploadConcurrency"
             :localAutoRetry="localAutoRetry"
             @update:localAutoRetry="localAutoRetry = $event"
+            @changeMethod="setUploadMethod"
             class="upload"
         />
         </div>
@@ -293,9 +357,12 @@
             v-model="showCompressDialog"
             v-model:channelName="channelName"
             v-model:backupChannel="backupChannel"
+            v-model:uploadInstanceId="uploadInstanceId"
+            :instances="instances"
             :defaultChannel="defaultChannelInfo"
             :defaultBackupChannel="defaultBackupChannelInfo"
             v-model:uploadFolder="uploadFolder"
+            :directoryPickerEnabled="showDirectorySuggestions"
             v-model:customerCompress="customerCompress"
             v-model:compressBar="compressBar"
             v-model:compressPercent="compressPercent"
@@ -307,6 +374,7 @@
             :transcodeGlobal="transcodeGlobal"
             :autoRetryEnabled="autoRetryEnabled"
             v-model:localAutoRetry="localAutoRetry"
+            :webpEnabled="webpEnabled"
         />
         <!-- v2.8.8：登记文件弹窗（与「上传设置」同尺寸同风格） -->
         <RecordFileDialog
@@ -316,6 +384,47 @@
         />
     </div>
     <Footer class="footer"/>
+    <!-- v3.0.0：切换实例弹窗（点击左上角头像打开；默认实例永远第一项） -->
+    <el-dialog :title="$t('instancePicker.title')" v-model="showInstanceDialog" :width="dialogWidth" center class="instance-picker-dialog">
+        <div class="instance-list">
+            <div
+                class="instance-item"
+                :class="{ 'is-active': currentInstanceId === '' }"
+                @click="switchInstance('')"
+            >
+                <span class="instance-name">{{ $t('instancePicker.defaultInstance') }}</span>
+                <font-awesome-icon v-if="currentInstanceId === ''" icon="check" class="instance-check"/>
+            </div>
+            <div
+                v-for="(inst, idx) in instances"
+                :key="inst.id"
+                class="instance-item"
+                :class="{ 'is-active': String(currentInstanceId) === String(inst.id) }"
+                @click="switchInstance(inst.id)"
+            >
+                <!-- v3.0.0（第三轮）：实例名称前加序号（与头像角标、后台「页面切换」用同一套 1-based 序号）；默认实例不显示序号 -->
+                <span class="instance-seq">{{ idx + 1 }}</span>
+                <span class="instance-name">{{ inst.name }}</span>
+                <span v-if="inst.note" class="instance-note">{{ inst.note }}</span>
+                <font-awesome-icon
+                    v-if="String(currentInstanceId) === String(inst.id)"
+                    icon="check"
+                    class="instance-check"
+                />
+            </div>
+            <div v-if="!instances.length" class="instance-empty">{{ $t('instancePicker.empty') }}</div>
+        </div>
+        <!-- v3.0.0：弹窗下方并排两个文字链接（次要样式）→ 用户管理 / 当前账户的实例管理 -->
+        <div class="instance-dialog-links">
+            <el-button link class="instance-dialog-link" @click="openUserManagement">
+                {{ $t('instancePicker.userManage') }}
+            </el-button>
+            <span class="instance-dialog-link-sep" aria-hidden="true"></span>
+            <el-button link class="instance-dialog-link" @click="openInstanceManagement">
+                {{ $t('instancePicker.manage') }}
+            </el-button>
+        </div>
+    </el-dialog>
     <el-dialog :title="$t('upload.announcementTitle')" v-model="showAnnouncementDialog" :width="dialogWidth" :show-close="false" :close-on-click-modal="false" :close-on-press-escape="false" center>
         <div v-html="announcementContent"></div>
         <template #footer>
@@ -345,6 +454,7 @@ import { ref } from 'vue'
 import { mapGetters } from 'vuex'
 import { validateFolderPath } from '@/utils/pathValidator'
 import { getLinkPrefix } from '@/utils/fileLink'
+import { filesToUploadEntries } from '@/utils/upload/directoryTraversal'
 
 export default {
     name: 'UploadHome',
@@ -361,6 +471,15 @@ export default {
             uploadChannel: '', //上传渠道（仅保留 'external' 外链上传特殊值）
             channelName: '', //指定的存储渠道 ID（'' = 默认，跟随全局）
             backupChannel: '', //备份渠道 ID（'' = 跟随全局；'none' = 不备份）
+            uploadInstanceId: '', // v3.0.0（R8）归属实例（'' = 跟随当前实例；'__default__' = 默认实例；其它 = 实例 ID），仅本次会话生效
+            // v3.0.0（R8.1）：拍照弹窗状态 —— 优先用 getUserMedia 实时预览，失败才回退系统相机 input
+            showCameraDialog: false,
+            cameraStream: null,
+            cameraFacing: 'environment', // environment=后置 / user=前置
+            cameraUiVisible: true, // v3.0.0（R9）：拍摄界面操作按钮可见性（移动端默认收起，点击画面唤出）
+            cameraReady: false,
+            cameraStarting: false,
+            cameraError: '',
             uploadNameType: '', //上传文件命名方式
             customUrlPrefix: '', //自定义链接前缀
             useCustomUrl: 'false', //是否启用自定义链接格式
@@ -382,6 +501,13 @@ export default {
             announcementContent: '', // 公告内容
             displayedAnnouncementRefreshAt: null, // 当前弹窗所展示的公告版本
             themeMode: 'auto', // 主题模式：light, dark, auto
+            // ── v3.0.0：实例切换 ──
+            showInstanceDialog: false, // 「切换实例」弹窗
+            instances: [], // 实例列表（按创建时间升序；空 = 只有默认实例）
+            currentInstanceId: (() => {
+                try { return localStorage.getItem('goimgbed_instance_id') || '' } catch (e) { return '' }
+            })(), // 当前实例（'' = 默认）
+            instanceBadgeNumber: 0, // 头像右下角序号角标（默认实例 = 0 不显示）
         }
     },
     watch: {
@@ -466,6 +592,19 @@ export default {
             return this.userConfig?.ownerName || 'go-imgbed'
         },
         /**
+         * v3.0.0（R9）：「上传设置」按钮右上角的实例序号角标 ——
+         *   未选归属实例（跟随当前）→ null（不显示）；
+         *   选「默认实例」(__default__) → 0；
+         *   选具体实例 → 该实例按创建时间升序的序号（1 起）。
+         */
+        uploadSettingsBadge() {
+            const v = String(this.uploadInstanceId || '')
+            if (!v) return null
+            if (v === '__default__') return 0
+            const idx = this.instances.findIndex(i => String(i.id) === v)
+            return idx >= 0 ? idx + 1 : 0
+        },
+        /**
          * 当前「生效的」主存储渠道 —— 统一取后端 getStorageChannel(账户, 'main') 的结果：
          *   登录账户在「用户管理」里指定了主渠道 → 用指定的；
          *   未指定 → 后台「上传设置」里的全局主渠道。
@@ -525,7 +664,18 @@ export default {
             if (raw === undefined || raw === null || raw === '') return 3
             const n = Number(raw)
             return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 3
+        },
+        /** v3.0.0（R11）：前端并发数（后台「上传相关配置 → 前端并发数」；留空 = 3，范围 1~10） */
+        uploadConcurrency() {
+            const raw = this.userConfig?.uploadConcurrency
+            const n = Number(raw)
+            if (!Number.isFinite(n) || n <= 0) return 3
+            return Math.min(10, Math.max(1, Math.floor(n)))
         }
+    },
+    beforeUnmount() {
+        // 离开上传页时释放摄像头，避免指示灯常亮
+        this.stopCamera()
     },
     mounted() {
         // 初始化背景图，启用自动创建元素
@@ -552,6 +702,8 @@ export default {
         this.channelName = ''
         // 备份渠道同样复位为「默认」（跟随全局备份渠道，而不是 none/不备份）
         this.backupChannel = ''
+        // v3.0.0（R8）：归属实例复位为「跟随当前实例」（仅本次会话生效，不持久化）
+        this.uploadInstanceId = ''
         // 失败自动切换（v2.8.8：跟随后台「上传相关配置 → 自动重试」，前台不再有开关）
         this.autoRetry = this.userConfig?.autoRetry !== false
         // v2.8.9：前台「失败自动重试」开关（上传设置 → 其他），只管前台上传 / 链接转存
@@ -583,6 +735,9 @@ export default {
 
         // v2.8.8：视频兼容转码选择每次刷新都复位为「跟随全局」（需求要求）
         this.transcodeChoice = ''
+
+        // v3.0.0：拉取实例列表（GET /api/instances，不含默认实例），算头像右下角序号角标
+        this.fetchInstances()
 
         this.showAnnouncementIfNeeded()
     },
@@ -668,6 +823,219 @@ export default {
         },
         changeUrlForm() {
             this.$store.commit('setUploadCopyUrlForm', this.selectedUrlForm)
+        },
+        /**
+         * v3.0.0（R8.1）：拍照 ——
+         * 桌面浏览器会忽略 <input capture>（直接弹文件选择、根本不开相机），
+         * 因此优先用 getUserMedia 打开真实摄像头做预览；
+         * 仅当浏览器不支持 / 非 HTTPS 时，才回退到系统相机（移动端会直接开相机）。
+         */
+        openCamera() {
+            const md = window.navigator?.mediaDevices
+            const secure = window.isSecureContext
+                || ['localhost', '127.0.0.1'].includes(window.location.hostname)
+            // v3.0.0（R9）：每次打开拍照弹窗都回到后置摄像头（刷新 / 重开都从 environment 起步），
+            // 操作按钮回到隐藏态（移动端点击画面唤出）
+            this.cameraFacing = 'environment'
+            this.cameraUiVisible = false
+            if (!md || typeof md.getUserMedia !== 'function' || !secure) {
+                this.cameraReady = false
+                this.cameraError = this.$t('upload.cameraInsecure')
+                this.showCameraDialog = true
+                return
+            }
+            this.cameraError = ''
+            this.cameraReady = false
+            this.showCameraDialog = true
+            this.startCamera()
+        },
+        /** v3.0.0（R9）：移动端点击取景画面 → 显示 / 收起底部操作按钮 */
+        toggleCameraUi() {
+            this.cameraUiVisible = !this.cameraUiVisible
+        },
+        /**
+         * 启动（或重启）摄像头流，绑到弹窗里的 video 上。
+         * v3.0.0（R14）三处修正：
+         *  1) 手机竖屏改按 3:4（宽<高）申请画面，取景框与成片都是 4:3 竖屏；
+         *  2) 显式把 zoom 复位到 1 倍、focusMode 用 continuous —— 部分安卓机型
+         *     默认带数字变焦，画面会被拉近（用户反馈「焦距不对」）；
+         *  3) 停止旧流后等一小会儿再申请，并对 NotAllowed/NotReadable 自动重试一次 ——
+         *     原来切换镜头/二次拍摄时立刻重新申请，会被浏览器判定为并发占用而报
+         *     「权限不被允许」（实际是设备忙）。
+         */
+        async startCamera() {
+            this.stopCamera()
+            this.cameraStarting = true
+            // 竖屏（窄屏）申请 3:4，桌面宽屏保持 16:9
+            const portrait = window.innerWidth <= 768
+            const base = {
+                facingMode: { ideal: this.cameraFacing },
+                width: { ideal: portrait ? 1080 : 1920 },
+                height: { ideal: portrait ? 1440 : 1080 },
+            }
+            const full = {
+                ...base,
+                aspectRatio: { ideal: portrait ? 3 / 4 : 16 / 9 },
+                // 非标准约束：不支持的浏览器会忽略（ideal 不会抛错）
+                zoom: { ideal: 1 },
+                focusMode: { ideal: 'continuous' },
+            }
+            const open = async (constraints) =>
+                navigator.mediaDevices.getUserMedia({ video: constraints, audio: false })
+            try {
+                // 旧流释放需要一点时间，立刻申请容易被判定为设备忙
+                await new Promise((r) => setTimeout(r, 240))
+                let stream
+                try {
+                    stream = await open(full)
+                } catch (first) {
+                    const name = String(first?.name || '')
+                    if (name === 'OverconstrainedError' || name === 'TypeError') {
+                        // 机型不支持 zoom / focusMode / aspectRatio → 退回基础约束
+                        stream = await open(base)
+                    } else if (name === 'NotAllowedError' || name === 'NotReadableError' || name === 'AbortError') {
+                        // 设备还没释放（切镜头最常见）→ 再等 700ms 重试一次
+                        await new Promise((r) => setTimeout(r, 700))
+                        stream = await open(base)
+                    } else {
+                        throw first
+                    }
+                }
+                this.cameraStream = stream
+                /*
+                 * v3.0.0（R17）：强制回到 1 倍焦距。
+                 * 上面只写了 zoom: { ideal: 1 } —— 按规范 ideal 只是「偏好」，
+                 * 不少安卓机型 / 浏览器会直接忽略，默认停在 2x / 3x 的数字变焦上
+                 * （用户看到的就是「打开摄像头画面被拉得特别近」）。
+                 * 这里读一次 track 的 capabilities.zoom，再用 applyConstraints 把
+                 * zoom 落到最小档（= 1 倍光学视角）—— 支持 zoom 的设备一定生效。
+                 */
+                await this.applyOneXZoom(stream)
+                // el-dialog 首次打开时内容刚渲染，等一帧再取 ref
+                await this.$nextTick()
+                await new Promise((r) => requestAnimationFrame(() => r()))
+                const el = this.$refs.cameraVideo
+                if (!el) {
+                    this.cameraError = this.$t('upload.cameraFailed')
+                    this.stopCamera()
+                    return
+                }
+                el.srcObject = stream
+                try { await el.play() } catch (e) { /* 自动播放被拦时用户点一下画面即可 */ }
+                this.cameraReady = true
+            } catch (err) {
+                this.cameraError = this.cameraErrorText(err)
+            } finally {
+                this.cameraStarting = false
+            }
+        },
+        /**
+         * v3.0.0（R17）：把摄像头强制拉回 1 倍焦距。
+         * capabilities.zoom 在部分实现里是数字（旧规范），多数是 { min, max, step }。
+         * 取「1 倍」时不能直接用 1 —— 有的设备最小档不是 1（少数从 0.5 起），
+         * 这里以 1 为基准夹到 [min, max] 区间，保证既不会大于 1 倍、也不会越界报错。
+         */
+        async applyOneXZoom(stream) {
+            try {
+                const track = stream && stream.getVideoTracks ? stream.getVideoTracks()[0] : null
+                if (!track || typeof track.getCapabilities !== 'function') return
+                const caps = track.getCapabilities()
+                const zoom = caps && caps.zoom
+                if (zoom === undefined || zoom === null) return
+                const min = typeof zoom === 'number' ? zoom : Number(zoom.min)
+                const max = typeof zoom === 'number' ? zoom : Number(zoom.max)
+                if (!Number.isFinite(min) || !Number.isFinite(max)) return
+                const target = Math.min(Math.max(1, min), max)
+                await track.applyConstraints({ advanced: [{ zoom: target }] })
+            } catch (e) {
+                // 设备不支持 advanced zoom / 已被其它页面占用：保持当前画面即可
+            }
+        },
+        /** 摄像头错误 → 人话 */
+        cameraErrorText(err) {            const name = String(err?.name || '')
+            if (name === 'NotAllowedError' || name === 'SecurityError') return this.$t('upload.cameraDenied')
+            if (name === 'NotFoundError' || name === 'OverconstrainedError') return this.$t('upload.cameraNotFound')
+            return this.$t('upload.cameraFailed')
+        },
+        /** v3.0.0（R14）：关闭拍照弹窗（连拍结束后点「完成」） */
+        closeCameraDialog() {
+            this.showCameraDialog = false
+            this.stopCamera()
+        },
+        /** 停止流并释放摄像头（弹窗关闭 / 组件卸载 / 切换镜头前调用） */
+        stopCamera() {
+            const s = this.cameraStream
+            if (s) {
+                try { s.getTracks().forEach((t) => t.stop()) } catch (e) { /* 忽略 */ }
+            }
+            this.cameraStream = null
+            this.cameraReady = false
+        },
+        /** 前置 / 后置切换 */
+        switchCamera() {
+            this.cameraFacing = this.cameraFacing === 'environment' ? 'user' : 'environment'
+            this.startCamera()
+        },
+        /** 回退到系统相机 / 文件选择（移动端会直接打开相机） */
+        openSystemCamera() {
+            this.showCameraDialog = false
+            this.$refs.cameraInput?.click()
+        },
+        /**
+         * 把当前画面截成 JPEG，走统一上传管线。
+         * v3.0.0（R14）：
+         *  · 按取景框可见比例（手机 3:4 竖屏）居中裁剪，成片 = 所见即所得；
+         *  · 拍完不关窗（连拍），用户点「完成」再关闭 —— 之前每次拍完都关闭弹窗，
+         *    再拍又要重新申请摄像头，手机上就会报「权限不被允许」。
+         */
+        async capturePhoto() {
+            const el = this.$refs.cameraVideo
+            if (!el || !el.videoWidth) {
+                this.$message.warning(this.$t('upload.cameraNotReady'))
+                return
+            }
+            const vw = el.videoWidth
+            const vh = el.videoHeight
+            const portrait = window.innerWidth <= 768
+            const targetRatio = portrait ? 3 / 4 : el.clientWidth && el.clientHeight ? el.clientWidth / el.clientHeight : 4 / 3
+            let sw = vw
+            let sh = Math.round(vw / targetRatio)
+            if (sh > vh) {
+                sh = vh
+                sw = Math.round(vh * targetRatio)
+            }
+            const sx = Math.round((vw - sw) / 2)
+            const sy = Math.round((vh - sh) / 2)
+            const canvas = document.createElement('canvas')
+            canvas.width = sw
+            canvas.height = sh
+            const ctx = canvas.getContext('2d')
+            ctx.drawImage(el, sx, sy, sw, sh, 0, 0, sw, sh)
+            const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.92))
+            if (!blob) {
+                this.$message.error(this.$t('upload.cameraFailed'))
+                return
+            }
+            const d = new Date()
+            const pad = (n) => String(n).padStart(2, '0')
+            const name = `photo-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}.jpg`
+            const file = new File([blob], name, { type: 'image/jpeg', lastModified: Date.now() })
+            // v3.0.0（R14）：保持摄像头开着，可连续拍照；关闭交给「完成」/右上角 ×
+            this.$message.success(this.$t('upload.cameraCaptured'))
+            // 与「选文件 / 系统相机」完全同一条管线：自动模式立即上传、手动模式进等待区
+            await this.$refs.uploadForm?.uploadLocalEntries(filesToUploadEntries([file]))
+        },
+        /**
+         * v3.0.0（R8）：拍照完成 ——
+         * 把相机返回的图片按标准本地文件管线送进待上传区
+         * （走 UploadForm.uploadLocalEntries：压缩/WebP/重命名等规则全部一致；
+         * 自动模式立即上传，手动模式进列表等待用户点「上传」）。
+         */
+        async handleCameraCapture(event) {
+            const entries = filesToUploadEntries(event.target.files || [])
+            event.target.value = ''
+            if (!entries.length) return
+            await this.$refs.uploadForm?.uploadLocalEntries(entries)
         },
         /**
          * 登记文件（v2.8.8）
@@ -874,6 +1242,85 @@ export default {
             if (this.validateUploadFolder(path, true)) {
                 this.$store.commit('setStoreUploadFolder', path)
             }
+        },
+        /* ────────────── v3.0.0：实例切换（头像 logo 弹窗） ────────────── */
+        /**
+         * 拉取当前用户的实例列表（GET /api/instances，不含默认实例；空列表 = 只有默认实例）。
+         * 按创建时间升序排序：第一个创建的实例 = 1，头像角标显示该序号（默认实例不显示）。
+         */
+        async fetchInstances() {
+            try {
+                const res = await axios.get('/api/instances')
+                const list = Array.isArray(res.data) ? res.data : []
+                this.instances = [...list].sort((a, b) => {
+                    const ta = new Date(a.createdAt).getTime() || 0
+                    const tb = new Date(b.createdAt).getTime() || 0
+                    return ta - tb
+                })
+                // 角标 = 当前实例在「创建时间升序」中的序号；默认实例或未找到 = 0（不显示）
+                const cur = this.currentInstanceId
+                const idx = this.instances.findIndex(i => String(i.id) === String(cur))
+                this.instanceBadgeNumber = cur && idx >= 0 ? idx + 1 : 0
+            } catch (e) {
+                console.warn('[upload] 获取实例列表失败:', e)
+                this.instances = []
+                this.instanceBadgeNumber = 0
+            }
+        },
+        /** 点击头像 → 打开「切换实例」弹窗 */
+        openInstanceDialog() {
+            this.showInstanceDialog = true
+        },
+        /**
+         * 切换实例：写入 localStorage（goimgbed_instance_id，'' = 默认），
+         * 提示后刷新页面，让文件列表 / 标签等所有与实例相关的数据按新实例重新加载。
+         */
+        switchInstance(id) {
+            const val = id == null ? '' : String(id)
+            if (val === this.currentInstanceId) {
+                this.showInstanceDialog = false
+                return
+            }
+            try { localStorage.setItem('goimgbed_instance_id', val) } catch (e) { /* 隐私模式忽略 */ }
+            this.currentInstanceId = val
+            this.showInstanceDialog = false
+            this.$message.success(this.$t('instancePicker.switchSuccess'))
+            setTimeout(() => { window.location.reload() }, 600)
+        },
+        /* ────── v3.0.0：实例弹窗底部链接（用户管理 / 实例管理） ────── */
+        /** 「用户管理」→ 新标签打开用户管理列表页 */
+        openUserManagement() {
+            window.open('/customerConfig', '_blank', 'noopener')
+        },
+        /**
+         * 「实例管理」→ 新标签打开「当前账户的用户编辑页 · 实例管理」锚点。
+         * 本工程用户编辑页路由是 /customerConfig/edit/:id（:id 为账户主键），
+         * 因此先按当前登录名在 /api/manage/users 里定位主键；取不到时退回用户管理列表并提示。
+         * 注意：先同步开窗再 await，避免浏览器把异步后的 window.open 当弹窗拦截。
+         */
+        async openInstanceManagement() {
+            const win = window.open('about:blank', '_blank')
+            const username = this.sessionUser || ''
+            let url = '/customerConfig'
+            let fallback = false
+            try {
+                const res = await axios.get('/api/manage/users')
+                const list = Array.isArray(res.data) ? res.data : []
+                const hit = username ? list.find((u) => u && u.username === username) : null
+                if (hit && hit.id !== undefined && hit.id !== null && hit.id !== '') {
+                    url = `/customerConfig/edit/${encodeURIComponent(hit.id)}?anchor=instances`
+                } else {
+                    fallback = true
+                }
+            } catch (e) {
+                fallback = true
+            }
+            if (win && !win.closed) {
+                win.location.href = url
+            } else {
+                window.open(url, '_blank', 'noopener')
+            }
+            if (fallback) this.$message.warning(this.$t('instancePicker.instanceFallback'))
         }
     }
 }
@@ -1280,6 +1727,33 @@ html.dark .upload-folder :deep(.el-input__wrapper:hover) {
     color: var(--toolbar-button-color);
     outline: none;
 }
+/*
+ * v3.0.0（R9）：「上传设置」按钮右上角的归属实例序号角标 ——
+ * 选了「默认实例」显示 0，选了具体实例显示创建序号（1 起），未选不显示。
+ */
+.quick-toolbar-settings {
+    position: relative;
+}
+.settings-instance-badge {
+    position: absolute;
+    top: -2px;
+    right: -2px;
+    z-index: 2;
+    min-width: 15px;
+    height: 15px;
+    padding: 0 3px;
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 999px;
+    background: var(--el-color-primary);
+    color: #fff;
+    font-size: 10px;
+    font-weight: 600;
+    line-height: 1;
+    pointer-events: none;
+}
 .quick-toolbar-actions {
     display: grid;
     grid-template-rows: 0fr;
@@ -1341,6 +1815,28 @@ html.dark .upload-folder :deep(.el-input__wrapper:hover) {
 .quick-toolbar-button:hover {
     transform: none;
 }
+/*
+ * v3.0.0（R8）：移动端「拍照」按钮 ——
+ *   · 桌面隐藏（display:none），≤768px 才显示（登记文件上方、同款圆形按钮）；
+ *   · 隐藏的相机 input 视觉不可见且不占位，只作为 capture 调起系统相机的载体。
+ */
+.quick-toolbar-camera {
+    display: none;
+}
+.camera-input-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    opacity: 0;
+    pointer-events: none;
+}
+/* v3.0.0（R8.1）：拍照弹窗 —— 实时预览 + 快门
+   v3.0.0（R12）：整块迁到 styles/global.css（含移动端整屏与快门隐藏区）*/
+/* v3.0.0（R12）：移动端整屏 / 快门隐藏区已统一搬到 styles/global.css ——
+   这里的选择器会被 Vue 加上 [data-v-x]，命中不了 Element Plus 自己渲染的
+   .el-dialog__body / .el-dialog__header，原先写在这里等于没生效。 */
 .toggle-dark-button:hover,
 .upload-method-button:hover {
     transform: scale(1.05);
@@ -1379,6 +1875,10 @@ html.dark .upload-folder:hover :deep(.el-input__wrapper) {
     }
     .quick-toolbar-icon {
         font-size: 14px;
+    }
+    /* 移动端显示「拍照」按钮（登记文件上方） */
+    .quick-toolbar-camera {
+        display: inline-flex;
     }
 }
 
@@ -1573,6 +2073,169 @@ html.dark .upload-folder:hover :deep(.el-input__wrapper) {
 .upload-home :deep(.logo-link) {
     z-index: 901;
 }
+/* ── v3.0.0：头像 logo 实例切换包装（定位接管，Logo 组件本身不改） ── */
+.logo-instance-wrap {
+    position: fixed;
+    top: 20px;
+    left: 20px;
+    z-index: 902;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+}
+.logo-instance-wrap :deep(.logo-link) {
+    position: static;
+    z-index: auto;
+    display: inline-block;
+}
+/* 角标：与系统其它数字徽标一致的小红点（v3.0.0：改到头像右上角，默认实例不显示） */
+.instance-badge {
+    position: absolute;
+    right: -4px;
+    top: -4px;
+    min-width: 16px;
+    height: 16px;
+    box-sizing: border-box;
+    padding: 0 4px;
+    border-radius: 999px;
+    background: var(--el-color-danger, #f56c6c);
+    color: #fff;
+    font-size: 10px;
+    font-weight: 600;
+    line-height: 16px;
+    text-align: center;
+    border: 2px solid var(--bg-color, #fff);
+    pointer-events: none;
+    z-index: 1;
+}
+/* v3.0.0（R7）：移动端头像角标整体下移 2px（贴着头像更居中） */
+@media (max-width: 768px) {
+    .instance-badge {
+        top: -2px;
+    }
+}
+/* 切换实例弹窗列表 */
+.instance-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.instance-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 16px;
+    border-radius: 10px;
+    border: 1px solid var(--glass-border);
+    background: var(--glass-bg);
+    cursor: pointer;
+    transition: border-color 0.2s ease, background-color 0.2s ease, transform 0.2s ease;
+    min-width: 0;
+}
+.instance-item:hover {
+    border-color: var(--glass-border-hover);
+    transform: translateY(-1px);
+}
+.instance-item.is-active {
+    border-color: color-mix(in srgb, var(--primary-color, #409eff) 55%, var(--glass-border));
+    background: color-mix(in srgb, var(--primary-color, #409eff) 8%, var(--glass-bg));
+}
+.instance-name {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--el-text-color-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+}
+/* v3.0.0（第三轮）：实例名称前的序号（默认实例没有序号） */
+.instance-seq {
+    flex: 0 0 auto;
+    min-width: 20px;
+    height: 20px;
+    box-sizing: border-box;
+    padding: 0 5px;
+    border-radius: 999px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1;
+    color: var(--el-text-color-secondary);
+    background: color-mix(in srgb, var(--el-text-color-secondary) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--el-text-color-secondary) 24%, transparent);
+}
+.instance-item.is-active .instance-seq {
+    color: var(--primary-color, #409eff);
+    background: color-mix(in srgb, var(--primary-color, #409eff) 12%, transparent);
+    border-color: color-mix(in srgb, var(--primary-color, #409eff) 30%, transparent);
+}
+.instance-note {
+    flex: 1;
+    font-size: 12px;
+    color: var(--el-text-color-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.instance-check {
+    margin-left: auto;
+    color: var(--primary-color, #409eff);
+    flex-shrink: 0;
+}
+.instance-empty {
+    padding: 16px;
+    text-align: center;
+    font-size: 13px;
+    color: var(--el-text-color-secondary);
+}
+/* v3.0.0：弹窗底部两个文字链接（并排居中，次要文字按钮） */
+.instance-dialog-links {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid var(--glass-border);
+}
+.instance-dialog-link {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--el-text-color-secondary);
+    padding: 0;
+    height: auto;
+}
+.instance-dialog-link:hover {
+    color: var(--primary-color, #409eff);
+}
+.instance-dialog-link-sep {
+    width: 1px;
+    height: 12px;
+    background: var(--glass-border);
+}
+@media (max-width: 768px) {
+    /*
+     * v3.0.0：移动端头像不再悬浮 —— 由 fixed 改为 absolute（相对 .upload-home）。
+     * 页面滚动时头像随内容一起滚走，不再一直贴在视口左上角；坐标沿用原移动端取值。
+     * 桌面端保持 fixed（见上方 .logo-instance-wrap 主规则），仅在此断点内覆盖。
+     */
+    .logo-instance-wrap {
+        position: absolute;
+        top: calc(16px + env(safe-area-inset-top, 0px));
+        left: calc(16px + env(safe-area-inset-left, 0px));
+    }
+    /* 原移动端规则把 .logo-link 固定到视口，包装后由外层定位，内层改回静态 */
+    .logo-instance-wrap :deep(.logo-link) {
+        position: static !important;
+        top: auto;
+        left: auto;
+    }
+    .instance-item {
+        padding: 10px 12px;
+    }
+}
 @media (max-width: 768px) {
     /* v2.4.0：移动端顶部栏不再粘滞 —— fixed 改 absolute，随页面一起滚动 */
     .upload-home {
@@ -1586,15 +2249,15 @@ html.dark .upload-folder:hover :deep(.el-input__wrapper) {
      * v2.6.0：修复「移动端左上角 LOGO 不显示」——
      * 旧方案把 .logo-link 与 .logo--fixed 同时改 absolute，img 与 <a> 形成嵌套定位
      * 且 static 位置在 flex 居中布局里不可控（实测 LOGO 整个不落在可视区）。
-     * 改为：LOGO 整体 fixed 挂视口（恒显示、不随滚动）；img 在链接内部改回
-     * 静态流式布局，由 <a> 统一定位，避免双重偏移。
+     * v3.0.0：头像改为随页面滚动（不悬浮）—— 定位统一交给外层 .logo-instance-wrap
+     * （absolute，相对 .upload-home），内层 <a> 与 img 一律回到静态流式布局，
+     * 避免二级 fixed 又把头像钉在视口上。
      */
     .upload-home :deep(.logo-link) {
-        position: fixed;
-        top: calc(16px + env(safe-area-inset-top, 0px));
-        left: calc(16px + env(safe-area-inset-left, 0px));
+        position: static;
+        top: auto;
+        left: auto;
         display: inline-block;
-        z-index: 901;
     }
     .upload-home :deep(.logo--fixed) {
         position: static;

@@ -1,3 +1,4 @@
+import { LocalAdapter } from '../adapters/local.adapter';
 import { Body, Controller, Delete, Get, Injectable, Param, Post, Put, Query, Req, UseGuards } from '@nestjs/common';
 import { Request } from 'express';
 import { prisma } from '../common/prisma';
@@ -8,6 +9,7 @@ import { createAdapter } from '../adapters/adapter.factory';
 import { ChannelInfo } from '../adapters/adapter.interface';
 import { StorageChannelService, StorageChannelInfo } from '../storage/storage-channel.service';
 import { appLog } from '../common/app-log';
+import { normalizeBucketDomain } from '../common/channel-domain';
 
 /** 各渠道配置中的敏感字段名 —— 返回时脱敏、保存时加密（须与适配器读取的字段名一致） */
 const SECRET_FIELDS: Record<string, string[]> = {
@@ -25,16 +27,21 @@ const SECRET_FIELDS: Record<string, string[]> = {
 
 /**
  * 可通过「添加渠道」创建的类型。
- * 注意：**不包含 local** —— 本地存储是系统内置渠道，随安装自动存在，
- * 不允许用户再添加第二个（否则无法区分默认落盘位置）。
+ * v3.0.0 起包含 local —— 允许创建自定义本地存储渠道（自备容器内存储目录），
+ * 与内置本地渠道（code=999999，根固定 uploads）并存：
+ *   · 内置渠道根固定 <后端根>/uploads，不可删除；
+ *   · 自定义渠道 config.rootPath 指定容器内存储地址（拒绝 '..' 穿越），可删除。
  */
-export const CHANNEL_TYPES = ['cos', 'minio', 'r2', 's3', 'aliyun', 'easyimages', 'lsky', 'webdav', 'immich', 'custom'] as const;
+export const CHANNEL_TYPES = ['cos', 'minio', 'r2', 's3', 'aliyun', 'easyimages', 'lsky', 'webdav', 'immich', 'custom', 'local', 'localfiles'] as const;
 
-/** 系统内置、不可新增也不可删除的渠道类型（列表里排在最后） */
+/** 系统内置、不可新增也不可删除的渠道（以 code 识别，见 remove 的删除保护） */
 export const BUILTIN_CHANNEL_TYPES = ['local'] as const;
 
 /** 内置本地渠道的固定业务 ID（6 位），全站以它识别 */
 export const LOCAL_CHANNEL_CODE = '999999';
+
+/** v3.0.0（R10）：内置「本地文件」浏览渠道的固定 code（不可删除、浏览目录不可改） */
+export const LOCAL_FILES_CHANNEL_CODE = '999990';
 
 /** 历史版本（≤1.9.1）内置本地渠道的业务 ID —— 启动时自动迁到 999999 */
 export const LEGACY_LOCAL_CHANNEL_CODE = '100000';
@@ -42,7 +49,9 @@ export const LEGACY_LOCAL_CHANNEL_CODE = '100000';
 /**
  * 渠道类型编号（写进 channels.typeCode，纯排序用，与渠道业务 ID `code` 无关）：
  *   100 easyimages / 110 lsky / 120 immich / 130 minio / 140 r2 / 150 s3
- *   160 cos / 170 aliyun(ali) / 180 webdav / 190 custom / 999 local
+ *   160 cos / 170 aliyun(ali) / 180 webdav / 190 custom
+ *   995 自定义本地渠道（排在 custom 之后、内置 local 之前）
+ *   999 内置本地渠道（永远最后）
  * 全站所有渠道下拉框的排序：typeCode 升序 → code 升序。
  */
 export const CHANNEL_TYPE_CODE: Record<string, number> = {
@@ -56,11 +65,20 @@ export const CHANNEL_TYPE_CODE: Record<string, number> = {
   aliyun: 170,
   webdav: 180,
   custom: 190,
+  // v3.0.0：本地文件渠道（只读浏览，不参与上传）—— 排在所有本地存储之后（最后）
+  localfiles: 1000,
   local: 999,
 };
 
-/** 取某渠道类型对应的类型编号（未知类型排最后，避免脏数据插到前面） */
-export function channelTypeCode(type: string): number {
+/** 自定义本地渠道的类型编号（排在 custom 190 之后、内置 local 999 之前） */
+export const CUSTOM_LOCAL_TYPE_CODE = 995;
+
+/**
+ * 取某渠道类型对应的类型编号（未知类型排最后，避免脏数据插到前面）。
+ * 自定义本地渠道（local 类型但 code 不是 999999）用 995。
+ */
+export function channelTypeCode(type: string, code?: string): number {
+  if (type === 'local' && code !== undefined && code !== LOCAL_CHANNEL_CODE) return CUSTOM_LOCAL_TYPE_CODE;
   return CHANNEL_TYPE_CODE[type] ?? 998;
 }
 
@@ -103,6 +121,8 @@ const IDENTITY_FIELDS: Record<string, string[]> = {
   webdav: ['baseUri', 'username'],
   immich: ['serverUrl', 'apiKey'],
   custom: ['apiUrl', 'tokenValue'],
+  // 本地渠道按存储目录区分「账户」—— 不同 rootPath 互为不同账户（内置渠道无 rootPath，自成一类）
+  local: ['rootPath'],
 };
 
 /** 账户指纹：类型 + 身份字段（用于「备份渠道不能与主渠道同账户」校验） */
@@ -122,7 +142,12 @@ export class ChannelsService {
     for (const [k, v] of Object.entries(cfg)) {
       out[k] = SECRET_FIELDS[type]?.includes(k) ? CryptoService.decrypt(String(v)) : String(v);
     }
-    return out;
+    /*
+     * v3.0.0（R6）：读取侧统一归一化 MinIO 的访问域名 ——
+     * 升级前保存的 `https://minio:9000/桶名` 在这里自动剥成 `https://minio:9000`，
+     * 桶名改由适配器统一拼接。这样不需要数据迁移，存量配置也不会变成 /桶名/桶名。
+     */
+    return normalizeBucketDomain(type, out);
   }
 
   /** 脱敏后的配置（返回给前端） */
@@ -170,10 +195,11 @@ export class ChannelsService {
       }
     }
 
-    // 1) 回填所有渠道的类型编号（含历史数据）；类型被改坏的也顺手纠正
-    const all = await prisma.channel.findMany({ select: { id: true, type: true, typeCode: true } });
+    // 1) 回填所有渠道的类型编号（含历史数据）；类型被改坏的也顺手纠正。
+    //    注意：自定义本地渠道（code ≠ 999999）固定 995，不能被内置规则的 999 冲掉。
+    const all = await prisma.channel.findMany({ select: { id: true, type: true, typeCode: true, code: true } });
     for (const c of all) {
-      const want = channelTypeCode(c.type);
+      const want = channelTypeCode(c.type, c.code);
       if (c.typeCode !== want) {
         await prisma.channel.update({ where: { id: c.id }, data: { typeCode: want } });
       }
@@ -197,9 +223,15 @@ export class ChannelsService {
       }
       return;
     }
-    // 名字冲突时加后缀，避免唯一约束报错导致启动失败
+    /*
+     * 名字冲突时加后缀，避免唯一约束报错导致启动失败。
+     * v3.0.0：后缀改用「-系统」而不是「（系统）」—— 渠道编辑页的名字校验规则是
+     * 仅允许「中英文 / 数字 / 下划线 / 连字符」，带全角括号的名字会被前端判为非法，
+     * 导致这条内置渠道一旦改名就再也保存不回去。
+     */
     let name = '本地存储';
-    if (await prisma.channel.findUnique({ where: { name } })) name = '本地存储（系统）';
+    if (await prisma.channel.findUnique({ where: { name } })) name = '本地存储-系统';
+    if (await prisma.channel.findUnique({ where: { name } })) name = '本地存储_系统';
     const hasMain = await prisma.channel.count({ where: { isMain: true } });
     await prisma.channel.create({
       data: {
@@ -212,6 +244,58 @@ export class ChannelsService {
         isBackup: false,
         sortOrder: 9999,
         config: JSON.stringify({ quotaEnabled: 'false', quotaLimitGB: '10', quotaThreshold: '95' }),
+      },
+    });
+  }
+
+  /**
+   * v3.0.0（R10）：确保「本地文件」内置浏览渠道存在（幂等，每次启动都跑）。
+   *
+   * 与 999999（本地存储）的区别：
+   *   · 只浏览、不接受上传（type=localfiles，只读）；
+   *   · 浏览目录固定为「本地存储」的内置根（<backend>/uploads），不允许改；
+   *   · code=999990 固定，不可删除 —— 管理员额外创建的 localfiles 渠道是随机 6 位 code，
+   *     两者互不影响（本条只保证 999990 这一条存在且配置不被改坏）。
+   */
+  async ensureBuiltinLocalFilesChannel(): Promise<void> {
+    const root = LocalAdapter.root();
+    const existing = await prisma.channel.findUnique({ where: { code: LOCAL_FILES_CHANNEL_CODE } });
+    if (existing) {
+      let cfg: Record<string, unknown> = {};
+      try {
+        cfg = JSON.parse(existing.config || '{}');
+      } catch {
+        cfg = {};
+      }
+      const current = Array.isArray(cfg.rootPaths) ? cfg.rootPaths : [];
+      const patch: Record<string, unknown> = {};
+      if (existing.type !== 'localfiles') patch.type = 'localfiles';
+      if (!existing.enabled) patch.enabled = true;
+      const wantCode = channelTypeCode('localfiles');
+      if (existing.typeCode !== wantCode) patch.typeCode = wantCode;
+      // 浏览目录固定为内置 uploads（被改过就纠正回来）
+      if (current.length !== 1 || String(current[0]) !== root) {
+        patch.config = JSON.stringify({ ...cfg, rootPaths: [root] });
+      }
+      if (Object.keys(patch).length) {
+        await prisma.channel.update({ where: { id: existing.id }, data: patch as never });
+      }
+      return;
+    }
+    let name = '本地文件';
+    if (await prisma.channel.findUnique({ where: { name } })) name = '本地文件-系统';
+    if (await prisma.channel.findUnique({ where: { name } })) name = '本地文件_系统';
+    await prisma.channel.create({
+      data: {
+        code: LOCAL_FILES_CHANNEL_CODE,
+        name,
+        type: 'localfiles',
+        typeCode: channelTypeCode('localfiles'),
+        enabled: true,
+        isMain: false,
+        isBackup: false,
+        sortOrder: 9998,
+        config: JSON.stringify({ rootPaths: [root] }),
       },
     });
   }
@@ -375,11 +459,10 @@ export class ChannelManageController {
     }
 
     const grouped: Record<string, unknown[]> = {};
-    // 分组顺序同样按类型编号排（前端设置页按 key 顺序渲染分组标题）
+    // 分组顺序同样按类型编号排（前端设置页按 key 顺序渲染分组标题）；
+    // v3.0.0：CHANNEL_TYPES 已含 local（自定义本地渠道），内置渠道组也落在同一 key 下
     const addable = [...CHANNEL_TYPES].sort((a, b) => channelTypeCode(a) - channelTypeCode(b));
     for (const type of addable) grouped[type] = [];
-    // 内置类型（本地存储）排在最后
-    for (const type of BUILTIN_CHANNEL_TYPES) grouped[type] = [];
     for (const c of channels) {
       const config = this.svc.maskConfig(c.type, c.config);
       (grouped[c.type] ||= []).push({
@@ -455,11 +538,63 @@ export class ChannelManageController {
   private async nextCode(): Promise<string> {
     for (let i = 0; i < 60; i++) {
       const code = String(100000 + Math.floor(Math.random() * 899000));
-      if (code === LOCAL_CHANNEL_CODE) continue;
+      if (code === LOCAL_CHANNEL_CODE || code === LOCAL_FILES_CHANNEL_CODE) continue;
       if (!(await prisma.channel.findUnique({ where: { code } }))) return code;
     }
     const fallback = String(Date.now()).slice(-6);
-    return fallback === LOCAL_CHANNEL_CODE ? '100001' : fallback;
+    return fallback === LOCAL_CHANNEL_CODE || fallback === LOCAL_FILES_CHANNEL_CODE ? '100001' : fallback;
+  }
+
+  /**
+   * 自定义本地渠道的 ID 生成（v3.0.0）：固定以 "99" 开头的 6 位数字（99xxxx），
+   * 递增找空位、避开内置本地渠道的 999999 —— 一眼即可与普通渠道区分。
+   */
+  private async nextLocalCode(): Promise<string> {
+    for (let n = 990000; n <= 999998; n++) {
+      const code = String(n);
+      if (code === LOCAL_CHANNEL_CODE || code === LOCAL_FILES_CHANNEL_CODE) continue;
+      if (!(await prisma.channel.findUnique({ where: { code } }))) return code;
+    }
+    // 990000~999998 全满（理论不可能）→ 退回普通随机段
+    return this.nextCode();
+  }
+
+  /**
+   * 自定义本地渠道的 rootPath 校验（v3.0.0）：
+   * 必填、拒绝 '..' 穿越；通过 LocalAdapter.sanitizeRootPath 解析出实际落盘根。
+   */
+  private validateLocalRootPath(raw: unknown): { ok: true; rootPath: string } | { ok: false; message: string } {
+    const s = String(raw || '').trim();
+    if (!s) return { ok: false, message: '自定义本地渠道必须填写 rootPath（容器内存储地址）' };
+    if (s.includes('..')) return { ok: false, message: 'rootPath 禁止包含 ".."' };
+    return { ok: true, rootPath: s };
+  }
+
+  /**
+   * v3.0.0（R11）：本地文件渠道的「浏览目录」校验。
+   *
+   * 字段是 rootPaths（多行 / 数组），不是 rootPath ——
+   * 早先 create() 对 localfiles 也去校验 rootPath，导致「明明填了浏览目录却一直提示
+   * 必须填写 rootPath，怎么都存不上」。这里按真实字段解析：
+   *   · rootPaths 为数组 → 逐个 trim；
+   *   · 为字符串 → 按换行拆分（前端 textarea）；
+   *   · 只有历史 rootPath 单值时当作一个目录。
+   * 返回规范化的换行字符串（与前端 textarea 一致）。
+   */
+  private validateLocalRootPaths(raw: unknown): { ok: true; rootPaths: string } | { ok: false; message: string } {
+    let list: string[] = [];
+    if (Array.isArray(raw)) {
+      list = raw.map((v) => String(v || '').trim());
+    } else if (typeof raw === 'string') {
+      list = raw.split(/\r?\n/).map((v) => v.trim());
+    }
+    list = list.filter(Boolean);
+    if (!list.length) {
+      return { ok: false, message: '本地文件渠道必须填写「浏览目录」（容器内绝对路径，一行一个）' };
+    }
+    const bad = list.find((p) => p.includes('..'));
+    if (bad) return { ok: false, message: `浏览目录禁止包含 ".."：${bad}` };
+    return { ok: true, rootPaths: list.join('\n') };
   }
 
   @Post()
@@ -476,7 +611,26 @@ export class ChannelManageController {
     const dup = await prisma.channel.findFirst({ where: { name: body.name } });
     if (dup) return { success: false, message: `渠道名称「${body.name}」已存在` };
 
-    const raw = body.config || {};
+    // v3.0.0：MinIO 的域名只填域名即可 —— 老配置里残留的 /bucket 在这里剥离，桶名由适配器拼接
+    // v3.0.0：本地文件渠道是「只读浏览」渠道，不能作为主渠道 / 备份渠道参与上传
+    if (body.type === 'localfiles' && (body.isMain || body.isBackup)) {
+      return { success: false, message: '本地文件渠道只用于浏览本地目录，不能设为主渠道或备份渠道' };
+    }
+    const raw = normalizeBucketDomain(body.type, body.config || {});
+    // v3.0.0：自定义本地渠道 —— rootPath 必填且拒绝 '..'
+    // v3.0.0（R11）：本地文件渠道 —— 校验的是「浏览目录」rootPaths，不是 rootPath
+    let rootPath = '';
+    if (body.type === 'local') {
+      const check = this.validateLocalRootPath(raw.rootPath);
+      if (!check.ok) return { success: false, message: check.message };
+      rootPath = check.rootPath;
+    } else if (body.type === 'localfiles') {
+      const check = this.validateLocalRootPaths(raw.rootPaths ?? raw.rootPath);
+      if (!check.ok) return { success: false, message: check.message };
+      raw.rootPaths = check.rootPaths;
+      // 宿主机映射目录纯展示、可选：空值不要写进配置，避免前端出现「空字符串字段」
+      if (!String(raw.hostPath || '').trim()) delete raw.hostPath;
+    }
     if (body.isBackup) {
       const err = await this.sameAccountAsMain(body.type, null, channelIdentity(body.type, raw));
       if (err) return { success: false, message: err };
@@ -486,18 +640,22 @@ export class ChannelManageController {
     for (const [k, v] of Object.entries(raw)) {
       encrypted[k] = SECRET_FIELDS[body.type]?.includes(k) ? CryptoService.encrypt(String(v)) : String(v);
     }
+    // v3.0.0：内置本地渠道用固定 code 999999（由启动逻辑保证存在）；
+    // 自定义本地渠道以 "99" 开头递增找空位，类型编号 995。
+    const isLocal = body.type === 'local';
     const ch = await prisma.channel.create({
       data: {
         name: body.name,
         type: body.type,
-        typeCode: channelTypeCode(body.type), // 渠道类型编号（排序依据，创建时固化）
+        typeCode: isLocal ? CUSTOM_LOCAL_TYPE_CODE : channelTypeCode(body.type), // 渠道类型编号（排序依据，创建时固化）
         config: JSON.stringify(encrypted),
         isMain: !!body.isMain,
         isBackup: !!body.isBackup,
-        code: await this.nextCode(),
+        code: isLocal ? await this.nextLocalCode() : await this.nextCode(),
       },
     });
     await this.enforceUniqueFlags(ch.id, body.isMain, body.isBackup);
+    appLog.info('channel', `新增渠道：${body.name}（${body.type}${isLocal ? `，rootPath=${rootPath}` : ''}）`, `code=${ch.code}`);
     return { success: true, data: { id: ch.id, code: ch.code } };
   }
 
@@ -510,6 +668,10 @@ export class ChannelManageController {
     if (!ch) return { success: false, message: '渠道不存在' };
     if (body.isMain && body.isBackup) {
       return { success: false, message: '同一条渠道不能同时作为主渠道和备份渠道' };
+    }
+    // v3.0.0：本地文件渠道不参与上传，禁止被设为主渠道 / 备份渠道
+    if (ch.type === 'localfiles' && (body.isMain || body.isBackup)) {
+      return { success: false, message: '本地文件渠道只用于浏览本地目录，不能设为主渠道或备份渠道' };
     }
     // 渠道名可修改，但不允许与其它渠道重名
     if (body.name !== undefined && String(body.name).trim() !== ch.name) {
@@ -525,12 +687,40 @@ export class ChannelManageController {
       if (String(v).includes('****')) continue;
       merged[k] = v;
     }
+    /*
+     * v3.0.0（R10）：内置「本地文件」渠道（999990）的浏览目录固定为 uploads，禁止修改。
+     */
+    if (ch.code === LOCAL_FILES_CHANNEL_CODE) {
+      merged.rootPaths = JSON.stringify([LocalAdapter.root()]);
+      delete merged.rootPath;
+    }
+    /*
+     * v3.0.0（R10）：公开访问域名在 UI 上已改为必填。
+     * 后端做一次「软收敛」：为空时用 Endpoint 的站点源补上，避免存量渠道保存时被打回，
+     * 也让「文件加载域名」永远有值可用（本地 / 本地文件渠道不参与）。
+     */
+    if (!['local', 'localfiles'].includes(ch.type)) {
+      const pd = String(merged.publicDomain || '').trim();
+      if (!pd) {
+        const ep = String(
+          merged.endpoint || merged.apiUrl || merged.serverUrl || merged.baseUri || merged.domain || '',
+        ).trim();
+        if (ep) {
+          try {
+            merged.publicDomain = new URL(/^https?:\/\//i.test(ep) ? ep : `https://${ep}`).origin;
+          } catch {
+            merged.publicDomain = ep;
+          }
+        }
+      }
+    }
     if (body.isBackup) {
       const err = await this.sameAccountAsMain(ch.type, id, channelIdentity(ch.type, merged));
       if (err) return { success: false, message: err };
     }
     const encrypted: Record<string, string> = {};
-    for (const [k, v] of Object.entries(merged)) {
+    // v3.0.0：MinIO 域名去掉历史残留的 /bucket（桶名由后端适配器拼接）
+    for (const [k, v] of Object.entries(normalizeBucketDomain(ch.type, merged))) {
       encrypted[k] = SECRET_FIELDS[ch.type]?.includes(k) ? CryptoService.encrypt(v) : v;
     }
     await prisma.channel.update({
@@ -574,6 +764,13 @@ export class ChannelManageController {
     if (!CHANNEL_TYPES.includes(type as (typeof CHANNEL_TYPES)[number])) {
       return { success: false, message: `不支持的渠道类型: ${type || '(空)'}` };
     }
+    // v3.0.0：本地文件渠道是只读浏览渠道，不参与上传，因此没有「连接测试」的概念
+    if (type === 'localfiles') {
+      return { success: false, message: '本地文件渠道只用于浏览本地目录，不支持上传测试' };
+    }
+
+    // v3.0.0：连接测试同样按「域名只填域名」处理（剥离历史 /bucket），保证测出来的外链与正式上传一致
+    cfg = normalizeBucketDomain(type, cfg);
 
     const info: ChannelInfo = { id: body.id || 'channel-test', name: '连接测试', type, config: cfg, metas: {} };
     const key = `go-imgbed-test-${Date.now()}.png`;
@@ -650,6 +847,8 @@ export class ChannelManageController {
   async setAuthorize(@Param('id') id: string, @Body() body: { usernames?: string[] }) {
     const ch = await prisma.channel.findUnique({ where: { id } });
     if (!ch) return { success: false, message: '渠道不存在' };
+    // v3.0.0（R5）：本地文件渠道仅管理员可用，不接受授权名单
+    if (ch.type === 'localfiles') return { success: false, message: '本地文件渠道不支持授权（仅管理员可用）' };
     const wanted = Array.isArray(body.usernames) ? body.usernames.map((x) => String(x || '').trim()).filter(Boolean) : [];
     // 只保留真实存在的账户，防止脏名字写进配置
     const exists = await prisma.user.findMany({
@@ -670,14 +869,31 @@ export class ChannelManageController {
 
   @Delete(':id')
   async remove(@Param('id') id: string) {
-    // 内置渠道（本地存储）不允许删除：它是「零配置可用」的兜底落盘位置
+    // 删除保护（v3.0.0 起按 code 判定）：只有内置本地渠道（code=999999）不可删除；
+    // 自定义本地渠道（99xxxx）与普通渠道一样允许删除（有副本时仍要求先迁移）。
     const target = await prisma.channel.findUnique({ where: { id } });
-    if (target && (BUILTIN_CHANNEL_TYPES as readonly string[]).includes(target.type)) {
-      return { success: false, message: '本地存储是系统内置渠道，不能删除（可以禁用以停用）' };
+    if (target && target.code === LOCAL_CHANNEL_CODE) {
+      return { success: false, message: '内置本地存储是系统渠道，不能删除（可以禁用以停用）' };
     }
+    if (target && target.code === LOCAL_FILES_CHANNEL_CODE) {
+      return { success: false, message: '内置本地文件浏览渠道是系统渠道，不能删除' };
+    }
+    /*
+     * v3.0.0（R10）：只要库里还有该渠道的文件副本就禁止删除 ——
+     * 包含正常文件、回收站里的文件（软删后副本行仍在）、登记文件，不限用户与实例。
+     */
     const copies = await prisma.fileCopy.count({ where: { channelId: id } });
     if (copies > 0) {
-      return { success: false, message: `该渠道仍有 ${copies} 个文件副本，请先迁移或清理` };
+      const [trash, registered] = await Promise.all([
+        prisma.fileCopy.count({ where: { channelId: id, file: { status: 'deleted' } } }),
+        prisma.fileCopy.count({ where: { channelId: id, file: { uploadSource: 'Record' } } }),
+      ]);
+      const detail = [
+        `${copies} 个文件副本`,
+        trash ? `其中回收站 ${trash} 个` : '',
+        registered ? `登记文件 ${registered} 个` : '',
+      ].filter(Boolean).join('，');
+      return { success: false, message: `该渠道仍有 ${detail}，请先删除这些文件（含回收站与登记文件）后再删除渠道` };
     }
     await prisma.channel.delete({ where: { id } });
     return { success: true };

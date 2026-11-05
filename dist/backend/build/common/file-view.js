@@ -12,6 +12,7 @@ exports.extSuffixFor = extSuffixFor;
 exports.formatSize = formatSize;
 exports.safeParse = safeParse;
 exports.buildDirectoryTree = buildDirectoryTree;
+exports.isRecordFile = isRecordFile;
 exports.buildMetadata = buildMetadata;
 exports.serializeFile = serializeFile;
 exports.normalizeDir = normalizeDir;
@@ -49,12 +50,13 @@ exports.CHANNEL_LABEL = {
     immich: 'Immich',
     custom: 'External',
     local: 'Local',
+    localfiles: 'File',
 };
 exports.CHANNEL_SHORT = {
     easyimages: 'EI',
     lsky: 'LS',
     cos: 'COS',
-    aliyun: 'ALI',
+    aliyun: 'OSS',
     immich: 'IM',
     minio: 'MI',
     r2: 'R2',
@@ -62,6 +64,7 @@ exports.CHANNEL_SHORT = {
     webdav: 'WD',
     custom: 'DIY',
     local: 'LCL',
+    localfiles: 'File',
 };
 function channelShort(typeOrLabel) {
     const raw = String(typeOrLabel || '').trim();
@@ -76,14 +79,21 @@ function channelShort(typeOrLabel) {
     return raw.slice(0, 4).toUpperCase();
 }
 function fileTypeOf(mime) {
-    if (!mime)
+    const m = String(mime || '').toLowerCase().split(';')[0].trim();
+    if (!m)
         return 'other';
-    if (mime.startsWith('image/'))
+    if (m.startsWith('image/'))
         return 'image';
-    if (mime.startsWith('video/'))
+    if (m.startsWith('video/'))
         return 'video';
-    if (mime.startsWith('audio/'))
+    if (m.startsWith('audio/'))
         return 'audio';
+    if (m === 'application/pdf')
+        return 'pdf';
+    if (m.startsWith('text/') ||
+        /^application\/(json|ld\+json|ndjson|x-ndjson|json5|javascript|ecmascript|x-javascript|x-httpd-php|php|x-sh|x-csh|x-yaml|yaml|x-toml|toml|x-properties|sql|x-python|x-ruby|x-perl|x-lua|x-php|x-httpd-php-source|graphql|xml|xhtml\+xml|x-latex|rtf)$/.test(m)) {
+        return 'txt';
+    }
     return 'other';
 }
 function fileExtOf(originalName, mime) {
@@ -158,6 +168,16 @@ function buildDirectoryTree(directories) {
     sortChildren(root);
     return root;
 }
+function isRecordFile(rec) {
+    if (!rec)
+        return false;
+    if (String(rec.uploadSource || '') === 'Record')
+        return true;
+    const metas = typeof rec.metas === 'string'
+        ? safeParse(rec.metas)
+        : rec.metas;
+    return !!(metas && metas.Registered === true);
+}
 function buildMetadata(rec, copies, opts = {}) {
     const metas = safeParse(rec.metas);
     const primary = copies.find((c) => c.channel?.isMain) || copies[0];
@@ -171,9 +191,12 @@ function buildMetadata(rec, copies, opts = {}) {
         label: exports.CHANNEL_LABEL[c.channel.type] || c.channel.type,
         short: channelShort(c.channel.type),
         name: c.channel.name,
-        url: (opts.resolveDirectUrl ? opts.resolveDirectUrl(c) : '') || '',
+        url: (opts.resolveDirectUrl ? opts.resolveDirectUrl(c, rec) : '') || '',
     }));
-    const storageUrl = (primary && opts.resolveDirectUrl ? opts.resolveDirectUrl(primary) : '') || '';
+    const storageUrl = (primary && opts.resolveDirectUrl ? opts.resolveDirectUrl(primary, rec) : '') || '';
+    const loadUrl = (primary && (opts.resolveLoadUrl || opts.resolveDirectUrl)
+        ? (opts.resolveLoadUrl || opts.resolveDirectUrl)(primary, rec)
+        : '') || '';
     const size = Number(rec.size) || 0;
     const rawOriginalSize = Number(rec.originalSize) || 0;
     const originalSize = rawOriginalSize > 0 ? rawOriginalSize : size;
@@ -199,6 +222,8 @@ function buildMetadata(rec, copies, opts = {}) {
             ? rec.linkExpiresAt.getTime()
             : 0,
         ListType: metas.ListType || 'None',
+        Rating: Number(rec.rating) || 0,
+        Level: Number(rec.level) || 0,
         TimeStamp: rec.createdAt.getTime(),
         Label: metas.Label || 'None',
         Directory: rec.folder ? `${rec.folder.replace(/\/+$/, '')}/` : '',
@@ -210,6 +235,7 @@ function buildMetadata(rec, copies, opts = {}) {
         ChannelCode: primary?.channel?.code || '',
         ChannelName: primary?.channel?.name || '',
         StorageUrl: storageUrl,
+        LoadUrl: loadUrl || storageUrl,
         BackupChannels: backupChannels,
         FileHash: rec.hash || '',
     };

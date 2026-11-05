@@ -24,17 +24,24 @@ function estimateFfmpegSeconds(input) {
     }
     return Math.max(dur * (3 / factor), size / (1.2 * 1024 * 1024) / factor);
 }
-function mediaResourceGuard() {
+function mediaResourceGuard(opts) {
     const cores = cpuCores();
     if (cores < 2)
         return { ok: false, reason: `CPU 核心数过少（${cores} 核），跳过重编码以保证上传与网页响应` };
+    const loadFactor = Number(opts?.loadFactor);
+    const lf = Number.isFinite(loadFactor) && loadFactor >= 0 ? loadFactor : 1.5;
     const load1 = (0, os_1.loadavg)()[0] || 0;
-    if (load1 > cores * 1.5) {
-        return { ok: false, reason: `系统负载过高（load1=${load1.toFixed(2)}，共 ${cores} 核），跳过重编码` };
+    if (lf > 0 && load1 > cores * lf) {
+        return {
+            ok: false,
+            reason: `系统负载过高（load1=${load1.toFixed(2)} > ${lf} × ${cores} 核 = ${(cores * lf).toFixed(1)}），跳过重编码`,
+        };
     }
     const freeMB = Math.round((0, os_1.freemem)() / 1024 / 1024);
-    if (freeMB < 256)
-        return { ok: false, reason: `可用内存不足（${freeMB}MB），跳过重编码` };
+    const ramLimit = Number(opts?.ramFreeMB);
+    const rm = Number.isFinite(ramLimit) && ramLimit >= 0 ? ramLimit : 256;
+    if (rm > 0 && freeMB < rm)
+        return { ok: false, reason: `可用内存不足（${freeMB}MB < ${rm}MB），跳过重编码` };
     return { ok: true };
 }
 async function postProcessMediaFile(srcPath, mime, ext, opts) {
@@ -72,7 +79,7 @@ async function postProcessMediaFile(srcPath, mime, ext, opts) {
     const transcodeUnlimited = rawTranscodeMax === 0;
     const compressMax = Math.max(30, Number.isFinite(rawCompressMax) && rawCompressMax > 0 ? rawCompressMax : exports.MEDIA_MAX_SECONDS);
     const transcodeMax = Math.max(30, Number.isFinite(rawTranscodeMax) && rawTranscodeMax > 0 ? rawTranscodeMax : exports.MEDIA_MAX_SECONDS);
-    const guard = mediaResourceGuard();
+    const guard = opts.guard?.enabled === false ? { ok: true } : mediaResourceGuard(opts.guard);
     if (!guard.ok)
         return skip(guard.reason || '系统资源不足，跳过压缩与转码');
     const kind = isVideo ? 'video' : 'audio';

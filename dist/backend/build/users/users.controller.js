@@ -152,6 +152,7 @@ let UsersController = class UsersController {
             canEdit: u.canEdit,
             canDelete: u.canDelete,
             linkEnabled: u.linkEnabled,
+            shareEnabled: u.role === 'admin' || u.role === 'super' ? true : !!u.shareEnabled,
             enforceLimits: u.enforceLimits,
             transcodePolicy: u.transcodePolicy || 'inherit',
             maxFileSizeMB: Number(u.maxFileSizeMB) || 0,
@@ -189,6 +190,7 @@ let UsersController = class UsersController {
                 canEdit: true,
                 canDelete: true,
                 linkEnabled: true,
+                shareEnabled: true,
                 enforceLimits: prof.enforceLimits !== false,
                 transcodePolicy: String(prof.transcodePolicy || 'inherit'),
                 maxFileSizeMB: Number(prof.maxFileSizeMB) || 0,
@@ -324,6 +326,7 @@ let UsersController = class UsersController {
                     canEdit: true,
                     canDelete: true,
                     linkEnabled: true,
+                    shareEnabled: true,
                     enforceLimits: prof.enforceLimits !== false,
                     transcodePolicy: String(prof.transcodePolicy || 'inherit'),
                     maxFileSizeMB: Number(prof.maxFileSizeMB) || 0,
@@ -356,6 +359,7 @@ let UsersController = class UsersController {
                 canEdit: u.canEdit,
                 canDelete: u.canDelete,
                 linkEnabled: u.linkEnabled,
+                shareEnabled: u.role === 'admin' || u.role === 'super' ? true : !!u.shareEnabled,
                 enforceLimits: u.enforceLimits,
                 transcodePolicy: u.transcodePolicy || 'inherit',
                 maxFileSizeMB: Number(u.maxFileSizeMB) || 0,
@@ -368,6 +372,8 @@ let UsersController = class UsersController {
                 mailReady: await this.mail.configured(),
                 frontSessionDays: u.frontSessionDays ?? DEFAULT_SESSION_DAYS,
                 backSessionDays: u.backSessionDays ?? DEFAULT_SESSION_DAYS,
+                uploadBkImg: u.uploadBkImg || '',
+                adminBkImg: u.adminBkImg || '',
                 adminNote: admin ? u.adminNote || '' : '',
                 createdAt: u.createdAt,
                 self: u.username === this.me(req),
@@ -492,6 +498,14 @@ let UsersController = class UsersController {
             }
             data[key] = Math.floor(n);
         }
+        for (const key of ['uploadBkImg', 'adminBkImg']) {
+            if (body[key] === undefined)
+                continue;
+            const v = normalizeBkImg(body[key]);
+            if (v === null)
+                return { success: false, message: '背景图格式不正确，需为 ["图片地址1","图片地址2"]' };
+            data[key] = v;
+        }
         if (admin) {
             if (body.enabled !== undefined)
                 data.enabled = !!body.enabled;
@@ -501,6 +515,8 @@ let UsersController = class UsersController {
                 data.canDelete = !!body.canDelete;
             if (body.linkEnabled !== undefined)
                 data.linkEnabled = !!body.linkEnabled;
+            if (body.shareEnabled !== undefined)
+                data.shareEnabled = !!body.shareEnabled;
             if (body.enforceLimits !== undefined)
                 data.enforceLimits = !!body.enforceLimits;
             if (body.transcodePolicy !== undefined)
@@ -616,7 +632,7 @@ let UsersController = class UsersController {
         if (!email)
             return { success: false, message: '请先填写邮箱地址' };
         const code = String(body?.code || '').trim();
-        if (!/^\d{6}$/.test(code))
+        if (!/^[0-9A-Za-z]{6}$/.test(code))
             return { success: false, message: '请输入 6 位验证码' };
         const r = this.mail.consumeCode(email, 'verify-email', code);
         if (!r.ok)
@@ -657,6 +673,53 @@ let UsersController = class UsersController {
         return { u, err: '' };
     }
     verifySelfPassword(u, body) {
+        const merged = String(body.verifyCode || '').trim();
+        const vType = String(body.verifyType || '').trim().toLowerCase();
+        if (merged && vType) {
+            if (vType === 'password') {
+                if (crypto_service_1.CryptoService.verifyPassword(merged, u.passwordHash))
+                    return { ok: true };
+                return { ok: false, message: '原密码不正确' };
+            }
+            if (vType === 'email') {
+                if (!u.email || !u.emailVerified)
+                    return { ok: false, message: '该账户邮箱未验证，无法使用邮箱验证码改密' };
+                const r = this.mail.consumeAnyCode(u.email, ['change-password', 'login'], merged);
+                return r.ok ? { ok: true } : { ok: false, message: r.message };
+            }
+            if (vType === 'totp') {
+                if (!u.totpEnabled || !u.totpSecret)
+                    return { ok: false, message: '该账户未启用两步验证' };
+                try {
+                    if ((0, totp_1.verifyTotp)(crypto_service_1.CryptoService.decrypt(u.totpSecret), merged))
+                        return { ok: true };
+                }
+                catch {
+                }
+                return { ok: false, message: '动态码错误或已过期' };
+            }
+            return { ok: false, message: '身份验证方式无效' };
+        }
+        if (merged) {
+            if (crypto_service_1.CryptoService.verifyPassword(merged, u.passwordHash))
+                return { ok: true };
+            if (merged.length <= 8) {
+                if (u.email && u.emailVerified) {
+                    const r = this.mail.consumeAnyCode(u.email, ['change-password', 'login'], merged);
+                    if (r.ok)
+                        return { ok: true };
+                }
+                if (u.totpEnabled && u.totpSecret) {
+                    try {
+                        if ((0, totp_1.verifyTotp)(crypto_service_1.CryptoService.decrypt(u.totpSecret), merged))
+                            return { ok: true };
+                    }
+                    catch {
+                    }
+                }
+            }
+            return { ok: false, message: '身份验证失败：原密码 / 邮箱验证码 / 两步验证动态码均不匹配' };
+        }
         const oldPassword = String(body.oldPassword || '');
         const emailCode = String(body.emailCode || '').trim();
         const totpCode = String(body.totpCode || '').trim();
@@ -1075,6 +1138,37 @@ function clampMaxFileSizeMB(raw) {
     if (!Number.isFinite(n) || n <= 0)
         return 0;
     return Math.min(1048576, Math.round(n));
+}
+function normalizeBkImg(raw) {
+    if (raw === undefined)
+        return null;
+    if (raw === null)
+        return '';
+    const text = String(raw).trim();
+    if (!text)
+        return '';
+    let arr;
+    if (text.startsWith('[')) {
+        try {
+            const parsed = JSON.parse(text);
+            if (!Array.isArray(parsed))
+                return null;
+            arr = parsed;
+        }
+        catch {
+            return null;
+        }
+    }
+    else {
+        arr = [text];
+    }
+    const list = arr
+        .map((x) => (typeof x === 'string' ? x.trim() : ''))
+        .filter(Boolean)
+        .map((x) => x.slice(0, 2000))
+        .filter((x) => /^https?:\/\//i.test(x) || x.startsWith('/'))
+        .slice(0, 20);
+    return list.length ? JSON.stringify(list) : '';
 }
 function avatarDir() {
     return (0, project_paths_1.backendSub)('uploads', 'avatars');

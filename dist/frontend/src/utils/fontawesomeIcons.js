@@ -56,6 +56,11 @@ import { faFilter } from '@fortawesome/free-solid-svg-icons/faFilter';
 import { faFolder } from '@fortawesome/free-solid-svg-icons/faFolder';
 import { faFolderOpen } from '@fortawesome/free-solid-svg-icons/faFolderOpen';
 import { faFileCirclePlus } from '@fortawesome/free-solid-svg-icons/faFileCirclePlus';
+import { faCamera } from '@fortawesome/free-solid-svg-icons/faCamera';
+import { faHeart } from '@fortawesome/free-solid-svg-icons/faHeart';
+// v3.0.0（R12）：卡片上的评分/级别图标改为「空心」—— 需要 regular 风格的同名图标
+import { faStar as farStar } from '@fortawesome/free-regular-svg-icons/faStar';
+import { faHeart as farHeart } from '@fortawesome/free-regular-svg-icons/faHeart';
 import { faFileImage } from '@fortawesome/free-solid-svg-icons/faFileImage';
 import { faFolderTree } from '@fortawesome/free-solid-svg-icons/faFolderTree';
 import { faGlobe } from '@fortawesome/free-solid-svg-icons/faGlobe';
@@ -70,6 +75,10 @@ import { faKey } from '@fortawesome/free-solid-svg-icons/faKey';
 import { faInfoCircle } from '@fortawesome/free-solid-svg-icons/faInfoCircle';
 import { faLink } from '@fortawesome/free-solid-svg-icons/faLink';
 import { faList } from '@fortawesome/free-solid-svg-icons/faList';
+import { faListUl } from '@fortawesome/free-solid-svg-icons/faListUl';
+import { faSearchMinus } from '@fortawesome/free-solid-svg-icons/faSearchMinus';
+import { faSearchPlus } from '@fortawesome/free-solid-svg-icons/faSearchPlus';
+import { faFilePdf } from '@fortawesome/free-solid-svg-icons/faFilePdf';
 import { faMinus } from '@fortawesome/free-solid-svg-icons/faMinus';
 import { faMinusSquare } from '@fortawesome/free-solid-svg-icons/faMinusSquare';
 import { faMoon } from '@fortawesome/free-solid-svg-icons/faMoon';
@@ -90,8 +99,10 @@ import { faShareAlt } from '@fortawesome/free-solid-svg-icons/faShareAlt';
 import { faShield } from '@fortawesome/free-solid-svg-icons/faShield';
 import { faShieldAlt } from '@fortawesome/free-solid-svg-icons/faShieldAlt';
 import { faSignOutAlt } from '@fortawesome/free-solid-svg-icons/faSignOutAlt';
+import { faSortAlphaDown } from '@fortawesome/free-solid-svg-icons/faSortAlphaDown';
 import { faSortAlphaUp } from '@fortawesome/free-solid-svg-icons/faSortAlphaUp';
 import { faSortAmountDown } from '@fortawesome/free-solid-svg-icons/faSortAmountDown';
+import { faSortAmountUp } from '@fortawesome/free-solid-svg-icons/faSortAmountUp';
 import { faSpinner } from '@fortawesome/free-solid-svg-icons/faSpinner';
 import { faSquare } from '@fortawesome/free-solid-svg-icons/faSquare';
 import { faSun } from '@fortawesome/free-solid-svg-icons/faSun';
@@ -104,6 +115,8 @@ import { faThLarge } from '@fortawesome/free-solid-svg-icons/faThLarge';
 import { faTimes } from '@fortawesome/free-solid-svg-icons/faTimes';
 import { faTools } from '@fortawesome/free-solid-svg-icons/faTools';
 import { faTrashAlt } from '@fortawesome/free-solid-svg-icons/faTrashAlt';
+// v3.0.0（R9）：回收站「恢复」按钮图标（此前 undo 未注册 → 按钮没有图标）
+import { faUndo } from '@fortawesome/free-solid-svg-icons/faUndo';
 import { faUpload } from '@fortawesome/free-solid-svg-icons/faUpload';
 import { faUserCog } from '@fortawesome/free-solid-svg-icons/faUserCog';
 import { faStar } from '@fortawesome/free-solid-svg-icons/faStar';
@@ -167,6 +180,8 @@ export default [
     faFolder,
     faFolderOpen,
     faFileCirclePlus,
+    faCamera,
+    faHeart,
     faFileImage,
     faFolderTree,
     faGlobe,
@@ -181,6 +196,10 @@ export default [
     faInfoCircle,
     faLink,
     faList,
+    faListUl,
+    faSearchMinus,
+    faSearchPlus,
+    faFilePdf,
     faMinus,
     faMinusSquare,
     faMoon,
@@ -201,8 +220,10 @@ export default [
     faShield,
     faShieldAlt,
     faSignOutAlt,
+    faSortAlphaDown,
     faSortAlphaUp,
     faSortAmountDown,
+    faSortAmountUp,
     faSpinner,
     faSquare,
     faSun,
@@ -215,12 +236,15 @@ export default [
     faTimes,
     faTools,
     faTrashAlt,
+    faUndo,
     faUpload,
     faUserCog,
     faStar,
     faPlug,
     faCommentDots,
     faUsers,
+    farStar,
+    farHeart,
     faAdjust,
     faVolumeMute,
     faVolumeUp

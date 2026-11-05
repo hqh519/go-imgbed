@@ -10,12 +10,11 @@ import { SysConfigService } from '../settings/sysconfig.service';
 import { ChannelsService } from '../channels/channels.controller';
 import { StorageChannelService, StorageChannelInfo } from '../storage/storage-channel.service';
 import { createAdapter, toCopyInfo } from '../adapters/adapter.factory';
-import { localFileAbs } from '../adapters/local.adapter';
+import { localFileAbsOf } from '../adapters/local.adapter';
 import { AdapterError, ChannelInfo, StorageAdapter } from '../adapters/adapter.interface';
 import { normalizeUploadSource, fileTypeOf, channelShort } from '../common/file-view';
 import { appLog } from '../common/app-log';
-import { joinObjectKey, renderFileName, renderObjectPrefix, supportsPrefix } from '../common/path-template';
-import { matchRecordSource, recordDomainCandidates } from '../common/record-link';
+import { joinObjectKey, LOCAL_DEFAULT_PREFIX, renderFileName, renderObjectPrefix, supportsPrefix } from '../common/path-template';
 import { compressFile, compressMedia, readDimensions, readDimensionsFile } from '../common/compress';
 import { postProcessMediaFile, enqueueMediaJob, mediaQueueStats, MEDIA_MAX_SECONDS } from './media-post';
 
@@ -57,6 +56,12 @@ interface UploadOptions {
   originalSize?: number;
   /** 是否对本次上传执行备份（前端「上传设置 → 是否备份」开关；缺省 true） */
   backup?: boolean;
+  /**
+   * v3.0.0（R14）：调用方追加的自动标签（与 autoTag 的系统标签合并去重）。
+   * 本地文件管理页传 ['本地上传']；视频抓拍前端传 ['视频抓拍']；Web/API 通道可经
+   * query `extraTags` 传入（逗号分隔，后端会做长度/数量截断）。
+   */
+  extraTags?: string[];
   /**
    * 指定备份渠道（**只接受渠道 ID**：6 位 code 或主键 id）。
    * 用于 API Token 的 `backup` 参数 —— 不指定时由 getStorageChannel 依次退回
@@ -119,6 +124,17 @@ interface UploadOptions {
   failReason?: string;
   /** WebP 未转换原因（前端本地转换，v2.8.9） */
   webpSkip?: string;
+  /**
+   * v3.0.0：文件归属实例 ID（空串 = 默认实例）。
+   * 非空时校验 uploader 必须是该实例的创建者或成员，否则回退空串（默认实例）并记 warn。
+   */
+  instanceId?: string;
+  /**
+   * v3.0.0：前端 WebP 转换模式（lossless / lossy）。
+   * 前端转换成功时文件已是 webp，后端只把 mode 记进处理事件；
+   * 转换失败 / 放弃时带 webpSkip 原因，mode 一并写入。
+   */
+  webpMode?: string;
 }
 
 interface UploadInput {
@@ -419,22 +435,19 @@ export class UploadService {
     const head = input.buffer.length ? input.buffer.subarray(0, 64) : await this.readHead(input.path || '', 64);
     if (this.signatureOk(head, ext) === false) {
       /*
-       * v2.8.2：图片格式互串放行 —— 从网页保存的图片常被按 URL 命名，
-       * 扩展名 .jpg 但内容其实是 PNG（浏览器渲染按内容嗅探，不受影响）。
-       * 声明扩展名与真实内容同为图片格式时放行并记系统日志；
-       * 跨大类（如 exe 改名 .jpg）仍然拒绝。
+       * v3.0.0：魔数校验降级为「仅记录，不再拒绝」——
+       * 只校验扩展名 + 大小。背景：部分 MP3 以 0xFFFB 帧同步开头（无 ID3 头）、
+       * 一些录制/转封装的文件头部不规范，魔数误判导致「文件名与扩展名不符，拒绝上传」；
+       * 声明扩展名与真实内容同为图片格式时原本就放行，跨大类（如 exe 改名 .jpg）
+       * 现在也不再拦截，但会记系统日志（upload 域，关键字「魔数不符放行」）便于事后排查。
        */
       const realExt = UploadService.detectImageExt(head);
-      if (realExt && UploadService.IMG_EXTS.has(ext) && UploadService.IMG_EXTS.has(realExt)) {
-        appLog.warn(
-          'upload',
-          `图片格式互串放行：声明 .${ext}，实际内容为 .${realExt}`,
-          input.originalName,
-        );
-        return null;
-      }
-      appLog.warn('upload', `魔数校验拒绝：声明 .${ext} 与内容不符`, input.originalName);
-      return `文件内容与扩展名不符（.${ext}），已拒绝上传`;
+      appLog.warn(
+        'upload',
+        `魔数不符放行（v3.0.0 起只验扩展名）：声明 .${ext}${realExt ? `，实际内容疑似 .${realExt}` : ''}`,
+        input.originalName,
+      );
+      return null;
     }
     return null;
   }
@@ -629,7 +642,8 @@ export class UploadService {
    *   存储渠道类型简称（COS / ALI / EI / LS / IM / MI / R2 / S3 / WD / DIY）
    *   上传渠道（Default / WebDAV / API-Web / API-S3）
    *   当前年份（如 2026）
-   *   文件宽度 / 文件高度（v2.8.9：各算一个独立标签，读到才打）
+   *   （v3.0.0 移除：文件宽度 / 文件高度不再各算标签）
+   * v3.0.0：标签按实例隔离 —— upsert 用 [name, instanceId] 联合唯一键，instanceId 空 = 默认实例。
    * 开关：settings.autoTagEnabled（缺省开启，设成 false 可关闭）。
    * 全程 try/catch —— 打标签失败绝不能影响已经成功的上传。
    */
@@ -640,14 +654,16 @@ export class UploadService {
       mime: string;
       channelType: string;
       uploadSource?: string;
-      /** v2.8.9：文件尺寸也各算一个独立标签（宽、高分别打） */
-      width?: number;
-      height?: number;
+      /** v3.0.0：文件归属实例 ID（空串 = 默认实例，与文件记录一致） */
+      instanceId?: string;
+      /** v3.0.0（R14）：调用方追加的标签（本地上传 / 视频抓拍 / #号提取 等），与自动标签合并去重 */
+      extraTags?: string[];
     },
   ): Promise<void> {
     try {
-      if ((await this.settings.get('autoTagEnabled', 'true')) === 'false') return;
+      if ((await this.settings.get('autoTagEnabled', 'true')) === 'false' && !(info.extraTags || []).length) return;
       const ext = info.originalName.includes('.') ? String(info.originalName.split('.').pop() || '').toLowerCase() : '';
+      const instanceId = String(info.instanceId || '').trim();
       const names = Array.from(
         new Set(
           [
@@ -656,15 +672,25 @@ export class UploadService {
             channelShort(info.channelType),
             normalizeUploadSource(info.uploadSource),
             String(new Date().getFullYear()),
-            info.width ? String(info.width) : '',
-            info.height ? String(info.height) : '',
           ]
             .map((v) => String(v || '').trim())
-            .filter(Boolean),
+            .filter(Boolean)
+            // v3.0.0（R14）：调用方追加标签（最多 10 个、每个 ≤20 字符，防滥用）
+            .concat(
+              (info.extraTags || [])
+                .map((t) => String(t || '').trim().slice(0, 20))
+                .filter(Boolean)
+                .slice(0, 10),
+            ),
         ),
       );
       for (const name of names) {
-        const tag = await prisma.tag.upsert({ where: { name }, update: {}, create: { name } });
+        // v3.0.0：tags 表联合唯一 [name, instanceId]，upsert 走复合键
+        const tag = await prisma.tag.upsert({
+          where: { name_instanceId: { name, instanceId } },
+          update: {},
+          create: { name, instanceId },
+        });
         const exists = await prisma.fileTag.findFirst({
           where: { fileId, tagId: tag.id },
           select: { id: true },
@@ -676,9 +702,38 @@ export class UploadService {
     }
   }
 
+  /**
+   * v3.0.0（R14）：从文件原名里提取「#话题」标签。
+   * 规则（与需求逐字对应）：
+   *   · 以 # 起始；标签内容只能是 中文/字母/数字；
+   *   · 遇到任意符号（含空格）即截断，截断后的内容不算（#开心!!呀 → 只取「开心」）；
+   *   · 超过 8 个字的整段放弃（#今天的天晴真的好舒服 → 不提取）；
+   *   · 空格截断后的内容不算（#早晨 太阳 → 只取「早晨」，「太阳」不在 # 后）。
+   * 最多提取 10 个，全部走去重。
+   */
+  static extractHashTags(originalName: string): string[] {
+    const out: string[] = [];
+    const re = /#([0-9A-Za-z\u4e00-\u9fff]{1,8})(?![0-9A-Za-z\u4e00-\u9fff])/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(String(originalName || ''))) !== null) {
+      const tag = m[1];
+      if (tag && !out.includes(tag)) out.push(tag);
+      if (out.length >= 10) break;
+    }
+    return out;
+  }
+
   /** 解析渠道为适配器入参结构 */
-  private toChannelInfo(c: { id: string; name: string; type: string; config: string }): ChannelInfo {
-    return { id: c.id, name: c.name, type: c.type, config: this.channels.decryptConfig(c.type, c.config), metas: {} };
+  private toChannelInfo(c: { id: string; code?: string; name: string; type: string; config: string }): ChannelInfo {
+    return {
+      id: c.id,
+      // v3.0.0（R11）：把 6 位业务 ID 透传给适配器 —— 存储路径的 {ID} 占位符要用它
+      code: c.code,
+      name: c.name,
+      type: c.type,
+      config: this.channels.decryptConfig(c.type, c.config),
+      metas: {},
+    };
   }
 
   /**
@@ -801,11 +856,12 @@ export class UploadService {
    * 按命名策略生成存储 key。
    *
    * 两类渠道分开处理（v202610221824）：
-   *   A. 支持「对象前缀 / 自定义文件命名」的渠道（minio / cos / aliyun / r2 / s3 / webdav）：
-   *      前缀取渠道配置 objectPrefix，占位符 {y}{m}{d}；为空时默认 `年/月`（2026/10）。
+   *   A. 支持「对象前缀 / 自定义文件命名」的渠道（minio / cos / aliyun / r2 / s3 / webdav / local）：
+   *      前缀取渠道配置 objectPrefix，占位符 {user}{ID}{y}{m}{d}；
+   *      为空时默认 `年/月`（2026/10），本地存储渠道默认 `{user}/{ID}/{y}/{m}`（v3.0.0 R11）。
    *      文件名取渠道配置 customName，占位符 {filename}{uuid}{md5}{timestamp}{ext}；
    *      为空时默认 `文件名-时间戳`。
-   *   B. 其它渠道（local / easyimages / lsky / immich / custom）：沿用历史 `YYYYMM/随机名`，
+   *   B. 其它渠道（easyimages / lsky / immich / custom）：沿用历史 `YYYYMM/随机名`，
    *      本地存储据此识别「首段 6 位数字」再叠加用户目录，不能随意改格式。
    */
   private makeKeyFor(
@@ -813,6 +869,8 @@ export class UploadService {
     originalName: string,
     nameType: string | undefined,
     md5: string,
+    /** v3.0.0（R9）：上传者用户名 —— 供前缀占位符 {user}（用户名 + 3 位随机数字）使用 */
+    uploader?: string,
   ): string {
     const dot = originalName.lastIndexOf('.');
     const ext = dot > 0 ? originalName.slice(dot + 1).toLowerCase() : '';
@@ -827,7 +885,8 @@ export class UploadService {
       }
       // 上传设置的「命名策略」（default/index/original）仅在渠道未自定义命名时生效
       let fileName: string;
-      const customName = String(cfg.customName || '').trim();
+      // 本地存储渠道的字段名是 nameTemplate（内置渠道 UI），其余渠道用 customName —— 两者都认
+      const customName = String(cfg.customName || cfg.nameTemplate || '').trim();
       if (customName) {
         fileName = renderFileName(customName, { originalName, stem, ext, md5, timestamp: Date.now() });
       } else if (nameType === 'original') {
@@ -839,10 +898,20 @@ export class UploadService {
         fileName = renderFileName('', { originalName, stem, ext, md5, timestamp: Date.now() });
       }
       // 前缀模板：优先新字段 objectPrefix，兼容历史字段 keyPrefix（cos/aliyun 旧称「指定存储路径」）。
-      // 两者都为空 → renderObjectPrefix 内部兜底为 `年/月`。
+      // 两者都为空 → 普通渠道兜底 `年/月`；本地存储渠道兜底 `{user}/{ID}/{y}/{m}`（v3.0.0 R11）。
       // 注意：前缀由这里统一渲染进 key，适配器不再二次拼接 keyPrefix，
-      // 否则「对象前缀」会被重复叠加（img/2026/10/img/2026/10/x.png）。
-      const prefix = renderObjectPrefix(cfg.objectPrefix || cfg.keyPrefix);
+      // 否则「自定义存储前缀」会被重复叠加（img/2026/10/img/2026/10/x.png）。
+      // v3.0.0（R9）：前缀额外支持 {ID}（渠道 ID）/ {user}（当前用户名）/ {domain}（外链域名）
+      const prefix = renderObjectPrefix(
+        cfg.objectPrefix || cfg.keyPrefix,
+        new Date(),
+        {
+          channelId: channel.code || channel.id,
+          user: uploader,
+          domain: cfg.publicDomain || cfg.domain,
+        },
+        channel.type === 'local' ? LOCAL_DEFAULT_PREFIX : undefined,
+      );
       return joinObjectKey(prefix, fileName);
     }
 
@@ -870,7 +939,9 @@ export class UploadService {
    *   3) 兜底：按「年份/月份」自动分类，如 2026/10（每次上传实时计算）
    */
   private async resolveFolder(input?: string): Promise<string> {
-    const clean = (input || '').replace(/^\/+|\/+$/g, '');
+    // v3.0.0：folder 归一化 —— 连续斜杠收敛为单个，再去掉首尾斜杠
+    //（登记文件 / 前端粘贴目录常带「登记文件//2026/」这类脏路径，会让目录树推导出重复节点）
+    const clean = (input || '').replace(/\/{2,}/g, '/').replace(/^\/+|\/+$/g, '');
     if (clean) return clean;
     try {
       const page: any = await this.sysConfig.get('page');
@@ -908,6 +979,9 @@ export class UploadService {
     retryEnabled: boolean;
     retryTimes: number;
     autoSwitch: boolean;
+    guardEnabled: boolean;
+    guardLoadFactor: number;
+    guardRamFreeMB: number;
   }> {
     const num = (raw: string, fallback: number): number => {
       const t = String(raw ?? '').trim();
@@ -916,12 +990,20 @@ export class UploadService {
       if (!Number.isFinite(n) || n < 0) return fallback;
       return n === 0 ? 0 : Math.floor(n);
     };
+    /** v3.0.0 第十三轮：允许小数（load1 倍率 1.5 这类），0 保留（= 关闭该项检测） */
+    const numF = (raw: string, fallback: number): number => {
+      const t = String(raw ?? '').trim();
+      if (t === '') return fallback;
+      const n = Number(t);
+      if (!Number.isFinite(n) || n < 0) return fallback;
+      return n;
+    };
     const bool = (raw: string, fallback: boolean): boolean => {
       const t = String(raw ?? '').trim().toLowerCase();
       if (t === '') return fallback;
       return t === 'true' || t === '1';
     };
-    const [cMax, tMax, cConc, tConc, retry, times, autoSwitch] = await Promise.all([
+    const [cMax, tMax, cConc, tConc, retry, times, autoSwitch, guardOn, guardLoad, guardRam] = await Promise.all([
       this.pageValue('compressMaxSeconds', '600'),
       this.pageValue('videoTranscodeMaxSeconds', '600'),
       this.pageValue('compressConcurrency', '1'),
@@ -929,6 +1011,9 @@ export class UploadService {
       this.pageValue('defaultAutoRetry', 'true'),
       this.pageValue('defaultRetryTimes', '3'),
       this.pageValue('defaultAutoSwitch', 'true'),
+      this.pageValue('mediaResourceGuardEnabled', 'true'),
+      this.pageValue('mediaResourceLoadLimit', '1.5'),
+      this.pageValue('mediaResourceRamLimit', '256'),
     ]);
     return {
       compressMax: num(cMax, 600),
@@ -938,6 +1023,9 @@ export class UploadService {
       retryEnabled: bool(retry, true),
       retryTimes: num(times, 3),
       autoSwitch: bool(autoSwitch, true),
+      guardEnabled: bool(guardOn, true),
+      guardLoadFactor: numF(guardLoad, 1.5),
+      guardRamFreeMB: numF(guardRam, 256),
     };
   }
 
@@ -1015,7 +1103,7 @@ export class UploadService {
     try {
       const rec = await prisma.fileRecord.findUnique({
         where: { id: job.recordId },
-        select: { status: true, originalName: true, size: true, md5: true },
+        select: { status: true, originalName: true, size: true, md5: true, instanceId: true },
       });
       if (!rec || rec.status !== 'active') {
         appLog.info('compress', `后置处理跳过：文件已删除或不在正常状态`, job.fileId, job.ip);
@@ -1034,6 +1122,8 @@ export class UploadService {
         transcode: job.transcode,
         compressMaxSeconds: ms.compressMax,
         transcodeMaxSeconds: ms.transcodeMax,
+        // v3.0.0 第十三轮：影音压缩/转码资源闸门（后台可配置，仅视频/音频；图片压缩不经过）
+        guard: { enabled: ms.guardEnabled, loadFactor: ms.guardLoadFactor, ramFreeMB: ms.guardRamFreeMB },
       });
       if (r.skipReason) {
         appLog.info(
@@ -1043,29 +1133,53 @@ export class UploadService {
           job.ip,
         );
       }
-      // v2.8.9：把压缩 / 转码结果写进文件处理事件（详情页「处理记录」一行）
+      /*
+       * v3.0.0：把压缩 / 转码结果写进文件处理事件（详情页「处理记录」一行）。
+       * 契约：
+       *   compress  { enabled(布尔，始终写入), status('done'|'skipped'|'failed'), reason?, ms?, size?, originalSize? }
+       *   transcode { enabled, status('done'|'failed'|'skipped'), ms?, reason? }
+       * compress.reason 是**语义值**（前端据此展示文案）：
+       *   'off'       未开启压缩
+       *   'webp'      文件已由前端转成 WebP，跳过压缩
+       *   'threshold' 未达压缩阈值 / 判定为不值得压缩 / 压缩未生效
+       *   ''          正常压缩（done）
+       * size / originalSize 仅在压缩产物确定时有意义，未启用时不写。
+       */
       const skipped = r.skipReason || '';
       const ev: Record<string, unknown> = {};
       if (job.compress) {
         ev.compress =
           r.stage === 'compress'
-            ? { status: 'done', ms: r.elapsedMs, size: r.size }
-            : { status: 'skipped', ms: r.elapsedMs, reason: skipped || '压缩未生效' };
+            ? { enabled: true, status: 'done', reason: '', ms: r.elapsedMs, size: r.size, originalSize: rec.size }
+            : {
+                enabled: true,
+                status: 'skipped',
+                /*
+                 * v3.0.0（R8）：音频 / 视频压缩由后置队列执行，跳过原因**不是**「未达压缩阈值」——
+                 * 用语义值 'media' + detail 原样记录真实原因（未装 ffmpeg / 预计超时 /
+                 * 资源不足 / 压缩未生效 / 压缩开关未开启），详情页「处理记录」可读。
+                 */
+                reason: 'media',
+                ms: r.elapsedMs,
+                ...(skipped ? { detail: skipped } : {}),
+              };
       } else {
-        ev.compress = { status: 'skipped', reason: '压缩开关未开启' };
+        ev.compress = { enabled: false, status: 'skipped', reason: 'off' };
       }
       if (job.transcode) {
         ev.transcode =
           r.stage === 'transcode'
-            ? { status: 'done', ms: r.elapsedMs, codec: r.codec }
+            ? { enabled: true, status: 'done', ms: r.elapsedMs }
             : r.stage === 'compress'
-              ? { status: 'skipped', reason: '压缩产物已是 H.264，无需转码' }
+              ? { enabled: true, status: 'skipped', reason: '压缩产物已是 H.264，无需转码' }
               : {
-                  status: (r.codec && !r.compressed) ? 'skipped' : 'failed',
+                  enabled: true,
+                  status: skipped ? 'failed' : 'skipped',
                   ms: r.elapsedMs,
                   reason: skipped || '无需转码或转码未生效',
-                  codec: r.codec,
                 };
+      } else {
+        ev.transcode = { enabled: false, status: 'skipped', reason: '转码开关未开启' };
       }
       await this.writeProcessEvent(job.recordId, ev);
 
@@ -1078,6 +1192,7 @@ export class UploadService {
         newName,
         job.nameType,
         rec.md5 || '',
+        job.uploader,
       );
       const adapter = createAdapter(info);
       const up = await this.uploadToAdapter(
@@ -1086,15 +1201,28 @@ export class UploadService {
         key,
         info,
         job.uploader,
+        rec.instanceId || '',
       );
 
       const copy = await prisma.fileCopy.findFirst({
         where: { fileId: job.recordId, channelId: ch.id },
-        select: { id: true, remoteKey: true, remoteUrl: true },
+        select: { id: true, remoteKey: true, remoteUrl: true, metas: true },
       });
+      /*
+       * v3.0.0（R10）：压缩/转码会换文件名 —— 固化地址必须同步更新，
+       * 否则 objectPath 还指向旧对象（404）。旧 metas 保留（owner/instanceId 等）。
+       */
+      let prevMetas: Record<string, unknown> = {};
+      try {
+        const parsed = copy?.metas ? JSON.parse(copy.metas) : null;
+        if (parsed && typeof parsed === 'object') prevMetas = parsed as Record<string, unknown>;
+      } catch {
+        prevMetas = {};
+      }
+      const writeData = this.copyWriteData(up, ch);
       await prisma.fileCopy.update({
         where: { fileId_channelId: { fileId: job.recordId, channelId: ch.id } },
-        data: { remoteKey: up.remoteKey, remoteUrl: up.remoteUrl || '', status: 'active' },
+        data: { ...writeData, metas: JSON.stringify({ ...prevMetas, ...JSON.parse(writeData.metas) }), status: 'active' },
       });
       await prisma.fileRecord.update({
         where: { id: job.recordId },
@@ -1251,7 +1379,15 @@ export class UploadService {
     key: string,
     info: ChannelInfo,
     owner?: string,
-  ): Promise<{ remoteKey: string; remoteUrl?: string; metas?: Record<string, unknown> }> {
+    // v3.0.0 多实例：透传归属实例给本地存储渠道（uploads/<用户名>/<实例ID>/…）
+    instanceId?: string,
+  ): Promise<{
+    remoteKey: string;
+    remoteUrl?: string;
+    objectPath?: string;
+    urlQuery?: string;
+    metas?: Record<string, unknown>;
+  }> {
     if (file.path && typeof adapter.uploadFile === 'function') {
       return adapter.uploadFile(
         file.path,
@@ -1259,7 +1395,7 @@ export class UploadService {
         { mime: file.mime, originalName: file.originalName },
         key,
         info,
-        { owner },
+        { owner, instanceId },
       );
     }
     if (file.path) {
@@ -1271,9 +1407,9 @@ export class UploadService {
         );
       }
       const buffer = await fsp.readFile(file.path);
-      return adapter.upload({ buffer, mime: file.mime, originalName: file.originalName }, key, info, { owner });
+      return adapter.upload({ buffer, mime: file.mime, originalName: file.originalName }, key, info, { owner, instanceId });
     }
-    return adapter.upload({ buffer: file.buffer, mime: file.mime, originalName: file.originalName }, key, info, { owner });
+    return adapter.upload({ buffer: file.buffer, mime: file.mime, originalName: file.originalName }, key, info, { owner, instanceId });
   }
 
   /**
@@ -1397,6 +1533,59 @@ export class UploadService {
   }
 
   /**
+   * 登录用户名 → 实例创建者 ID（users 表主键；内建管理员不在 users 表 → 'admin'）。
+   * 与 InstancesService.ownerIdOf 同一套口径（上传侧就地实现，避免跨模块依赖）。
+   */
+  private async instanceOwnerIdOf(username: string): Promise<string> {
+    const name = String(username || '').trim();
+    if (!name) return '';
+    try {
+      const row = await prisma.user.findUnique({ where: { username: name }, select: { id: true } });
+      if (row?.id) return row.id;
+      const userCount = await prisma.user.count();
+      return userCount > 0 ? name : 'admin';
+    } catch {
+      return name;
+    }
+  }
+
+  /**
+   * v3.0.0：上传归属实例校验。
+   * instanceId 非空时，uploader 必须是该实例的创建者或 members 成员；
+   * 校验失败（实例不存在 / 不是成员）回退空串（默认实例），并记一条 warn 日志。
+   */
+  private async resolveInstanceScope(instanceId: string | undefined, uploader: string | undefined, ip: string): Promise<string> {
+    const id = String(instanceId || '').trim();
+    if (!id) return '';
+    try {
+      const inst = await prisma.instance.findUnique({ where: { id } });
+      if (!inst) {
+        appLog.warn('upload', `实例归属校验失败：实例不存在，已回退默认实例`, `instanceId=${id}`, ip);
+        return '';
+      }
+      let members: string[] = [];
+      try {
+        const parsed = JSON.parse(inst.metas || '{}');
+        if (Array.isArray(parsed?.members)) members = parsed.members.map((m: unknown) => String(m || '').trim()).filter(Boolean);
+      } catch {
+        members = [];
+      }
+      const isOwner = inst.ownerName === uploader || (await this.instanceOwnerIdOf(uploader || '')) === inst.ownerId;
+      if (isOwner || members.includes(String(uploader || '').trim())) return id;
+      appLog.warn(
+        'upload',
+        `实例归属校验失败：用户 ${uploader || '(匿名)'} 不是实例「${inst.name}」的成员，已回退默认实例`,
+        `instanceId=${id}`,
+        ip,
+      );
+      return '';
+    } catch (err) {
+      appLog.warn('upload', `实例归属校验异常，已回退默认实例`, (err as Error)?.message || String(err), ip);
+      return '';
+    }
+  }
+
+  /**
    * 核心上传入口 —— 主渠道同步 → 建记录 → 备份渠道异步（低优先级，自动让路）。
    * 返回对外文件标识（/file/:id）。
    *
@@ -1482,13 +1671,23 @@ export class UploadService {
     const md5 = srcPath ? await this.hashFile(srcPath) : createHash('md5').update(buffer).digest('hex');
     if (await this.dedupEnabled()) {
       const scope = await this.dedupScope();
-      const dup = await prisma.fileRecord.findFirst({
+      /*
+       * v3.0.0：去重口径全站统一 —— 只在「内容」层面比（MD5 + 原始大小），
+       * 再按渠道维度收窄，与上传用户 / 所在实例无关：
+       *   all         → 任意渠道命中即复用
+       *   channel     → 只看「同一渠道名称」上的副本
+       *   channelType → 只看「同一渠道类型」上的副本
+       * 同一份内容可能在多个渠道各有一份副本，所以取候选集（而不是 findFirst 一条），
+       * 逐个比对渠道属性 —— 否则第一条恰好不是目标渠道时就会漏判。
+       */
+      const dups = await prisma.fileRecord.findMany({
         where: {
           status: 'active',
           md5,
           // 原始大小优先；老数据 originalSize 缺省为 0 时用 size 兜底（未压缩时两者相同）
           OR: [{ originalSize }, { size: originalSize }],
         },
+        take: 50,
         select: {
           name: true,
           originalName: true,
@@ -1496,34 +1695,47 @@ export class UploadService {
           copies: { select: { channelId: true, status: true, isPrimary: true, channel: { select: { name: true, type: true } } } },
         },
       });
-      let hit = dup;
-      if (dup && scope !== 'all') {
-        // 取该文件「主渠道」与本次目标渠道比对：
-        //   channel     —— 比渠道「名称」（渠道名相同才算重复）
-        //   channelType —— 比渠道「类型」（类型相同才算重复）
-        const primaryCopy = dup.copies.find((c) => c.isPrimary) || dup.copies[0];
-        const scopeHit =
-          scope === 'channel'
-            ? (primaryCopy?.channel?.name || '') === main.name
-            : (primaryCopy?.channel?.type || '') === main.type;
-        if (!primaryCopy || !scopeHit) {
-          hit = null;
-          appLog.info(
-            'upload',
-            `去重跳过：${originalName} 与已有文件 ${dup.name} 内容相同，但渠道${scope === 'channel' ? '名称' : '类型'}不同（去重范围为「${scope === 'channel' ? '同一渠道名称内' : '同一渠道类型内'}」）`,
-            `目标渠道=${main.name}（类型=${main.type}） ｜ 已有文件渠道=${primaryCopy?.channel?.name || '未知'}（类型=${primaryCopy?.channel?.type || '未知'}）`,
-            uploadIp,
-          );
-        }
-      }
-      if (hit) {
+      /** 取某条记录的「主渠道」副本（没有 isPrimary 标记时退化为第一份副本） */
+      const primaryCopyOf = (d: (typeof dups)[number]) =>
+        d.copies.find((c) => c.isPrimary) || d.copies[0];
+      const hit =
+        dups.find((d) => {
+          if (scope === 'all') return true;
+          const pc = primaryCopyOf(d);
+          if (!pc) return false;
+          return scope === 'channel'
+            ? (pc.channel?.name || '') === main.name
+            : (pc.channel?.type || '') === main.type;
+        }) || null;
+      if (!hit && dups.length) {
+        const d0 = dups[0];
+        const pc = primaryCopyOf(d0);
         appLog.info(
           'upload',
-          `命中去重：${originalName} 与已有文件 ${hit.originalName}（${hit.name}）内容相同，复用已有外链`,
+          `去重跳过：${originalName} 与已有文件 ${d0.name} 内容相同，但渠道${scope === 'channel' ? '名称' : '类型'}不同（去重范围为「${scope === 'channel' ? '同一渠道名称内' : '同一渠道类型内'}」）`,
+          `目标渠道=${main.name}（类型=${main.type}） ｜ 已有文件渠道=${pc?.channel?.name || '未知'}（类型=${pc?.channel?.type || '未知'}）`,
+          uploadIp,
+        );
+      }
+      if (hit) {
+        /*
+         * v3.0.0（R10）：去重不再「借别人的外链」，而是为本次上传者/实例**克隆一份记录**。
+         *
+         * 旧行为直接返回源记录的 File_ID —— 外链、密码、限时、重定向、账户链接权限
+         * 全部与原上传者共享：原主软删/彻底删除/关闭链接权限，后来者的地址就一起失效。
+         *
+         * 现在：新记录（新 File_ID、归属本次上传者与实例、个人字段清零）+
+         * 新副本行（指向同一个远端对象，零字节冗余）。删除侧按引用计数决定是否删远端对象，
+         * 只有最后一个使用者才真正删除远端文件。
+         */
+        const cloned = await this.cloneDedupRecord(hit.name, opts, uploadIp);
+        appLog.info(
+          'upload',
+          `命中去重：${originalName} 与已有文件 ${hit.originalName}（${hit.name}）内容相同，已为本次上传克隆记录 ${cloned}`,
           `md5=${md5} ｜ 原始大小=${originalSize}B ｜ 范围=${scope === 'channel' ? `同一渠道名称内（${main.name}）` : scope === 'channelType' ? `同一渠道类型内（${main.type}）` : '全部渠道'}`,
           uploadIp,
         );
-        return { id: hit.name, dedup: true, finalName: originalName };
+        return { id: cloned, dedup: true, finalName: originalName };
       }
     }
 
@@ -1540,6 +1752,9 @@ export class UploadService {
     // IP 归属地（可开关）：主链路只读缓存，未命中则落库后异步补写 ——
     // 归属地查询是外部网络请求（最长 6 秒），绝不能挡在上传主链路上。
     const uploadAddress = await this.cachedAddress(uploadIp);
+
+    // v3.0.0：实例归属校验 —— 指定实例且 uploader 不是创建者/成员时回退默认实例（空串）
+    const instanceScope = await this.resolveInstanceScope(opts.instanceId, opts.uploader, uploadIp);
 
     /*
      * 预处理（v2.8.8 重构）：
@@ -1563,18 +1778,38 @@ export class UploadService {
     const compressPercent =
       opts.compressPercent && opts.compressPercent > 0 ? opts.compressPercent : await this.defaultCompressPercent();
 
-    /** v2.8.9：图片是同步压缩的，这里把结果留下，稍后写进「文件处理事件」 */
-    let imageCompress: { status: 'done' | 'skipped'; ms?: number; reason?: string } | undefined;
+    /**
+     * v2.8.9：图片是同步压缩的，这里把结果留下，稍后写进「文件处理事件」。
+     * v3.0.0 契约：compress { enabled(布尔，始终写入), status, reason?, ms?, size?, originalSize? }
+     *   reason 为语义值（前端据此展示文案）：
+     *     'off'       未开启压缩
+     *     'webp'      前端已转成 WebP，本次跳过服务端压缩
+     *     'threshold' 未达压缩阈值 / 判定不值得压缩 / 压缩未生效
+     *     ''          正常压缩
+     * size = 压缩后字节数（仅压缩生效时写），originalSize = 压缩前字节数。
+     */
+    const webpConverted = !!opts.webpMode && !opts.webpSkip;
+    const skipReasonOf = (): string => (webpConverted ? 'webp' : 'threshold');
+    let imageCompress: Record<string, unknown> | undefined;
+    if (isImage) {
+      imageCompress = { enabled: wantCompress, status: 'skipped', reason: wantCompress ? skipReasonOf() : 'off', originalSize };
+    } else if (!isVideo && !isAudio) {
+      // 其它类型（文档 / 压缩包等）本来就不参与压缩：照样写一条，保证 enabled 恒为布尔
+      imageCompress = { enabled: false, status: 'skipped', reason: 'off' };
+    } else if (!wantCompress) {
+      // 视频 / 音频：开启压缩时结果由后台队列补写，这里只在关闭时记一条
+      imageCompress = { enabled: false, status: 'skipped', reason: 'off' };
+    }
     if (wantCompress && isImage) {
       const c0 = Date.now();
       if (size > COMPRESS_MAX_BYTES) {
-        imageCompress = { status: 'skipped', reason: `超过压缩上限（${(COMPRESS_MAX_BYTES / 1024 / 1024).toFixed(0)}MB）` };
+        imageCompress = { enabled: true, status: 'skipped', reason: 'threshold', originalSize };
         console.log(`[upload] 跳过压缩：文件 ${(size / 1024 / 1024).toFixed(1)}MB 超过压缩上限`);
       } else if (srcPath) {
         const r = await compressFile(srcPath, mime, srcExt, compressPercent);
         imageCompress = r.compressed
-          ? { status: 'done', ms: Date.now() - c0 }
-          : { status: 'skipped', ms: Date.now() - c0, reason: r.reason || '压缩未生效' };
+          ? { enabled: true, status: 'done', reason: '', ms: Date.now() - c0, size: r.size, originalSize }
+          : { enabled: true, status: 'skipped', reason: skipReasonOf(), ms: Date.now() - c0, originalSize };
         if (r.compressed) {
           srcPath = r.path;
           size = r.size;
@@ -1592,8 +1827,8 @@ export class UploadService {
       } else {
         const r = await compressMedia(buffer, mime, srcExt, compressPercent);
         imageCompress = r.compressed
-          ? { status: 'done', ms: Date.now() - c0 }
-          : { status: 'skipped', ms: Date.now() - c0, reason: r.reason || '压缩未生效' };
+          ? { enabled: true, status: 'done', reason: '', ms: Date.now() - c0, size: r.buffer.length, originalSize }
+          : { enabled: true, status: 'skipped', reason: skipReasonOf(), ms: Date.now() - c0, originalSize };
         if (r.compressed) {
           const before = buffer.length;
           buffer = r.buffer;
@@ -1622,7 +1857,7 @@ export class UploadService {
       : await readDimensions(buffer, mime, mime.split('/')[1] || '');
 
     const folder = await this.resolveFolder(opts.uploadFolder);
-    const key = this.makeKeyFor(main, originalName, opts.uploadNameType, md5);
+    const key = this.makeKeyFor(main, originalName, opts.uploadNameType, md5, opts.uploader);
 
     /*
      * 主渠道上传失败后的切换链：
@@ -1673,7 +1908,7 @@ export class UploadService {
           size,
           mime,
           originalName,
-        }, key, info, opts.uploader);
+        }, key, info, opts.uploader, instanceScope);
         usedChannel = ch;
         break;
       } catch (err) {
@@ -1723,7 +1958,21 @@ export class UploadService {
     if (opts.failReason) processEvent.failReason = opts.failReason;
     if (usedChannel.id !== main.id) processEvent.switchedTo = usedChannel.name;
     if (imageCompress) processEvent.compress = imageCompress;
-    if (opts.webpSkip) processEvent.webp = { status: 'skipped', reason: opts.webpSkip };
+    // v3.0.0：webp { enabled, mode, status, reason? } ——
+    // 前端转换成功时文件已是 webp（无 webpSkip），这里只记录 mode；
+    // 转换失败 / 放弃时 webpSkip 带原因，mode 一并写入。
+    const webpMode = opts.webpMode === 'lossless' || opts.webpMode === 'lossy' ? opts.webpMode : '';
+    if (opts.webpSkip) {
+      processEvent.webp = { enabled: true, mode: webpMode, status: 'skipped', reason: opts.webpSkip };
+    } else if (webpMode) {
+      processEvent.webp = { enabled: true, mode: webpMode, status: 'done' };
+    }
+    /*
+     * v3.0.0 修复：WebP 事件只对图片文件记录 —— 之前非图片（视频/音频/文档）也带
+     * webpMode 入参，会被记成「WebP 已转换」，且压缩判定把它当「已转跳过压缩」处理。
+     * 现在非图片一律不写 webp 事件（压缩走 video/audio 自己的事件）。
+     */
+    if (!isImage) delete processEvent.webp;
 
     const fileId = opts.presetFileId
       ? await this.uniqueFileId(this.sanitizeFileId(opts.presetFileId))
@@ -1744,6 +1993,8 @@ export class UploadService {
         // 上传渠道（Default / WebDAV / API-S3 / API-Web）—— 后台文件详情里展示
         uploadSource: normalizeUploadSource(opts.uploadSource),
         ip: uploadIp,
+        // v3.0.0：文件归属实例（空串 = 默认实例；越权上传已在上面回退为空串）
+        instanceId: instanceScope,
         // 上传计时：开始（请求到达 / 第一片 init）→ 完成（记录落库），详情页据此算时长与速度
         uploadStartedAt: opts.uploadStartedAt || new Date(startedAt),
         uploadFinishedAt: new Date(),
@@ -1758,8 +2009,7 @@ export class UploadService {
         copies: {
           create: {
             channelId: usedChannel.id,
-            remoteKey: result.remoteKey,
-            remoteUrl: result.remoteUrl || '',
+            ...this.copyWriteData(result, usedChannel),
             status: 'active',
             isPrimary: true,
           },
@@ -1826,8 +2076,10 @@ export class UploadService {
         mime,
         channelType: usedChannel.type,
         uploadSource: opts.uploadSource,
-        width: dims.width,
-        height: dims.height,
+        // v3.0.0：标签按实例隔离（与文件同实例）
+        instanceId: instanceScope,
+        // v3.0.0（R14）：调用方指定标签 + 文件原名里的 #话题 提取
+        extraTags: [...(opts.extraTags || []), ...UploadService.extractHashTags(originalName)],
       }),
     );
 
@@ -1879,6 +2131,8 @@ export class UploadService {
     note?: string;
     uploader?: string;
     ip?: string;
+    /** v3.0.0：归属实例 ID（空串 = 默认实例；同样做成员归属校验） */
+    instanceId?: string;
   }): Promise<{
     id?: string;
     error?: string;
@@ -1951,29 +2205,49 @@ export class UploadService {
     }
 
     const mimeClean = (contentType || '').split(';')[0].trim().toLowerCase();
-    let originalName = String(input.originalName || '').trim();
+    /*
+     * v3.0.0：登记文件的真实文件名（优先级从高到低）
+     *   ① 调用方显式传入的 originalName；
+     *   ② 源地址 URL 路径最后一段（decodeURIComponent、去掉查询串）—— 且必须是「像文件名的」；
+     *   ③ 发一次 HEAD（失败退 GET 前 4KB）读 Content-Disposition 的 filename；
+     *   ④ 都拿不到 → 登记文件-<13 位毫秒时间戳>。
+     * 全过程 try/catch + 5 秒超时：取名失败绝不能让登记失败。
+     */
+    let originalName = this.sanitizeRecordName(String(input.originalName || '').trim());
+    let nameSource = originalName ? 'input' : '';
     if (!originalName) {
-      const last = decodeURIComponent(url.pathname.split('/').filter(Boolean).pop() || '');
-      originalName = last || `file-${Date.now()}`;
+      const resolved = await this.resolveRecordOriginalName(url);
+      originalName = resolved.name;
+      nameSource = resolved.from;
     }
-    // 名称里不能带路径分隔符，避免污染存储 key
-    originalName = originalName.replace(/[\\/]/g, '_').slice(0, 200);
 
     /*
      * v2.8.9：扩展名解析优先级
      *   1) 源地址最后一段自带扩展名（如 immich 之外的常规图床）；
-     *   2) 源地址没有扩展名时，用「扩展名」输入框补的值（可带点可不带点）；
-     *   3) 都没有 → 按响应头 MIME 推断；再不行用 bin。
-     * 注意：immich 这类 /api/assets/{id}/original 链接没有扩展名，必须靠第 2 步。
+     *   2) v3.0.0：文件名自带扩展名（可能来自 Content-Disposition，比 URL 更可信）；
+     *   3) 源地址没有扩展名时，用「扩展名」输入框补的值（可带点可不带点）；
+     *   4) 都没有 → 按响应头 MIME 推断；再不行用 bin。
+     * 注意：immich 这类 /api/assets/{id}/original 链接没有扩展名，必须靠第 2/3 步。
      */
-    const urlBase = decodeURIComponent(url.pathname.split('/').filter(Boolean).pop() || '');
+    const urlBase = (() => {
+      const raw = url.pathname.split('/').filter(Boolean).pop() || '';
+      try {
+        return decodeURIComponent(raw);
+      } catch {
+        /* 残缺的百分号编码：按原样用，绝不因为一个 % 让整次登记失败 */
+        return raw;
+      }
+    })();
     const urlExt = /\.([A-Za-z0-9]{1,10})$/.test(urlBase) ? String(urlBase.split('.').pop() || '').toLowerCase() : '';
+    const nameExt = /\.([A-Za-z0-9]{1,10})$/.test(originalName)
+      ? String(originalName.split('.').pop() || '').toLowerCase()
+      : '';
     const givenExt = String(input.extension || '')
       .trim()
       .replace(/^\.+/, '')
       .toLowerCase();
     const validGivenExt = /^[a-z0-9]{1,10}$/.test(givenExt) ? givenExt : '';
-    let ext = urlExt || validGivenExt;
+    let ext = urlExt || nameExt || validGivenExt;
     const MIME_EXT: Record<string, string> = {
       'image/jpeg': 'jpg',
       'image/png': 'png',
@@ -2043,6 +2317,8 @@ export class UploadService {
     // ---- 3) 落库 ----
     const uploadIp = String(input.ip || '');
     const uploadAddress = await this.cachedAddress(uploadIp);
+    // v3.0.0：实例归属校验（同上传链路：不是成员则回退默认实例）
+    const instanceScope = await this.resolveInstanceScope(input.instanceId, input.uploader, uploadIp);
     /*
      * v2.9.0：登记文件的分类兜底 —— 留空时落到「登记文件/年/月」，
      * 与普通上传的「年/月」区分开，便于在文件管理里单独归档。
@@ -2058,13 +2334,15 @@ export class UploadService {
     const fileId = await this.uniqueFileId(this.makeFileId());
     const now = new Date();
     /*
-     * v2.9.0：登记文件的外链规则（按需求重做）
-     *   · 提交时用源地址依次匹配渠道的三个域名：内网通信域名 → 公开访问域名 → Endpoint，
-     *     命中哪一段就把这一段从源地址里剔除，剩下的就是「路径」（remoteKey）；
+     * v3.0.0：登记文件的外链规则
+     *   · 提交时按渠道类型解析三段域名：内网通信域名 → 公开访问域名 → Endpoint/服务地址，
+     *     **逐段比对主机（host + 端口）**，命中哪一段就把这一段从源地址里剔除，
+     *     剩下的路径就是 remoteKey；某一段的键为空只是跳过，继续比下一段。
      *   · 三段都匹配不上 → 直接登记失败（说明这个地址不属于所选渠道，登记了也加载不出来）；
-     *   · remoteUrl 恒为空：读取时用渠道「当前」的实际加载域名（内网 → 公开 → Endpoint）
-     *     拼路径，渠道域名一变，所有登记文件的外链自动跟着变。
-     * 详见 common/record-link.ts。
+     *   · remoteUrl 恒为空：读取时用渠道「当前」的实际加载域名拼路径，
+     *     渠道域名一变，所有登记文件的外链自动跟着变。
+     * 说明：读取侧（recordLoadOrigin）仍只认 internalDomain / publicDomain / apiUrl|endpoint，
+     *       见 common/record-link.ts —— 两边要一起改才能让 immich / webdav 的直链也走渠道域名。
      */
     let recordCfg: Record<string, unknown> = {};
     try {
@@ -2072,20 +2350,42 @@ export class UploadService {
     } catch {
       recordCfg = {};
     }
-    const domainHit = matchRecordSource(recordCfg, rawUrl);
+    const candidates = this.channelDomainCandidates(ch.type, recordCfg);
+    let domainHit = this.matchChannelSource(candidates, url);
+    /*
+     * v3.0.0（R10）：本地存储渠道没有「渠道域名」—— 它的访问域名就是外链签发域名 /
+     * 当前访问域名。这类地址直接取 URL 的 path 作为固化地址即可（域名一律不落库）。
+     */
+    if (!domainHit && ch.type === 'local') {
+      const rest = `${url.pathname.replace(/^\/+/, '')}${url.search || ''}`;
+      if (rest) domainHit = { field: 'signOrigin', host: url.host.toLowerCase(), rest };
+    }
     if (!domainHit) {
       appLog.warn(
         'record',
         `登记失败：源地址与渠道域名不匹配（${ch.name}）`,
-        `源=${rawUrl} ｜ 渠道域名候选=${recordDomainCandidates(recordCfg).map((c) => `${c.field}=${c.domain}`).join(' , ') || '无'}`,
+        `源=${rawUrl} ｜ 渠道域名候选=${candidates.map((c) => `${c.field}=${c.host}`).join(' , ') || '无'}`,
         String(input.ip || ''),
       );
       return {
         error:
-          `源地址不属于存储渠道「${ch.name}」：请确认地址里包含该渠道的「内网通信域名 / 公开访问域名 / 上传接口地址」之一`,
+          `源地址不属于存储渠道「${ch.name}」：请确认地址的域名（含端口）与该渠道的「内网通信域名 / 公开访问域名 / Endpoint（服务地址）」之一一致`,
       };
     }
-    const objectKey = decodeURIComponent(domainHit.rest);
+    /*
+     * v3.0.0（第三轮）：objectKey 保留查询串（remoteKey 会被原样拼回外链）。
+     * 只解码路径部分 —— 查询串里的 %26 / %3D 等一旦解码就会改变语义。
+     */
+    const qIdx = domainHit.rest.indexOf('?');
+    const restPathRaw = qIdx === -1 ? domainHit.rest : domainHit.rest.slice(0, qIdx);
+    const restQuery = qIdx === -1 ? '' : domainHit.rest.slice(qIdx);
+    let restPathDecoded = restPathRaw;
+    try {
+      restPathDecoded = decodeURIComponent(restPathRaw);
+    } catch {
+      /* 残缺的百分号编码：按原样用 */
+    }
+    const objectKey = `${restPathDecoded}${restQuery}`;
     const dims = sampleBuffer
       ? await readDimensions(sampleBuffer, mime, ext)
       : { width: undefined, height: undefined };
@@ -2104,6 +2404,8 @@ export class UploadService {
         uploadSource: 'Record',
         ip: uploadIp,
         note: String(input.note || '').slice(0, 2000),
+        // v3.0.0：登记文件同样归属到指定实例（空串 = 默认实例）
+        instanceId: instanceScope,
         uploadStartedAt: now,
         uploadFinishedAt: now,
         metas: JSON.stringify({
@@ -2116,15 +2418,20 @@ export class UploadService {
           ...(dims.width && dims.height ? { Width: dims.width, Height: dims.height } : {}),
         }),
         /*
-         * 副本只作「记录归属」。remoteUrl 存完整源地址（/file 会优先把它当绝对地址代理），
-         * remoteKey 存 URL 路径，便于在渠道视角里看出文件位置。
+         * v3.0.0（R10）：登记文件同样遵循「域名不落库 + 固化地址落库」——
+         *   objectPath = 剔除域名后的路径；urlQuery = 文件级查询串（如 immich 的 key/size/edited）。
+         * remoteUrl 只留给「不属于任何渠道」的外部地址，这里为空。
+         * remoteKey 保持「路径」，便于在渠道视角里看出文件位置。
          * 删除登记文件时 removeFile 不会去删源站对象（见其 Record 分支）。
          */
         copies: {
           create: {
             channelId: ch.id,
-            remoteKey: objectKey,
+            remoteKey: restPathDecoded,
             remoteUrl: '',
+            objectPath: restPathDecoded,
+            urlQuery: restQuery.replace(/^\?/, ''),
+            metas: JSON.stringify({ snap: { channelType: ch.type, registered: true, capturedAt: now.toISOString() } }),
             status: 'active',
             isPrimary: true,
           },
@@ -2137,8 +2444,8 @@ export class UploadService {
         mime,
         channelType: ch.type,
         uploadSource: 'Record',
-        width: dims.width,
-        height: dims.height,
+        // v3.0.0：标签按实例隔离（与登记文件同实例）
+        instanceId: instanceScope,
       }),
     );
     this.enqueueBackground(() => this.touchIp(uploadIp, uploadAddress));
@@ -2146,50 +2453,200 @@ export class UploadService {
     appLog.info(
       'record',
       `登记文件成功：${originalName}`,
-      `渠道=${ch.name} ｜ ${size}B ｜ mime=${mime} ｜ md5=${md5 || '未获取'} ｜ 匹配域名=${domainHit.field} ｜ 路径=${domainHit.rest} ｜ 分类=${folder}${folderInput ? '' : '（默认 登记文件/年/月）'} ｜ 源=${rawUrl}`,
+      `渠道=${ch.name} ｜ ${size}B ｜ mime=${mime} ｜ md5=${md5 || '未获取'} ｜ 匹配域名=${domainHit.field}(${domainHit.host}) ｜ 路径=${domainHit.rest} ｜ 文件名来源=${nameSource} ｜ 分类=${folder}${folderInput ? '' : '（默认 登记文件/年/月）'} ｜ 源=${rawUrl}`,
       uploadIp,
     );
     return { id: fileId, info: { name: originalName, size, mime, md5, channel: ch.name } };
   }
 
   /**
-   * v2.8.9：按优先级把源地址 host 与渠道配置的域名逐一匹配：
-   *   内网通信域名（internalDomain）→ 公开访问域名（publicDomain）→ 上传接口地址（apiUrl）。
-   * 命中哪个字段就返回哪个（登记文件按该域名的 path 提取存储，签发时也按同样优先级重拼）。
-   * 非 http-post 渠道的域名字段名不同（serverUrl / endpoint / domain…），前三个都未命中时
-   * 再按任意形如 http(s):// 的字符串字段兜底匹配，保持旧行为不漏判。
+   * v3.0.0：按渠道类型解析「内网通信域名 → 公开访问域名 → Endpoint/服务地址」三段候选。
+   *
+   * 各渠道历史命名不统一，统一在这里收敛（键名映射）：
+   *   · 内网：internalDomain
+   *   · 公开：publicDomain；immich 的公开访问域名键是 domain（兼容）
+   *   · 端点：endpoint(minio/s3/cos/aliyun/r2)、apiUrl(easyimages/lsky/custom)、
+   *           baseUri(webdav)、serverUrl(immich)
+   * 某一段的键为空只是跳过，继续下一段 —— 不会因为某个键为空导致整体匹配失败。
+   * 最后再用「配置里任意 http(s) 地址」兜底，避免自定义渠道的新字段漏判。
    */
-  private matchChannelUrlField(
-    ch: { type: string; config: string },
-    url: URL,
-  ): { field: string; host: string } | null {
-    let cfg: Record<string, unknown> = {};
-    try {
-      cfg = (this.channels.decryptConfig(ch.type, ch.config) || {}) as Record<string, unknown>;
-    } catch {
-      return null;
-    }
-    const hostOf = (raw: unknown): string => {
-      const v = String(raw || '').trim();
-      if (!/^https?:\/\//i.test(v)) return '';
-      try {
-        return new URL(v).host.toLowerCase();
-      } catch {
-        return '';
-      }
+  private channelDomainCandidates(type: string, cfg: Record<string, unknown>): { field: string; host: string }[] {
+    const out: { field: string; host: string }[] = [];
+    const seen = new Set<string>();
+    const push = (field: string, raw: unknown) => {
+      const host = UploadService.domainHostOf(raw);
+      if (!host || seen.has(host)) return;
+      seen.add(host);
+      out.push({ field, host });
     };
-    const target = url.host.toLowerCase();
-    const priority = ['internalDomain', 'publicDomain', 'apiUrl'];
-    for (const field of priority) {
-      const host = hostOf(cfg[field]);
-      if (host && host === target) return { field, host };
-    }
+
+    push('internalDomain', cfg.internalDomain);
+    push('publicDomain', cfg.publicDomain);
+    if (type === 'immich') push('domain', cfg.domain);
+
+    const endpointKey: Record<string, string> = {
+      minio: 'endpoint',
+      r2: 'endpoint',
+      s3: 'endpoint',
+      cos: 'endpoint',
+      aliyun: 'endpoint',
+      easyimages: 'apiUrl',
+      lsky: 'apiUrl',
+      custom: 'apiUrl',
+      webdav: 'baseUri',
+      immich: 'serverUrl',
+    };
+    const key = endpointKey[type];
+    if (key) push(key, cfg[key]);
+
+    // 兜底：其它任意 http(s) 地址字段（含未来新增渠道），保持旧行为不漏判
     for (const [field, value] of Object.entries(cfg)) {
-      if (priority.includes(field) || typeof value !== 'string') continue;
-      const host = hostOf(value);
-      if (host && host === target) return { field, host };
+      if (typeof value === 'string' && /^https?:\/\//i.test(value.trim())) push(field, value);
     }
-    return null;
+    return out;
+  }
+
+  /** 配置值 → 主机（host + 端口，小写）；支持省略协议的写法（如 192.168.1.5:2283） */
+  private static domainHostOf(raw: unknown): string {
+    const v = String(raw ?? '').trim();
+    if (!v) return '';
+    const abs = /^[a-z][a-z0-9+.-]*:\/\//i.test(v) ? v : `https://${v}`;
+    try {
+      return new URL(abs).host.toLowerCase();
+    } catch {
+      return '';
+    }
+  }
+
+  /**
+   * 源地址 → 命中的域名段 + 剩余路径（remoteKey）。
+   * 只比「主机（host + 端口）」，协议 / 大小写 / 末尾斜杠差异都不影响；
+   * 三段都未命中返回 null（调用方据此判定「地址不属于该渠道」）。
+   */
+  /**
+   * 源地址 → 命中的渠道域名段 + 剩余部分。
+   * v3.0.0（第三轮）：剩余部分从「仅 pathname」改为「pathname + 查询串」——
+   * 形如 `.../api/thumbnail?key=abc&size=preview&c=1&edited=true` 的地址，
+   * 丢掉 `?...` 后拼出来的外链会指向另一张图 / 404（表现为「地址被截断、识别不全」）。
+   */
+  private matchChannelSource(
+    candidates: { field: string; host: string }[],
+    sourceUrl: URL,
+  ): { field: string; host: string; rest: string } | null {
+    const target = sourceUrl.host.toLowerCase();
+    const hit = candidates.find((c) => c.host === target);
+    if (!hit) return null;
+    const rest = `${sourceUrl.pathname.replace(/^\/+/, '')}${sourceUrl.search || ''}`;
+    if (!rest) return null;
+    return { ...hit, rest };
+  }
+
+  /**
+   * v3.0.0：登记文件的文件名清洗 —— 去控制字符与路径分隔符 / 文件名非法字符，
+   * 压缩空白，去前导点（避免隐藏文件与 ../ 穿越），长度上限 200。
+   */
+  private sanitizeRecordName(raw: string): string {
+    return String(raw || '')
+      .replace(/[\u0000-\u001f\u007f]/g, '')
+      .replace(/[\\/:*?"<>|]/g, '_')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .replace(/^\.+/, '')
+      .slice(0, 200);
+  }
+
+  /**
+   * URL 最后一段是否「像个文件名」。没有扩展名、且是 download / original 这类
+   * 通用动作词时不算 —— 这种地址的真实文件名只能从 Content-Disposition 拿。
+   */
+  private looksLikeFileName(seg: string): boolean {
+    const s = String(seg || '').trim();
+    if (!s) return false;
+    if (/\.[A-Za-z0-9]{1,10}$/.test(s)) return true;
+    const generic = new Set([
+      'original', 'download', 'downloads', 'file', 'files', 'image', 'photo', 'picture',
+      'asset', 'assets', 'media', 'content', 'data', 'raw', 'view', 'preview', 'thumb',
+      'thumbnail', 'get', 'api', 'render',
+    ]);
+    if (generic.has(s.toLowerCase())) return false;
+    return s.length >= 3;
+  }
+
+  /**
+   * v3.0.0：读 Content-Disposition 的 filename（5 秒超时，任何异常都返回空串）。
+   * 先 HEAD；HEAD 被拒或不带该头时，用 Range GET 只读响应头，读完立刻取消 body。
+   */
+  private async fetchDispositionName(url: URL): Promise<string> {
+    const signal = AbortSignal.timeout(5000);
+    try {
+      const head = await fetch(url, { method: 'HEAD', redirect: 'follow', signal });
+      let raw = head.headers.get('content-disposition') || '';
+      if (!raw) {
+        try {
+          const get = await fetch(url, { headers: { Range: 'bytes=0-4095' }, redirect: 'follow', signal });
+          raw = get.headers.get('content-disposition') || '';
+          await get.body?.cancel().catch(() => undefined);
+        } catch {
+          /* GET 探测失败：按没有文件名处理 */
+        }
+      }
+      return UploadService.parseDispositionFilename(raw);
+    } catch {
+      return '';
+    }
+  }
+
+  /** 从 Content-Disposition 里取文件名（支持 filename* 的 RFC 5987 写法） */
+  private static parseDispositionFilename(header: string): string {
+    const raw = String(header || '');
+    if (!raw) return '';
+    const star = /filename\*\s*=\s*([^;]+)/i.exec(raw);
+    if (star) {
+      const v = star[1].trim().replace(/^"|"$/g, '');
+      const m = /^[^']*'[^']*'(.*)$/.exec(v);
+      const text = (m ? m[1] : v).trim();
+      try {
+        return decodeURIComponent(text);
+      } catch {
+        return text;
+      }
+    }
+    const plain = /filename\s*=\s*("[^"]*"|[^;]+)/i.exec(raw);
+    if (!plain) return '';
+    const v = plain[1].trim().replace(/^"|"$/g, '').trim();
+    try {
+      return decodeURIComponent(v);
+    } catch {
+      return v;
+    }
+  }
+
+  /**
+   * v3.0.0：登记文件的真实文件名解析（任何异常都不能让登记失败）。
+   * 顺序：URL 最后一段 → Content-Disposition 的 filename → 登记文件-<13 位毫秒时间戳>。
+   */
+  private async resolveRecordOriginalName(url: URL): Promise<{ name: string; from: string }> {
+    let lastSeg = url.pathname.split('/').filter(Boolean).pop() || '';
+    try {
+      lastSeg = decodeURIComponent(lastSeg);
+    } catch {
+      /* 残缺的百分号编码：按原样用 */
+    }
+    const fromUrl = this.sanitizeRecordName(lastSeg);
+    if (this.looksLikeFileName(fromUrl)) return { name: fromUrl, from: 'url' };
+    /*
+     * v3.0.0（第三轮）：路径段只是动作词（thumbnail / preview / original…）时，
+     * 真实文件名往往在查询参数里，如 `.../api/thumbnail?key=2026/abc.webp&size=preview`。
+     * 逐个参数值取最后一段试一次，能认出文件名就用它 —— 否则只能落到「登记文件-时间戳」。
+     */
+    for (const val of url.searchParams.values()) {
+      const seg = String(val || '').split('/').filter(Boolean).pop() || '';
+      const cleaned = this.sanitizeRecordName(seg);
+      if (this.looksLikeFileName(cleaned)) return { name: cleaned, from: 'query' };
+    }
+    const fromHeader = this.sanitizeRecordName(await this.fetchDispositionName(url).catch(() => ''));
+    if (fromHeader) return { name: fromHeader, from: 'header' };
+    return { name: `登记文件-${Date.now()}`, from: 'fallback' };
   }
 
   private async backupUpload(
@@ -2208,10 +2665,12 @@ export class UploadService {
       const info = this.toChannelInfo(backup);
       const adapter = createAdapter(info);
       const t0 = Date.now();
-      const result = await this.uploadToAdapter(adapter, file, key, info, owner);
+      // v3.0.0：备份落盘同样按文件归属实例分段（仅本地备份渠道生效）
+      const rec4inst = await prisma.fileRecord.findUnique({ where: { id: fileId }, select: { instanceId: true } });
+      const result = await this.uploadToAdapter(adapter, file, key, info, owner, rec4inst?.instanceId || '');
       await prisma.fileCopy.update({
         where: { fileId_channelId: { fileId, channelId: backup.id } },
-        data: { remoteKey: result.remoteKey, remoteUrl: result.remoteUrl || '', status: 'active' },
+        data: { ...this.copyWriteData(result, backup), status: 'active' },
       });
       appLog.info(
         'backup',
@@ -2314,6 +2773,118 @@ export class UploadService {
    * 通道共用同一套逻辑，避免两处实现各自漂移（早前 S3 通道就是因为拿不到这段逻辑，
    * 删除请求一律 404，第三方插件只能"传得上、删不掉"）。
    */
+  /**
+   * v3.0.0（R10）：去重命中时克隆记录与副本（方案 A）。
+   *
+   * 克隆什么：内容元数据 + 全部 active 副本行（同 remoteKey / objectPath，指向同一对象）。
+   * 不克隆什么：访问量、评分、等级、备注、外链密码/限时/重定向、重命名历史 ——
+   * 这些属于「个人使用状态」，必须归零重来，否则会与原主串味。
+   */
+  private async cloneDedupRecord(
+    sourceName: string,
+    opts: { uploader?: string; uploadSource?: string; instanceId?: string },
+    ip: string,
+  ): Promise<string> {
+    const src = await prisma.fileRecord.findUnique({
+      where: { name: sourceName },
+      include: { copies: true },
+    });
+    if (!src) return sourceName;
+    const fileId = this.makeFileId();
+    const copies = src.copies
+      .filter((c) => c.status === 'active' || c.isPrimary)
+      .map((c) => ({
+        channelId: c.channelId,
+        remoteKey: c.remoteKey,
+        remoteUrl: c.remoteUrl,
+        objectPath: c.objectPath,
+        urlQuery: c.urlQuery,
+        metas: c.metas,
+        status: c.status === 'failed' ? 'failed' : 'active',
+        isPrimary: c.isPrimary,
+      }));
+    try {
+      const created = await prisma.fileRecord.create({
+        data: {
+          name: fileId,
+          firstName: fileId,
+          prevName: '',
+          originalName: src.originalName,
+          size: src.size,
+          originalSize: src.originalSize,
+          mime: src.mime,
+          hash: src.hash,
+          md5: src.md5,
+          folder: src.folder,
+          uploader: opts.uploader || '',
+          uploadSource: opts.uploadSource || 'Default',
+          ip,
+          instanceId: opts.instanceId || '',
+          metas: src.metas,
+          uploadStartedAt: new Date(),
+          uploadFinishedAt: new Date(),
+          copies: { create: copies },
+        },
+        select: { name: true },
+      });
+      return created.name;
+    } catch (err) {
+      appLog.warn('upload', `去重克隆失败，回退复用原外链`, `${(err as Error).message} ｜ 源=${sourceName}`, ip);
+      return sourceName;
+    }
+  }
+
+  /**
+   * v3.0.0（R10）：副本落库数据。
+   *
+   * 只写四样东西：
+   *   · remoteKey —— 渠道内标识（删除/移动用）
+   *   · objectPath / urlQuery —— 固化寻址地址（域名永不落库）
+   *   · metas.snap —— 配置快照（结构性字段，供日后追溯）
+   *
+   * 安全约束：快照字段是**白名单**，且再过滤一遍密钥类键名 ——
+   * 绝不把整个 config（含 SecretKey/token/apiKey）写进明文的 metas。
+   */
+  private copyWriteData(
+    result: { remoteKey: string; remoteUrl?: string; objectPath?: string; urlQuery?: string; metas?: Record<string, unknown> },
+    channel: { type: string; config?: Record<string, string> | string },
+  ) {
+    const snap: Record<string, unknown> = {
+      channelType: channel.type,
+      capturedAt: new Date().toISOString(),
+    };
+    const allow = [
+      'bucket', 'region', 'pathStyle', 'objectPrefix', 'nameTemplate', 'customName',
+      'prefixPath', 'directory', 'albumId', 'shareLinkId', 'suffix', 'rootPath',
+    ];
+    let cfg: Record<string, string> = {};
+    if (typeof channel.config === 'string') {
+      // 兜底：密文配置或非法 JSON 都解析不出结构，快照退化为只记 channelType
+      try {
+        const parsed = JSON.parse(channel.config || '{}');
+        if (parsed && typeof parsed === 'object') cfg = parsed as Record<string, string>;
+      } catch {
+        cfg = {};
+      }
+    } else {
+      cfg = channel.config || {};
+    }
+    for (const k of allow) {
+      const v = cfg[k];
+      if (v === undefined || v === '') continue;
+      if (/secret|token|password|api[-_]?key/i.test(k)) continue;
+      snap[k] = v;
+    }
+    const metas: Record<string, unknown> = { ...(result.metas || {}), snap };
+    return {
+      remoteKey: result.remoteKey,
+      remoteUrl: result.remoteUrl || '',
+      objectPath: result.objectPath || '',
+      urlQuery: result.urlQuery || '',
+      metas: JSON.stringify(metas),
+    };
+  }
+
   async removeFile(id: string, name = ''): Promise<void> {
     const rec = await prisma.fileRecord.findUnique({
       where: { id },
@@ -2325,10 +2896,33 @@ export class UploadService {
      */
     const registered = normalizeUploadSource(rec?.uploadSource) === 'Record';
     const copies = await prisma.fileCopy.findMany({ where: { fileId: id } });
+    let sharedSkipped = 0;
     for (const copy of copies) {
       if (registered) continue;
       // 没有 key 也没有 URL 的副本无从删起（例如历史脏数据），跳过避免误删渠道根目录
-      if (!copy.remoteKey && !copy.remoteUrl) continue;
+      if (!copy.remoteKey && !copy.remoteUrl && !copy.objectPath) continue;
+      /*
+       * v3.0.0（R10）：引用计数删除 —— 去重克隆出的多条记录共用同一个远端对象，
+       * 只要还有任意一个「未在回收站」的记录引用它，就只删库不删远端。
+       * 判定键：同渠道下 remoteKey 或 objectPath 相同（两者之一即可覆盖新老数据）。
+       */
+      const refKeys: Array<Record<string, string>> = [];
+      if (copy.remoteKey) refKeys.push({ remoteKey: copy.remoteKey });
+      if (copy.objectPath) refKeys.push({ objectPath: copy.objectPath });
+      if (refKeys.length) {
+        const shared = await prisma.fileCopy.count({
+          where: {
+            channelId: copy.channelId,
+            fileId: { not: id },
+            file: { status: 'active' },
+            OR: refKeys,
+          },
+        });
+        if (shared > 0) {
+          sharedSkipped += 1;
+          continue;
+        }
+      }
       const ch = await prisma.channel.findUnique({ where: { id: copy.channelId } });
       if (!ch) continue;
       try {
@@ -2348,7 +2942,9 @@ export class UploadService {
     appLog.info(
       'upload',
       `删除文件：${name || id}`,
-      registered ? '登记文件：只删库记录，不动源站对象' : `远端副本 ${copies.length} 个`,
+      registered
+        ? '登记文件：只删库记录，不动源站对象'
+        : `远端副本 ${copies.length} 个${sharedSkipped ? `（其中 ${sharedSkipped} 个仍被其他记录/实例复用，仅删库）` : ''}`,
     );
   }
 
@@ -2455,7 +3051,8 @@ export class UploadService {
      */
     let buf: Buffer;
     if (mainCh.type === 'local') {
-      const abs = localFileAbs(mainCopy.remoteKey);
+      // v3.0.0：改用多根探测（内置 uploads + 自定义本地渠道 rootPath 都能取到）
+      const abs = await localFileAbsOf(mainCopy.remoteKey);
       if (!abs) throw new Error('本地文件不存在，无法备份');
       buf = await fsp.readFile(abs);
     } else {
@@ -2474,8 +3071,8 @@ export class UploadService {
     );
     await prisma.fileCopy.upsert({
       where: { fileId_channelId: { fileId: rec.id, channelId: backup.id } },
-      update: { remoteKey: result.remoteKey, remoteUrl: result.remoteUrl || '', status: 'active' },
-      create: { fileId: rec.id, channelId: backup.id, remoteKey: result.remoteKey, remoteUrl: result.remoteUrl || '', status: 'active' },
+      update: { ...this.copyWriteData(result, backup), status: 'active' },
+      create: { fileId: rec.id, channelId: backup.id, ...this.copyWriteData(result, backup), status: 'active' },
     });
   }
 }

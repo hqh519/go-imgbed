@@ -8,15 +8,15 @@
                 </button>
                 <template #dropdown>
                     <div class="el-dropdown-menu modern-dropdown-menu admin-more-menu" role="group" :aria-label="$t('login.moreMenu')">
+                        <!--
+                            v3.0.0（R5）：「标签管理」「声音切换」是文件管理页专用项，
+                            其它页面不再渲染（文件管理页本身已改成顶栏图标按钮，inline-actions=true）。
+                        -->
                         <button type="button" class="el-dropdown-menu__item" @click="handleMoreCommand('theme')">
                             <font-awesome-icon :icon="themeIcon" class="admin-more-menu-ico" />
                             <span>{{ themeText }}</span>
                         </button>
-                        <!-- v2.8.9：移动端把「声音切换」收进更多菜单，放在语言切换上方 -->
-                        <button type="button" class="el-dropdown-menu__item" @click="handleMoreCommand('sound')">
-                            <font-awesome-icon :icon="globalVideoMuted ? 'volume-mute' : 'volume-up'" class="admin-more-menu-ico" />
-                            <span>{{ globalVideoMuted ? $t('dashboard.soundEnable') : $t('dashboard.soundDisable') }}</span>
-                        </button>
+                        <!-- v3.0.0（R5）：原「声音切换」菜单项已移除（文件管理页用顶栏图标按钮，其它页不需要） -->
                         <button type="button" class="el-dropdown-menu__item" @click="handleMoreCommand('lang')">
                             <font-awesome-icon icon="globe" class="admin-more-menu-ico" />
                             <span>{{ langText }}</span>
@@ -34,40 +34,56 @@
                 </template>
             </el-dropdown>
         </template>
-        <!-- 桌面端：四个独立按钮（保持原样） -->
+        <!-- 桌面端：链接格式（可选）+ 主题切换 + 「更多菜单」（语言切换 / 退出登录，文字条目） -->
         <template v-else>
-            <AdminToggleDark class="admin-header-control" />
-            <LanguageSwitcher class="admin-header-control" />
             <el-tooltip v-if="showLinkFormat" :disabled="disableTooltip" :content="$t('dashboard.linkFormat')" placement="bottom" :show-after="1000">
                 <button class="admin-header-control" type="button" :aria-label="$t('dashboard.linkFormat')" @click="$emit('link-format')">
                     <font-awesome-icon icon="link" />
                 </button>
             </el-tooltip>
-            <el-tooltip :disabled="disableTooltip" :content="$t('dashboard.logout')" placement="bottom" :show-after="1000">
-                <button class="admin-header-control" type="button" :aria-label="$t('dashboard.logout')" @click="$emit('logout')">
-                    <font-awesome-icon icon="sign-out-alt" />
+            <AdminToggleDark class="admin-header-control" />
+            <!--
+                v3.0.0（R5）：桌面端末尾新增「更多菜单」（复刻首页右上角同款）——
+                「语言切换」「退出登录」以文字条目收进菜单，工具栏不再各占一个图标位。
+            -->
+            <el-dropdown trigger="click" popper-class="admin-more-menu-popper" @command="handleMoreCommand">
+                <button class="admin-header-control" type="button" :aria-label="$t('login.moreMenu')">
+                    <font-awesome-icon icon="ellipsis-v" />
                 </button>
-            </el-tooltip>
+                <template #dropdown>
+                    <div class="el-dropdown-menu modern-dropdown-menu admin-more-menu" role="group" :aria-label="$t('login.moreMenu')">
+                        <button type="button" class="el-dropdown-menu__item admin-more-menu-text" @click="handleMoreCommand('lang')">
+                            <span>{{ langText }}</span>
+                        </button>
+                        <div class="admin-more-menu-sep"></div>
+                        <button type="button" class="el-dropdown-menu__item is-logout admin-more-menu-text" @click="handleMoreCommand('logout')">
+                            <span>{{ $t('dashboard.logout') }}</span>
+                        </button>
+                    </div>
+                </template>
+            </el-dropdown>
         </template>
     </div>
 </template>
 
 <script>
 import AdminToggleDark from './AdminToggleDark.vue';
-import LanguageSwitcher from '@/components/LanguageSwitcher.vue';
 import { setLocale } from '@/locales';
 import { writeThemeCookie } from '@/utils/themeCookie';
 
 export default {
     name: 'AdminHeaderActions',
-    components: { AdminToggleDark, LanguageSwitcher },
+    components: { AdminToggleDark },
     props: {
         showLinkFormat: Boolean,
         disableTooltip: Boolean,
         // v2.6.0 #302：移动端把四个按钮收进「更多菜单」
-        isMobile: Boolean
+        isMobile: Boolean,
+        // v3.0.0：页面工具栏里已有「标签管理 / 声音切换 / 链接格式」图标按钮 → 更多菜单不再重复
+        inlineActions: Boolean
     },
-    emits: ['link-format', 'logout'],
+    // v3.0.0：移动端更多菜单里的「标签管理」转发给文件管理页
+    emits: ['link-format', 'logout', 'tag-management'],
     computed: {
         /** 主题三态：auto（跟随系统）/ light / dark */
         themeMode() {
@@ -88,10 +104,7 @@ export default {
         langText() {
             return this.$i18n.locale === 'zh-CN' ? 'English' : '中文';
         },
-        /** v2.8.9：全局视频静音状态（移动端更多菜单里显示「开启声音 / 关闭声音」） */
-        globalVideoMuted() {
-            return this.$store.state.globalVideoMuted;
-        }
+        /* v3.0.0（R14）：声音开关迁到文件详情页（下载按钮后面），移动端更多菜单不再提供该项 */
     },
     methods: {
         handleMoreCommand(cmd) {
@@ -111,13 +124,13 @@ export default {
                 }
                 return;
             }
-            if (cmd === 'sound') {
-                // v2.8.9：移动端更多菜单里的声音切换（与顶栏按钮同一份状态）
-                this.$store.commit('setGlobalVideoMuted', !this.globalVideoMuted);
-                return;
-            }
             if (cmd === 'lang') {
                 setLocale(this.$i18n.locale === 'zh-CN' ? 'en' : 'zh-CN');
+                return;
+            }
+            if (cmd === 'tagManage') {
+                // v3.0.0：移动端更多菜单 → 标签管理模式（与 PC 工具栏按钮同一入口）
+                this.$emit('tag-management');
                 return;
             }
             if (cmd === 'link') {
@@ -137,7 +150,8 @@ export default {
     display: flex;
     align-items: center;
     flex: 0 0 auto;
-    gap: var(--admin-header-action-gap, 8px);
+    /* v3.0.0：与工具栏按钮间距统一为 6px（原来 8px，和 .search-area 的 6px 不一致） */
+    gap: var(--admin-header-action-gap, 6px);
 }
 
 .admin-header-control,
@@ -151,7 +165,8 @@ export default {
     height: var(--admin-header-action-size, 32px);
     padding: 0;
     border: 0;
-    border-radius: 6px;
+    /* v3.0.0：圆角与工具栏按钮（筛选/刷新/回收站…）一致 */
+    border-radius: 8px;
     color: var(--admin-theme-toggle-color);
     background: transparent !important;
     backdrop-filter: none !important;
@@ -188,6 +203,10 @@ export default {
     width: 1em;
     text-align: center;
     margin-right: 8px;
+}
+/* v3.0.0：纯文字菜单条目（如移动端「标签管理」），左侧不预留图标位 */
+.admin-more-menu .admin-more-menu-text {
+    padding-left: 20px;
 }
 
 .admin-more-menu-sep {

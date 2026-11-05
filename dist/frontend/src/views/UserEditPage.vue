@@ -33,6 +33,35 @@
           </div>
 
           <el-form :model="form" label-position="top" class="edit-form">
+            <!--
+              v3.0.0（R16）：账户自定义背景图 —— 紧贴头像下方一行两个输入框。
+              格式 `["图片地址1","图片地址2"]`，可填多张，每次刷新随机取一张；
+              留空 = 跟随「系统管理 → 网页设置」里的同名背景图。
+            -->
+            <div class="bkimg-row">
+              <el-form-item :label="$t('userEdit.uploadBkImg')" class="bkimg-item">
+                <el-input
+                  v-model="form.uploadBkImg"
+                  type="textarea"
+                  :rows="2"
+                  maxlength="4000"
+                  :placeholder="bkImgPlaceholder"
+                  class="bkimg-input"
+                />
+              </el-form-item>
+              <el-form-item :label="$t('userEdit.adminBkImg')" class="bkimg-item">
+                <el-input
+                  v-model="form.adminBkImg"
+                  type="textarea"
+                  :rows="2"
+                  maxlength="4000"
+                  :placeholder="bkImgPlaceholder"
+                  class="bkimg-input"
+                />
+              </el-form-item>
+            </div>
+            <p class="hint bkimg-hint">{{ $t('userEdit.bkImgHint') }}</p>
+
             <el-form-item :label="$t('userManage.username')">
               <el-input v-model="form.username" maxlength="32" :placeholder="$t('userManage.usernamePlaceholder')" />
               <p class="hint">{{ $t('userEdit.usernameHint') }}</p>
@@ -91,36 +120,30 @@
                 <p class="hint">{{ $t('userEdit.adminPasswordHint') }}</p>
               </template>
               <template v-else>
-                <el-radio-group v-model="pwdVerifyMethod" class="pwd-verify-methods">
-                  <el-radio-button label="old">{{ $t('userEdit.pwdVerifyOld') }}</el-radio-button>
-                  <el-radio-button label="email">{{ $t('userEdit.pwdVerifyEmail') }}</el-radio-button>
-                  <el-radio-button label="totp">{{ $t('userEdit.pwdVerifyTotp') }}</el-radio-button>
-                </el-radio-group>
-                <el-input
-                  v-if="pwdVerifyMethod === 'old'"
-                  v-model="pwdOldPassword"
-                  type="password"
-                  show-password
-                  :placeholder="$t('userEdit.pwdVerifyOldPlaceholder')"
-                  class="pwd-verify-input"
-                />
-                <div v-else-if="pwdVerifyMethod === 'email'" class="code-row">
-                  <el-button size="small" :loading="pwdEmailBusy" :disabled="!mailReady" @click="sendPwdChangeCode">
-                    {{ $t('userEdit.pwdSendCode') }}
-                  </el-button>
+                <!--
+                  v3.0.0（R12）：原来「原密码 / 邮箱验证 / 两步验证」是三个单选 + 各自输入框，
+                  现在合并为**一个输入框** —— 后端会自动识别填的是哪一种凭据：
+                    · 与当前密码一致 → 按原密码通过；
+                    · 6 位数字且邮箱已验证 → 按邮箱验证码校验；
+                    · 6 位数字且已启用两步验证 → 按 2FA 动态码校验。
+                  邮箱验证码仍需先点右侧「发送验证码」，按钮只在该账户已验证邮箱时出现。
+                -->
+                <div class="code-row pwd-verify-row">
                   <el-input
-                    v-model="pwdEmailCode"
-                    maxlength="6"
-                    :placeholder="$t('userEdit.emailCodePlaceholder')"
-                    class="code-input"
+                    v-model="pwdVerifyCode"
+                    :placeholder="$t('userEdit.pwdVerifyMergedPlaceholder')"
+                    clearable
+                    class="pwd-verify-input"
+                    @keyup.enter="save"
                   />
+                  <el-button
+                    v-if="detail.emailVerified"
+                    size="small"
+                    :loading="pwdEmailBusy"
+                    :disabled="!mailReady"
+                    @click="sendPwdChangeCode"
+                  >{{ $t('userEdit.pwdSendCode') }}</el-button>
                 </div>
-                <el-input
-                  v-else
-                  v-model="pwdTotpCode"
-                  :placeholder="$t('userEdit.pwdVerifyTotpPlaceholder')"
-                  class="pwd-verify-input"
-                />
                 <p class="hint">{{ $t('userEdit.pwdVerifyHint') }}</p>
               </template>
             </el-form-item>
@@ -255,6 +278,66 @@
           </el-form>
         </el-card>
 
+        <!-- ================= 实例管理（v3.0.0：创建 / 加入 / 邀请 / 改名 / 删除） ================= -->
+        <!-- v3.0.0：id="instances" 供外部（文件管理 →「实例管理」）以 ?anchor=instances 直接定位本区块 -->
+        <el-card
+          id="instances"
+          shadow="never"
+          class="edit-card"
+          :class="{ 'is-anchor-highlight': anchorHighlight }"
+        >
+          <template #header><span class="card-title">{{ $t('userEdit.instanceTitle') }}</span></template>
+          <div class="instance-actions">
+            <el-button size="small" @click="openJoinInstance">{{ $t('userEdit.instanceJoin') }}</el-button>
+            <el-button size="small" type="primary" plain @click="openCreateInstance">{{ $t('userEdit.instanceCreate') }}</el-button>
+          </div>
+          <el-table v-if="orderedInstances.length" :data="orderedInstances" size="small" class="instance-table">
+            <!-- v3.0.0：名称前带创建序号（1-based，用接口下发的 index），整行展示「1 · 工作库」 -->
+            <el-table-column :label="$t('userEdit.instanceName')" min-width="180">
+              <template #default="{ row }">
+                <span class="instance-label">{{ instanceSeq(row) }} · {{ row.name }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column :label="$t('userEdit.instanceCreatedAt')" min-width="150">
+              <template #default="{ row }">{{ formatInstanceTime(row.createdAt) }}</template>
+            </el-table-column>
+            <el-table-column :label="$t('userEdit.instanceMembers')" width="90" align="center">
+              <template #default="{ row }">{{ Number(row.memberCount ?? 1) }}</template>
+            </el-table-column>
+            <el-table-column :label="$t('userEdit.instanceActions')" width="190">
+              <template #default="{ row }">
+                <el-button link type="primary" size="small" @click="openInviteDialog(row)">{{ $t('userEdit.instanceInvite') }}</el-button>
+                <el-button link type="primary" size="small" @click="openRenameInstance(row)">{{ $t('userEdit.instanceRename') }}</el-button>
+                <el-button link type="danger" size="small" @click="deleteInstance(row)">{{ $t('userEdit.instanceDelete') }}</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+          <p v-else class="hint">{{ $t('userEdit.instanceEmpty') }}</p>
+          <p class="hint">{{ $t('userEdit.instanceHint') }}</p>
+        </el-card>
+
+        <!--
+          ================= 对外分享（v3.0.0） =================
+          · 普通用户视角：只有该账户 shareEnabled === true 才显示本模块（管理员始终可见，便于开启）；
+          · 开关直接调用户保存接口（PUT /api/manage/users/:id，payload 带 shareEnabled）；
+          · 「查看分享记录」新标签打开 /share-records?username=<该用户名>。
+        -->
+        <el-card v-if="shareModuleVisible" shadow="never" class="edit-card">
+          <template #header>
+            <span class="card-title">{{ $t('userEdit.shareTitle') }}</span>
+            <el-tag size="small" :type="form.shareEnabled ? 'success' : 'info'" class="card-tag">
+              {{ form.shareEnabled ? $t('userEdit.shareOn') : $t('userEdit.shareOff') }}
+            </el-tag>
+          </template>
+          <div class="share-row">
+            <span class="switch-item">{{ $t('userEdit.shareEnable') }}<el-switch v-model="form.shareEnabled" :loading="shareSaving" @change="onShareEnabledChange" /></span>
+            <el-button size="small" type="primary" plain @click="openShareRecords">
+              <font-awesome-icon icon="share-alt" class="share-btn-icon" />{{ $t('userEdit.shareRecordsBtn') }}
+            </el-button>
+          </div>
+          <p class="hint">{{ $t('userEdit.shareHint') }}</p>
+        </el-card>
+
         <!-- ================= 管理员操作（仅管理员；v2.4.0 移到存储渠道之后）================= -->
         <el-card v-if="isAdminRole" shadow="never" class="edit-card">
           <template #header><span class="card-title">{{ $t('userEdit.adminActions') }}</span></template>
@@ -263,6 +346,8 @@
             <span class="switch-item">{{ $t('userManage.canEdit') }}<el-switch v-model="form.canEdit" /></span>
             <span class="switch-item">{{ $t('userManage.canDelete') }}<el-switch v-model="form.canDelete" /></span>
             <span class="switch-item">{{ $t('userManage.linkPermission') }}<el-switch v-model="form.linkEnabled" /></span>
+            <!-- v3.0.0：分享权限 —— 开启后该用户可把目录 / 标签对外分享，普通用户的编辑页才会出现「对外分享」模块 -->
+            <span class="switch-item">{{ $t('userManage.sharePermission') }}<el-switch v-model="form.shareEnabled" /></span>
             <!-- v2.8.8：「类型和大小限制」开关已移除 —— 上传限制统一由「单文件大小限制」（下方）与后台全局配置决定 -->
           </div>
 
@@ -337,6 +422,69 @@
       </template>
     </el-dialog>
 
+    <!-- v3.0.0：创建实例 -->
+    <el-dialog v-model="showCreateInstance" :title="$t('userEdit.instanceCreate')" :width="dialogWidth" append-to-body>
+      <el-form label-position="top">
+        <el-form-item :label="$t('userEdit.instanceName')" required>
+          <el-input v-model="newInstance.name" maxlength="32" :placeholder="$t('userEdit.instanceNamePlaceholder')" />
+        </el-form-item>
+        <el-form-item :label="$t('userEdit.instanceNote')">
+          <el-input v-model="newInstance.note" type="textarea" :rows="2" maxlength="200" :placeholder="$t('userEdit.instanceNotePlaceholder')" />
+          <p class="hint">{{ $t('userEdit.instanceNoteHint') }}</p>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showCreateInstance = false">{{ $t('common.cancel') }}</el-button>
+        <el-button type="primary" :loading="instanceBusy" @click="createInstance">{{ $t('common.confirm') }}</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- v3.0.0：加入实例（用户名 + 8 位邀请码 双验证） -->
+    <el-dialog v-model="showJoinInstance" :title="$t('userEdit.instanceJoin')" :width="dialogWidth" append-to-body>
+      <el-form label-position="top" @submit.prevent>
+        <el-form-item :label="$t('userEdit.joinUsername')" required>
+          <el-input
+            v-model="joinUsername"
+            maxlength="32"
+            :placeholder="$t('userEdit.joinUsernamePlaceholder')"
+            @keyup.enter="joinInstance"
+          />
+        </el-form-item>
+        <el-form-item :label="$t('userEdit.joinCodePlaceholder')" required>
+          <el-input
+            v-model="joinCode"
+            maxlength="8"
+            :placeholder="$t('userEdit.joinCodePlaceholder')"
+            @keyup.enter="joinInstance"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showJoinInstance = false">{{ $t('common.cancel') }}</el-button>
+        <el-button type="primary" :loading="instanceBusy" @click="joinInstance">{{ $t('common.confirm') }}</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- v3.0.0：邀请管理（生成 / 复制邀请码、关闭邀请）
+         v3.0.0（第三轮）：打开只回显已有邀请码，必须点「生成邀请码」才生成；
+         邀请码生成后长期有效，直到「关闭邀请」或再次「重新生成」 -->
+    <el-dialog v-model="showInviteDialog" :title="$t('userEdit.inviteTitle', { name: inviteTarget?.name || '' })" :width="dialogWidth" append-to-body>
+      <div class="invite-box">
+        <p class="hint block">{{ $t('userEdit.inviteHint') }}</p>
+        <div class="code-row">
+          <code class="invite-code">{{ inviteCode || $t('userEdit.inviteNotGenerated') }}</code>
+          <el-button size="small" :disabled="!inviteCode" @click="copyInviteCode">{{ $t('userEdit.inviteCopy') }}</el-button>
+          <el-button size="small" type="primary" plain :loading="instanceBusy" @click="regenerateInvite">
+            {{ inviteCode ? $t('userEdit.inviteRegen') : $t('userEdit.inviteGenerate') }}
+          </el-button>
+          <el-button size="small" type="danger" plain :disabled="!inviteCode" :loading="instanceBusy" @click="closeInvite">{{ $t('userEdit.inviteClose') }}</el-button>
+        </div>
+      </div>
+      <template #footer>
+        <el-button @click="showInviteDialog = false">{{ $t('common.close') }}</el-button>
+      </template>
+    </el-dialog>
+
     <!-- 恢复码：只在启用 / 重新生成后显示这一次，库里只留摘要 -->
     <el-dialog v-model="showRecoveryDialog" :title="$t('userEdit.recoveryTitle')" :width="dialogWidth" append-to-body>
       <el-alert :title="$t('userEdit.recoveryOnce')" type="warning" :closable="false" show-icon class="recovery-alert" />
@@ -357,6 +505,7 @@ import AdminHeader from '@/components/dashboard/AdminHeader.vue';
 import AvatarCropper from '@/components/user/AvatarCropper.vue';
 import QRCodeBox from '@/components/common/QRCodeBox.vue';
 import backgroundManager from '@/mixins/backgroundManager';
+import { copyText } from '@/utils/clipboard';
 
 /**
  * 用户编辑独立页（v202610221824）。
@@ -395,6 +544,11 @@ export default {
                 mainChannelId: '',
                 backupChannelId: '',
                 adminNote: '',
+                // v3.0.0：对外分享权限（后端 User.shareEnabled，缺省 false）
+                shareEnabled: false,
+                // v3.0.0（R16）：账户自定义背景图（JSON 数组字符串，空串 = 跟随系统设置）
+                uploadBkImg: '',
+                adminBkImg: '',
             },
             channelOptions: [],
             // 头像
@@ -422,16 +576,33 @@ export default {
             emailCode: '',
             resendLeft: 0,
             resendTimer: null,
+            // v3.0.0：实例管理
+            instances: [],
+            showCreateInstance: false,
+            newInstance: { name: '', note: '' },
+            showJoinInstance: false,
+            joinCode: '',
+            // v3.0.0：加入实例时的用户名（与邀请码双验证）
+            joinUsername: '',
+            showInviteDialog: false,
+            inviteTarget: null,
+            inviteCode: '',
+            instanceBusy: false,
+            // v3.0.0：对外分享（开关即时保存 + 锚点滚动高亮）
+            shareSaving: false,
+            anchorHighlight: false,
             // v2.6.0：修改密码身份验证（本人三选一 / 管理员改他人需管理员密码）
-            pwdVerifyMethod: 'old',
-            pwdOldPassword: '',
-            pwdEmailCode: '',
-            pwdTotpCode: '',
+            // v3.0.0（R12）：三选一合并为一个输入框，由后端自动识别凭据类型
+            pwdVerifyCode: '',
             pwdEmailBusy: false,
             adminPassword: '',
         };
     },
     computed: {
+        /** v3.0.0（R16）：背景图输入框占位符（提示格式） */
+        bkImgPlaceholder() {
+            return '["https://example.com/bg1.jpg", "https://example.com/bg2.jpg"]';
+        },
         isAdminRole() {
             return this.$store?.getters?.isAdminRole === true;
         },
@@ -451,6 +622,23 @@ export default {
         },
         dialogWidth() {
             return window.innerWidth <= 768 ? '92%' : '520px';
+        },
+        /** v3.0.0：实例列表按创建时间升序（接口已按 createdAt 升序下发，这里再兜一次底） */
+        orderedInstances() {
+            return [...(this.instances || [])].sort((a, b) => {
+                const ia = Number(a?.index) || 0;
+                const ib = Number(b?.index) || 0;
+                if (ia && ib && ia !== ib) return ia - ib;
+                return new Date(a?.createdAt || 0).getTime() - new Date(b?.createdAt || 0).getTime();
+            });
+        },
+        /**
+         * v3.0.0：「对外分享」模块可见性
+         *   · 管理员：始终可见（便于给该账户开启分享权限）；
+         *   · 普通用户：仅当该账户 shareEnabled === true 时渲染。
+         */
+        shareModuleVisible() {
+            return this.isAdminRole || this.form.shareEnabled === true;
         },
         /*
          * 渠道下拉的两个「特殊值」。
@@ -472,8 +660,33 @@ export default {
     mounted() {
         this.userId = this.$route.params.id;
         this.load();
+        /*
+         * v3.0.0（R16）：本页也使用和后台其它页面一样的「背景图」样式 ——
+         * 取 userConfig.adminBkImg（账户自定义优先，否则系统「网页设置 → 管理页背景图」）。
+         */
+        this.$nextTick(() => {
+            try { this.initializeBackground('adminBkImg', '.container', false, true); } catch (e) { /* 忽略 */ }
+        });
     },
     methods: {
+        /**
+         * v3.0.0（R16）：背景图格式校验 ——
+         * 允许空串（跟随系统）、JSON 数组、单个 URL；返回错误文案或空串。
+         */
+        validateBkImg(raw) {
+            const text = String(raw || '').trim();
+            if (!text) return '';
+            if (text.startsWith('[')) {
+                try {
+                    const arr = JSON.parse(text);
+                    if (!Array.isArray(arr)) return 'bad';
+                    if (arr.some((x) => typeof x !== 'string')) return 'bad';
+                } catch (e) {
+                    return 'bad';
+                }
+            }
+            return '';
+        },
         goBack() {
             this.$router.push({ name: 'customerConfig' });
         },
@@ -505,6 +718,11 @@ export default {
                     mainChannelId: d.mainChannelId || '',
                     backupChannelId: d.backupChannelId || '',
                     adminNote: d.adminNote || '',
+                    // v3.0.0：对外分享权限（老库 / 老接口没有该字段 → 视为关闭）
+                    shareEnabled: d.shareEnabled === true,
+                    // v3.0.0（R16）：账户自定义背景图
+                    uploadBkImg: d.uploadBkImg || '',
+                    adminBkImg: d.adminBkImg || '',
                 };
                 this.avatarSrc = d.avatarUrl || '';
                 // 邮箱验证状态（已验证 → 输入框锁定，显示「已验证」）
@@ -512,6 +730,10 @@ export default {
                 this.detail = { ...d, emailVerified: this.emailVerified };
                 // 渠道下拉：管理员可看任意账户，普通用户只能看自己已授权的渠道
                 await Promise.all([this.loadChannels(), this.loadMailReady()]);
+                // v3.0.0：实例列表（表单用户名就绪后再拉）
+                await this.loadInstances();
+                // v3.0.0：?anchor=instances / #instances → 滚动到「实例管理」并高亮一下
+                this.scrollToAnchor();
             } catch (e) {
                 this.$message.error(e?.response?.data?.message || this.$t('common.failed'));
             } finally {
@@ -527,18 +749,299 @@ export default {
                 this.mailReady = false;
             }
         },
-        /** 只加载「该账户获授权」的渠道（管理员可为任意账户查看） */
+        /** 只加载「该账户获授权」的渠道（管理员可为任意账户查看）
+         *  v3.0.0（R8）：过滤掉「本地文件」渠道 —— 它不参与存储，主 / 备渠道里不应出现 */
         async loadChannels() {
             try {
                 const res = await axios.get('/api/manage/channels/allowed/list', {
                     params: { username: this.form.username },
                     withCredentials: true,
                 });
-                this.channelOptions = res.data?.success ? (res.data.data || []) : [];
+                const list = res.data?.success ? (res.data.data || []) : [];
+                this.channelOptions = list.filter((c) => (c.type || '') !== 'localfiles');
             } catch {
                 this.channelOptions = [];
             }
         },
+        /* ---------------- 实例管理（v3.0.0） ---------------- */
+        /**
+         * 实例接口统一追加 username 参数：管理员在用户编辑页操作「该用户」的实例。
+         * 当前后端实例接口按「当前登录用户」处理，暂不支持 username —— 参数先带上，
+         * 后端支持 ?username= 后自动生效（详见交付说明）。
+         */
+        instanceUrl(path) {
+            const u = String(this.form.username || '').trim();
+            if (!u || this.isSelf) return path;
+            return `${path}${path.includes('?') ? '&' : '?'}username=${encodeURIComponent(u)}`;
+        },
+        /** 实例接口的错误文案（后端 {error} / {message} 兜底） */
+        instanceErr(e, fallback) {
+            return e?.response?.data?.error || e?.response?.data?.message || fallback;
+        },
+        formatInstanceTime(v) {
+            const d = new Date(v);
+            return Number.isNaN(d.getTime()) ? '-' : d.toLocaleString();
+        },
+        /**
+         * v3.0.0：实例创建序号（1-based）。
+         * 优先用 /api/instances 下发的 index，缺失时回落到「按 createdAt 升序」的列表位置。
+         */
+        instanceSeq(row) {
+            const idx = Number(row?.index);
+            if (Number.isFinite(idx) && idx > 0) return idx;
+            const pos = this.orderedInstances.findIndex((i) => i.id === row?.id);
+            return pos >= 0 ? pos + 1 : 0;
+        },
+        /**
+         * v3.0.0：锚点定位 —— 文件管理页「实例管理」按钮以
+         * /customerConfig/edit/:id?anchor=instances（或 #instances）打开本页，
+         * 加载完成后滚动到该区块并短暂高亮。
+         */
+        scrollToAnchor() {
+            const q = this.$route?.query || {};
+            const hash = String(this.$route?.hash || '').replace(/^#/, '');
+            if (q.anchor !== 'instances' && hash !== 'instances') return;
+            this.$nextTick(() => {
+                window.setTimeout(() => {
+                    const el = document.getElementById('instances');
+                    if (!el) return;
+                    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    this.anchorHighlight = true;
+                    window.setTimeout(() => { this.anchorHighlight = false; }, 2000);
+                }, 120);
+            });
+        },
+        /* ---------------- 对外分享（v3.0.0） ---------------- */
+        /** 新标签打开分享记录页（带上当前账户名，管理员进页即有过滤条件） */
+        openShareRecords() {
+            const u = String(this.form.username || '').trim();
+            const url = u ? `/share-records?username=${encodeURIComponent(u)}` : '/share-records';
+            window.open(url, '_blank', 'noopener');
+        },
+        /** 开关即时保存：PUT /api/manage/users/:id（payload 只需 shareEnabled） */
+        async onShareEnabledChange(next) {
+            const val = next === true;
+            this.shareSaving = true;
+            try {
+                const res = await axios.put(
+                    `/api/manage/users/${encodeURIComponent(this.userId)}`,
+                    { shareEnabled: val },
+                    { withCredentials: true },
+                );
+                if (res.data?.success) {
+                    this.detail = { ...this.detail, shareEnabled: val };
+                    this.$message.success(val ? this.$t('userEdit.shareEnabledOn') : this.$t('userEdit.shareEnabledOff'));
+                } else {
+                    this.form.shareEnabled = !val;
+                    this.$message.error(res.data?.message || this.$t('common.failed'));
+                }
+            } catch (e) {
+                this.form.shareEnabled = !val;
+                this.$message.error(e?.response?.data?.message || this.$t('common.failed'));
+            } finally {
+                this.shareSaving = false;
+            }
+        },
+        async loadInstances() {
+            try {
+                const res = await axios.get(this.instanceUrl('/api/instances'), { withCredentials: true });
+                this.instances = Array.isArray(res.data) ? res.data : [];
+            } catch {
+                this.instances = [];
+            }
+        },
+        openCreateInstance() {
+            this.newInstance = { name: '', note: '' };
+            this.showCreateInstance = true;
+        },
+        async createInstance() {
+            const name = String(this.newInstance.name || '').trim();
+            if (!name) {
+                this.$message.warning(this.$t('userEdit.instanceNameRequired'));
+                return;
+            }
+            // 客户端先查重（同一创建者下同名后端也会拒绝）
+            if (this.instances.some((i) => i.name === name)) {
+                this.$message.warning(this.$t('userEdit.instanceNameDup'));
+                return;
+            }
+            this.instanceBusy = true;
+            try {
+                const res = await axios.post(
+                    this.instanceUrl('/api/instances'),
+                    { name, note: String(this.newInstance.note || '') },
+                    { withCredentials: true },
+                );
+                const item = res.data && res.data.id ? res.data : null;
+                if (item && !this.instances.some((i) => i.id === item.id)) this.instances.push(item);
+                this.showCreateInstance = false;
+                this.$message.success(this.$t('userEdit.instanceCreated'));
+            } catch (e) {
+                this.$message.error(this.instanceErr(e, this.$t('common.failed')));
+            } finally {
+                this.instanceBusy = false;
+            }
+        },
+        openJoinInstance() {
+            this.joinCode = '';
+            // v3.0.0：双验证 —— 用户名默认填当前登录账户（可改，后端会校验必须与登录账户一致）
+            this.joinUsername = this.$store?.getters?.sessionUser || '';
+            this.showJoinInstance = true;
+        },
+        async joinInstance() {
+            const username = String(this.joinUsername || '').trim();
+            const code = String(this.joinCode || '').trim();
+            if (!username) {
+                this.$message.warning(this.$t('userEdit.joinUsernameRequired'));
+                return;
+            }
+            if (code.length !== 8) {
+                this.$message.warning(this.$t('userEdit.joinCodeInvalid'));
+                return;
+            }
+            this.instanceBusy = true;
+            try {
+                const res = await axios.post(
+                    this.instanceUrl('/api/instances/join'),
+                    { username, code },
+                    { withCredentials: true },
+                );
+                const item = res.data && res.data.id ? res.data : null;
+                if (item && !this.instances.some((i) => i.id === item.id)) this.instances.push(item);
+                this.showJoinInstance = false;
+                this.$message.success(this.$t('userEdit.instanceJoined', { name: item?.name || '' }));
+            } catch (e) {
+                this.$message.error(this.instanceErr(e, this.$t('common.failed')));
+            } finally {
+                this.instanceBusy = false;
+            }
+        },
+        async openInviteDialog(row) {
+            this.inviteTarget = row;
+            this.inviteCode = '';
+            this.showInviteDialog = true;
+            /*
+             * v3.0.0（第三轮）：打开只「读取」已有邀请码，不再顺手生成一枚 ——
+             * 生成是明确动作，得用户点「生成邀请码」。
+             */
+            await this.loadInvite();
+        },
+        /** 读取当前邀请码（不生成）；失败不打扰用户，按「尚未生成」展示 */
+        async loadInvite() {
+            if (!this.inviteTarget) return;
+            this.instanceBusy = true;
+            try {
+                const res = await axios.get(
+                    this.instanceUrl(`/api/instances/${encodeURIComponent(this.inviteTarget.id)}/invite`),
+                    { withCredentials: true },
+                );
+                this.inviteCode = res.data?.inviteCode || '';
+            } catch (e) {
+                this.inviteCode = '';
+            } finally {
+                this.instanceBusy = false;
+            }
+        },
+        /** 生成 / 重新生成 8 位邀请码（生成后长期有效，除非关闭或再次重新生成） */
+        async regenerateInvite(silent = false) {
+            if (!this.inviteTarget) return;
+            this.instanceBusy = true;
+            try {
+                const res = await axios.post(
+                    this.instanceUrl(`/api/instances/${encodeURIComponent(this.inviteTarget.id)}/invite`),
+                    {},
+                    { withCredentials: true },
+                );
+                this.inviteCode = res.data?.inviteCode || '';
+                if (!silent) this.$message.success(this.$t('userEdit.inviteRegenOk'));
+            } catch (e) {
+                this.$message.error(this.instanceErr(e, this.$t('common.failed')));
+            } finally {
+                this.instanceBusy = false;
+            }
+        },
+        async copyInviteCode() {
+            if (!this.inviteCode) return;
+            const ok = await copyText(this.inviteCode);
+            if (ok) this.$message.success(this.$t('userEdit.inviteCopied'));
+            else this.$message.warning(this.inviteCode);
+        },
+        /** 关闭邀请：邀请码置空，之后持旧码无法再加入 */
+        async closeInvite() {
+            if (!this.inviteTarget) return;
+            this.instanceBusy = true;
+            try {
+                await axios.delete(
+                    this.instanceUrl(`/api/instances/${encodeURIComponent(this.inviteTarget.id)}/invite`),
+                    { withCredentials: true },
+                );
+                this.inviteCode = '';
+                this.$message.success(this.$t('userEdit.inviteClosedOk'));
+            } catch (e) {
+                this.$message.error(this.instanceErr(e, this.$t('common.failed')));
+            } finally {
+                this.instanceBusy = false;
+            }
+        },
+        openRenameInstance(row) {
+            this.$prompt(this.$t('userEdit.renameHint'), this.$t('userEdit.instanceRename'), {
+                inputValue: row.name,
+                inputPattern: /\S+/,
+                inputErrorMessage: this.$t('userEdit.instanceNameRequired'),
+                confirmButtonText: this.$t('common.confirm'),
+                cancelButtonText: this.$t('common.cancel'),
+            })
+                .then(async ({ value }) => {
+                    const name = String(value || '').trim();
+                    if (!name || name === row.name) return;
+                    this.instanceBusy = true;
+                    try {
+                        const res = await axios.patch(
+                            this.instanceUrl(`/api/instances/${encodeURIComponent(row.id)}`),
+                            { name },
+                            { withCredentials: true },
+                        );
+                        const idx = this.instances.findIndex((i) => i.id === row.id);
+                        if (idx > -1 && res.data && res.data.id) this.instances.splice(idx, 1, res.data);
+                        else if (idx > -1) this.instances[idx].name = name;
+                        this.$message.success(this.$t('common.success'));
+                    } catch (e) {
+                        this.$message.error(this.instanceErr(e, this.$t('common.failed')));
+                    } finally {
+                        this.instanceBusy = false;
+                    }
+                })
+                .catch(() => {});
+        },
+        /** 删除实例：实例下仍有文件（含回收站）时后端拒绝，错误文案原样展示 */
+        deleteInstance(row) {
+            this.$confirm(
+                this.$t('userEdit.instanceDeleteConfirm', { name: row.name }),
+                this.$t('common.warning'),
+                {
+                    confirmButtonText: this.$t('common.confirm'),
+                    cancelButtonText: this.$t('common.cancel'),
+                    type: 'warning',
+                },
+            )
+                .then(async () => {
+                    this.instanceBusy = true;
+                    try {
+                        await axios.delete(
+                            this.instanceUrl(`/api/instances/${encodeURIComponent(row.id)}`),
+                            { withCredentials: true },
+                        );
+                        this.instances = this.instances.filter((i) => i.id !== row.id);
+                        this.$message.success(this.$t('userEdit.instanceDeleted'));
+                    } catch (e) {
+                        this.$message.error(this.instanceErr(e, this.$t('common.failed')));
+                    } finally {
+                        this.instanceBusy = false;
+                    }
+                })
+                .catch(() => {});
+        },
+
         /* ---------------- 邮箱验证（v2.3.0） ---------------- */
 
         /** 打开验证弹窗：先发码（发到当前填写的地址） */
@@ -589,9 +1092,10 @@ export default {
             }, 1000);
         },
 
-        /** 提交验证码：通过后后端会写入邮箱并置 emailVerified */
+        /** 提交验证码：通过后后端会写入邮箱并置 emailVerified
+         *  v3.0.0（R8）：校验放开为 6 位字母数字（此前只认数字，字母验证码会被前端拦下） */
         async verifyEmail() {
-            if (!/^\d{6}$/.test(String(this.emailCode || ''))) {
+            if (!/^[0-9A-Za-z]{6}$/.test(String(this.emailCode || ''))) {
                 this.$message.warning(this.$t('userEdit.emailCodeInvalid'));
                 return;
             }
@@ -665,9 +1169,27 @@ export default {
             }
         },
 
+        /**
+         * v3.0.0（R12）：改密后强制注销 —— 清服务端 Cookie + 清前端会话 + 回登录页。
+         * 用 replace 而不是 push，避免用户按返回键又回到已失效的编辑页。
+         */
+        async forceRelogin() {
+            this.$message.success(this.$t('userEdit.pwdChangedRelogin'));
+            try {
+                await axios.post('/api/auth/logout', { authType: 'admin' }, { withCredentials: true });
+            } catch {
+                /* 登出接口失败也要继续清本地会话 */
+            }
+            try {
+                this.$store.commit('clearSession');
+            } catch {
+                /* 老版本 store 没有 clearSession 时忽略 */
+            }
+            this.$router.replace('/login').catch(() => { window.location.href = '/login'; });
+        },
+
         async save() {
-            if (!String(this.form.username || '').trim()) {
-                this.$message.warning(this.$t('userManage.usernameRequired'));
+            if (!String(this.form.username || '').trim()) {                this.$message.warning(this.$t('userManage.usernameRequired'));
                 return;
             }
             if (this.form.password && this.form.password.length < 4) {
@@ -682,13 +1204,8 @@ export default {
                         return;
                     }
                 } else {
-                    const v =
-                        this.pwdVerifyMethod === 'old'
-                            ? this.pwdOldPassword
-                            : this.pwdVerifyMethod === 'email'
-                                ? this.pwdEmailCode
-                                : this.pwdTotpCode;
-                    if (!String(v || '').trim()) {
+                    // v3.0.0（R12）：合并输入框 —— 原密码 / 邮箱验证码 / 2FA 动态码都填这一格
+                    if (!String(this.pwdVerifyCode || '').trim()) {
                         this.$message.warning(this.$t('userEdit.pwdVerifyRequired'));
                         return;
                     }
@@ -707,12 +1224,9 @@ export default {
                     payload.password = this.form.password;
                     if (this.isAdminRole && !this.isSelf) {
                         payload.adminPassword = this.adminPassword;
-                    } else if (this.pwdVerifyMethod === 'old') {
-                        payload.oldPassword = this.pwdOldPassword;
-                    } else if (this.pwdVerifyMethod === 'email') {
-                        payload.emailCode = this.pwdEmailCode;
                     } else {
-                        payload.totpCode = this.pwdTotpCode;
+                        // v3.0.0（R12）：统一凭据字段，后端按内容自动识别类型
+                        payload.verifyCode = this.pwdVerifyCode;
                     }
                 }
                 /*
@@ -721,6 +1235,20 @@ export default {
                  */
                 payload.mainChannelId = this.form.mainChannelId;
                 payload.backupChannelId = this.form.backupChannelId;
+                // v3.0.0：对外分享权限（管理员与本人都在保存时带上，避免后端按缺省 false 覆盖）
+                payload.shareEnabled = this.form.shareEnabled === true;
+                /*
+                 * v3.0.0（R16）：账户自定义背景图（本人与管理员都可保存）。
+                 * 前端先做一次格式校验，避免把半截 JSON 提交上去。
+                 */
+                const bkErr = this.validateBkImg(this.form.uploadBkImg) || this.validateBkImg(this.form.adminBkImg);
+                if (bkErr) {
+                    this.saving = false;
+                    this.$message.warning(this.$t('userEdit.bkImgInvalid'));
+                    return;
+                }
+                payload.uploadBkImg = String(this.form.uploadBkImg || '').trim();
+                payload.adminBkImg = String(this.form.adminBkImg || '').trim();
                 if (this.isAdminRole) {
                     Object.assign(payload, {
                         enabled: this.form.enabled,
@@ -735,14 +1263,37 @@ export default {
                 }
                 const res = await axios.put(`/api/manage/users/${encodeURIComponent(this.userId)}`, payload, { withCredentials: true });
                 if (res.data?.success) {
-                    this.$message.success(this.$t('common.success'));
+                    const passwordChanged = !!payload.password;
                     this.detail = { ...this.detail, ...this.form };
                     this.form.password = '';
                     // v2.6.0：清掉本次的身份验证凭据
-                    this.pwdOldPassword = '';
-                    this.pwdEmailCode = '';
-                    this.pwdTotpCode = '';
+                    this.pwdVerifyCode = '';
                     this.adminPassword = '';
+                    /*
+                     * v3.0.0（R16）：背景图改完立即生效 ——
+                     * 重拉 userConfig（后端已把账户背景图覆盖进 uploadBkImg/adminBkImg），
+                     * 再按新配置重绘本页背景。
+                     */
+                    if (this.isSelf) {
+                        this.$store.dispatch('fetchUserConfig')
+                            .then(() => {
+                                try { this.initializeBackground('adminBkImg', '.container', false, true); } catch (e) { /* 忽略 */ }
+                            })
+                            .catch(() => {});
+                    }
+                    /*
+                     * v3.0.0（R12）：改密后强制注销 —— 旧会话仍然携带旧凭据，
+                     * 继续留在后台属于安全隐患。本人改密 → 立即登出并回登录页；
+                     * 管理员改「他人」密码 → 提示该账户需重新登录（其浏览器会话不受本页控制）。
+                     */
+                    if (passwordChanged && this.isSelf) {
+                        await this.forceRelogin();
+                        return;
+                    }
+                    this.$message.success(this.$t('common.success'));
+                    if (passwordChanged) {
+                        this.$message.info(this.$t('userEdit.pwdChangedRelogin'));
+                    }
                     // 改了自己的用户名 → 会话里的用户名已失效，提示重新登录
                     if (this.isSelf && payload.username !== this.currentUser) {
                         this.$message.info(this.$t('userEdit.reloginHint'));
@@ -1026,6 +1577,31 @@ export default {
 .card-title { font-weight: 600; font-size: 14px; }
 .card-tag { margin-left: 8px; }
 .avatar-row { display: flex; align-items: center; gap: 16px; margin-bottom: 18px; }
+/*
+ * v3.0.0（R16）：账户自定义背景图 —— 头像下方一行两个输入框，
+ * 宽屏并排，窄屏自动堆叠；输入框用等宽字体方便核对 JSON 格式。
+ */
+.bkimg-row {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0 14px;
+}
+.bkimg-item {
+    min-width: 0;
+}
+.bkimg-input :deep(.el-textarea__inner) {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12px;
+    line-height: 1.5;
+}
+.bkimg-hint {
+    margin: -4px 0 14px;
+}
+@media (max-width: 768px) {
+    .bkimg-row {
+        grid-template-columns: minmax(0, 1fr);
+    }
+}
 .avatar-preview {
     width: 84px;
     height: 84px;
@@ -1094,7 +1670,9 @@ export default {
 .forgot-title { font-size: 13px; font-weight: 600; }
 .recovery-input { width: 170px; }
 /* v2.6.0：修改密码身份验证 */
-.pwd-verify-methods { margin-bottom: 8px; display: flex; flex-wrap: wrap; }
+/* v3.0.0（R12）：三个输入框合并成一行（输入框 + 发送验证码按钮） */
+.pwd-verify-row { display: flex; align-items: center; gap: 8px; width: 100%; max-width: 480px; }
+.pwd-verify-row .pwd-verify-input { flex: 1 1 auto; max-width: none; }
 .pwd-verify-input { max-width: 360px; }
 .recovery-alert { margin-bottom: 14px; }
 .recovery-grid {
@@ -1114,17 +1692,75 @@ export default {
     text-align: center;
 }
 .resend-row { margin-top: 10px; }
+/* v3.0.0：实例管理模块 */
+.instance-actions { display: flex; gap: 10px; margin-bottom: 12px; }
+.instance-table { width: 100%; margin-bottom: 8px; }
+/*
+ * v3.0.0：实例列表行高调高（原先 el-table size="small" 行高偏挤，序号 + 名称看不清楚）。
+ * 单元格 padding 提到 12px 14px，行最小高度 52px。
+ */
+.instance-table :deep(.el-table__row) { height: 52px; }
+.instance-table :deep(.el-table__row > td.el-table__cell) { padding: 12px 14px; }
+.instance-table :deep(.el-table__header th.el-table__cell) { padding: 10px 14px; }
+.instance-table :deep(.cell) { line-height: 22px; }
+/* 「1 · 工作库」整行展示：序号 + 名称在同一行，超长省略 */
+.instance-label {
+    display: inline-block;
+    max-width: 100%;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    vertical-align: middle;
+}
+/* v3.0.0：锚点定位到本区块时的高亮（2 秒后自动褪去） */
+.edit-card.is-anchor-highlight {
+    box-shadow: 0 0 0 2px var(--el-color-primary), var(--el-box-shadow-light);
+    transition: box-shadow 0.3s ease;
+}
+/* v3.0.0：对外分享模块 */
+.share-row { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; margin-bottom: 6px; }
+.share-btn-icon { margin-right: 6px; }
+/* v3.0.0（R5）：加入实例的邀请码输入框改为与用户名输入框同宽（原 max-width:240px 已移除） */
+.invite-box { display: flex; flex-direction: column; gap: 8px; }
+.invite-code {
+    padding: 6px 12px;
+    border-radius: 8px;
+    background: var(--el-fill-color-light, #f5f7fa);
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 18px;
+    letter-spacing: 3px;
+    user-select: all;
+}
+/*
+ * v3.0.0（R14）：保存按钮改为「悬浮在右下角」——
+ * 原来是一条 sticky 底栏通栏铺开，滚动到页面底部才看到；
+ * 现在固定悬浮，任何位置都能直接保存（与后台系统设置的悬浮保存按钮观感一致）。
+ */
 .save-bar {
-    position: sticky;
-    bottom: 0;
+    position: fixed;
+    right: 20px;
+    bottom: calc(20px + env(safe-area-inset-bottom, 0px));
+    z-index: 30;
     display: flex;
-    justify-content: flex-end;
+    align-items: center;
     gap: 10px;
-    padding: 12px 0;
+    padding: 8px 10px;
+    border-radius: 999px;
     background: var(--el-bg-color, #fff);
+    border: 1px solid var(--el-border-color-lighter);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
+}
+.save-bar .el-button {
+    margin-left: 0;
 }
 @media (max-width: 768px) {
     .avatar-row { flex-direction: column; align-items: flex-start; }
     .channel-form { flex-direction: column; }
+    /* v3.0.0：实例表格移动端不变形 —— 收窄内边距、序号与名称保持单行省略，横向溢出交给表格自滚动 */
+    .instance-table :deep(.el-table__row) { height: 48px; }
+    .instance-table :deep(.el-table__row > td.el-table__cell) { padding: 10px 8px; }
+    .instance-table :deep(.el-table__header th.el-table__cell) { padding: 8px; }
+    .instance-table :deep(.cell) { font-size: 12px; }
+    .share-row { align-items: flex-start; flex-direction: column; gap: 10px; }
 }
 </style>

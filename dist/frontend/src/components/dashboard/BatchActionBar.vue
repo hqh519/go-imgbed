@@ -61,7 +61,13 @@ export default {
         { command: 'download', label: 'dashboard.download', icon: 'download', className: 'download' },
         { command: 'backupSelected', label: 'dashboard.backupSelected', icon: 'cloud-upload-alt', className: 'backup' },
         { command: 'move', label: 'dashboard.move', icon: 'file-export', className: 'move' },
+        // v3.0.0：标签管理前新增「编辑原名」，后新增「限时 / 重定向」
+        { command: 'originalName', label: 'fileManager.editOriginalName', icon: 'edit', className: 'rename' },
         { command: 'tagManagement', label: 'dashboard.tagManagement', icon: 'tags', className: 'tag' },
+        // v3.0.0：限时 → 加密 → 重定向（三者共用同一个处理页的不同页签）
+        { command: 'expiry', label: 'fileManager.batchExpiry', icon: 'clock', className: 'expiry' },
+        { command: 'password', label: 'fileManager.batchPassword', icon: 'key', className: 'password' },
+        { command: 'redirect', label: 'fileManager.batchRedirect', icon: 'share-alt', className: 'redirect' },
         { command: 'ban', label: 'dashboard.addToBlacklist', icon: 'ban', className: 'ban' },
         { command: 'white', label: 'dashboard.addToWhitelist', icon: 'shield-alt', className: 'white' },
         { command: 'delete', label: 'dashboard.delete', icon: 'trash-alt', className: 'danger' }
@@ -179,6 +185,10 @@ export default {
 .batch-floating-btn.backup,
 .batch-floating-btn.move,
 .batch-floating-btn.tag,
+.batch-floating-btn.rename,
+.batch-floating-btn.expiry,
+.batch-floating-btn.password,
+.batch-floating-btn.redirect,
 .batch-floating-btn.ban,
 .batch-floating-btn.white {
   color: var(--admin-batch-action-color);

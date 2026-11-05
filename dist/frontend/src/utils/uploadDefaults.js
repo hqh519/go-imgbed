@@ -12,6 +12,10 @@ export const UPLOAD_DEFAULT_CONFIG_IDS = [
   'defaultUploadFolder', // 默认上传目录
   'defaultUploadNameType', // 默认命名方式
   'defaultUrlForm', // 默认外链格式
+  'defaultUploadConcurrency', // 前端并发数（v3.0.0 R11；留空 3）
+  'mediaResourceGuardEnabled', // 影音压缩/转码控制（v3.0.0：资源闸门总开关，仅视频/音频）
+  'mediaResourceLoadLimit', // load1负载值（v3.0.0：超过 倍率×核数 放弃压缩/转码；0=不检测）
+  'mediaResourceRamLimit', // RAM安全值（v3.0.0：可用内存低于该值(MB) 放弃压缩/转码；0=不检测）
   'defaultAutoRetry', // 失败自动重试（v2.8.8 迁入；v2.8.9 改名并新增重试次数）
   'defaultRetryTimes', // 失败重试次数（v2.8.9）
   'defaultAutoSwitch', // 自动切换（v2.8.9：与「失败自动重试」拆开，本项只管渠道切换）
@@ -19,6 +23,7 @@ export const UPLOAD_DEFAULT_CONFIG_IDS = [
   'videoTranscodeMaxSeconds', // 视频转码上限时长（v2.8.9）
   'videoTranscodeConcurrency', // 转码同时处理任务数（v2.8.9）
   'defaultConvertToWebp', // WebP 转换（总开关）
+  'webpMode', // WebP 转换模式（无损/有损；v3.0.0 迁入，随「WebP转换」开关联动显示）
   'defaultCustomerCompress', // 文件压缩（总开关）
   'defaultCompressBar', // 最小压缩阈值
   'defaultCompressQuality', // 默认压缩期望

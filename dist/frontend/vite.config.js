@@ -126,5 +126,22 @@ export default defineConfig({
     // 由 cleanOutDirPlugin 负责清理，这里关闭 Vite 自带的整目录删除
     emptyOutDir: false,
     chunkSizeWarningLimit: 2000,
+    /*
+     * v3.0.0（R19）：把「每个页面都要用」的三大件拆成独立 vendor chunk。
+     * 目的：业务代码改动时（文件名哈希变化）用户不必重新下载 element-plus / 图标库，
+     * 首屏也只多一个并行请求，不会把按需加载的重型库（pdf / xlsx 等）提前打进首屏 ——
+     * 因此这里只覆盖确定「入口必用」的三个包，其余保持 Vite 默认分包。
+     */
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return;
+          if (/node_modules[/\\](element-plus|@element-plus)[/\\]/.test(id)) return 'vendor-element';
+          if (/node_modules[/\\]@fortawesome[/\\]/.test(id)) return 'vendor-icons';
+          if (/node_modules[/\\](vue|vue-router|vuex|vue-i18n|@vue)[/\\]/.test(id)) return 'vendor-vue';
+          return;
+        },
+      },
+    },
   },
 });

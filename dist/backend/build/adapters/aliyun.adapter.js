@@ -6,6 +6,7 @@ exports.ossSignature = ossSignature;
 const node_crypto_1 = require("node:crypto");
 const adapter_interface_1 = require("./adapter.interface");
 const endpoint_1 = require("../common/endpoint");
+const asset_url_1 = require("../common/asset-url");
 function buildOssCanonicalString(input) {
     const lower = {};
     for (const [k, v] of Object.entries(input.headers || {})) {
@@ -57,8 +58,10 @@ class AliyunOssAdapter {
     bucket;
     endpoint;
     pathStyle;
+    channel;
     constructor(channel) {
         const cfg = channel.config;
+        this.channel = channel;
         const ak = (cfg.accessKeyId || '').trim();
         const sk = (cfg.accessKeySecret || cfg.secretAccessKey || '').trim();
         const bucket = (cfg.bucket || '').trim();
@@ -108,7 +111,7 @@ class AliyunOssAdapter {
         const fullKey = key;
         try {
             await this.request('PUT', fullKey, { body: file.buffer, mime: file.mime });
-            return { remoteKey: fullKey };
+            return { remoteKey: fullKey, objectPath: this.objectPathFor(fullKey) };
         }
         catch (err) {
             if (err instanceof adapter_interface_1.AdapterError)
@@ -126,10 +129,41 @@ class AliyunOssAdapter {
             throw new adapter_interface_1.AdapterError(`删除失败: ${err.message}`, channel.type);
         }
     }
+    baseUrlOf(preferInternal) {
+        const cfg = this.channel?.config || {};
+        const raw = preferInternal && cfg.internalDomain ? cfg.internalDomain : cfg.publicDomain || '';
+        const domain = (0, endpoint_1.ensureProtocol)(raw || '').replace(/\/+$/, '');
+        if (domain)
+            return domain;
+        const endpoint = this.endpoint.replace(/\/+$/, '');
+        if (!endpoint)
+            return '';
+        if (this.pathStyle)
+            return endpoint;
+        try {
+            const u = new URL(endpoint);
+            return `${u.protocol}//${this.bucket}.${u.host}${u.pathname.replace(/\/+$/, '')}`;
+        }
+        catch {
+            return `${endpoint}/${this.bucket}`;
+        }
+    }
+    objectPathFor(key) {
+        const cfg = this.channel?.config || {};
+        if (String(cfg.publicDomain || cfg.internalDomain || '').trim())
+            return key;
+        return this.pathStyle ? `${this.bucket}/${key}` : key;
+    }
     buildDirectUrl(copy, channel, preferInternal) {
         const cfg = channel.config;
         const key = copy.remoteKey;
         const suffix = cfg.suffix || '';
+        if (copy.objectPath) {
+            const base = this.baseUrlOf(!!preferInternal);
+            if (!base)
+                return null;
+            return (0, asset_url_1.buildAssetUrl)({ base, objectPath: copy.objectPath, urlQuery: copy.urlQuery, suffix });
+        }
         const domain = (0, endpoint_1.ensureProtocol)((preferInternal && cfg.internalDomain) || cfg.publicDomain || '').replace(/\/+$/, '');
         if (domain)
             return withSuffix(`${domain}/${encodeObjectPath(key)}`, suffix);

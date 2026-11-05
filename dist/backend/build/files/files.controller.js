@@ -16,6 +16,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.UserConfigController = exports.ManageController = exports.LinkController = void 0;
+const request_origin_1 = require("../common/request-origin");
 const common_1 = require("@nestjs/common");
 const node_stream_1 = require("node:stream");
 const node_fs_1 = require("node:fs");
@@ -36,7 +37,11 @@ const project_paths_1 = require("../common/project-paths");
 const qqwry_1 = require("../common/qqwry");
 const ip_query_1 = require("../common/ip-query");
 const crypto_service_1 = require("../common/crypto.service");
+const totp_1 = require("../common/totp");
+const channel_domain_1 = require("../common/channel-domain");
 const record_link_1 = require("../common/record-link");
+const folder_meta_service_1 = require("./folder-meta.service");
+const FILE_PW_COOKIE = 'goimgbed_fpw';
 function splitCsv(v) {
     return v ? v.split(',').map((s) => s.trim()).filter(Boolean) : [];
 }
@@ -189,7 +194,12 @@ let LinkController = class LinkController {
         if (req.query.from === 'admin') {
             const session = (0, auth_guard_1.parseSession)(req.cookies?.[auth_guard_1.SESSION_COOKIE]);
             const mine = !!session?.user && session.user === (record.uploader || '');
-            if (!(0, auth_guard_1.isAdminRole)(session?.role) && !mine) {
+            let sharedToMe = false;
+            if (!(0, auth_guard_1.isAdminRole)(session?.role) && !mine && session?.user) {
+                const hit = await (0, folder_meta_service_1.folderSharedWithUser)(record.folder, record.instanceId, session.user);
+                sharedToMe = hit.shared;
+            }
+            if (!(0, auth_guard_1.isAdminRole)(session?.role) && !mine && !sharedToMe) {
                 res.setHeader('Cache-Control', 'private, no-store, max-age=0');
                 res.status(401).send('Admin authentication required');
                 return false;
@@ -218,6 +228,16 @@ let LinkController = class LinkController {
         }
         return true;
     }
+    verifiedPwHashes(req) {
+        try {
+            const raw = req.cookies?.[FILE_PW_COOKIE];
+            const arr = typeof raw === 'string' ? JSON.parse(decodeURIComponent(raw)) : raw;
+            return Array.isArray(arr) ? arr.filter((x) => typeof x === 'string' && /^[0-9a-f]{64}$/.test(x)) : [];
+        }
+        catch {
+            return [];
+        }
+    }
     linkCache = new Map();
     async linkAllowed(uploader) {
         const u = String(uploader || '').trim();
@@ -245,10 +265,31 @@ let LinkController = class LinkController {
             return '';
         if (/^https?:\/\//i.test(t))
             return t;
-        const origin = `${req.protocol}://${req.get('host')}`;
+        const origin = (0, request_origin_1.signOrigin)(req);
         return t.startsWith('/') ? `${origin}${t}` : `${origin}/${t}`;
     }
-    sendLocalFile(req, res, abs, record) {
+    async sendLocalFile(req, res, abs, record) {
+        const thumbRaw = String(req.query.thumb ?? '').trim();
+        if (thumbRaw) {
+            const ext = (0, file_view_1.fileExtOf)(record.originalName || record.name, record.mime || '').toLowerCase().replace(/^\./, '');
+            if (['jpg', 'jpeg', 'png', 'webp', 'avif'].includes(ext)) {
+                try {
+                    const n = Number(thumbRaw);
+                    const w = Number.isFinite(n) && n > 0 ? Math.min(640, Math.max(64, Math.round(n))) : 320;
+                    const out = await (0, sharp_1.default)(abs).resize({ width: w, fit: 'cover' }).toBuffer({ resolveWithObject: true });
+                    const types = {
+                        jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', avif: 'image/avif',
+                    };
+                    res.setHeader('Content-Type', types[out.info.format] || 'application/octet-stream');
+                    res.setHeader('Content-Length', String(out.data.length));
+                    res.setHeader('Cache-Control', 'public, max-age=2592000, immutable');
+                    res.setHeader('X-Imgbed-Transformed', '1');
+                    return res.end(out.data);
+                }
+                catch {
+                }
+            }
+        }
         let stat;
         try {
             stat = (0, node_fs_1.statSync)(abs);
@@ -354,6 +395,12 @@ let LinkController = class LinkController {
         const widthRaw = String(req.query.width ?? '').trim();
         const heightRaw = String(req.query.height ?? '').trim();
         const fitRaw = String(req.query.fit ?? '').trim().toLowerCase();
+        const thumbRaw = String(req.query.thumb ?? '').trim();
+        if (thumbRaw) {
+            const n = Number(thumbRaw);
+            const w = Number.isFinite(n) && n > 0 ? Math.min(640, Math.max(64, Math.round(n))) : 320;
+            return { width: w, fit: 'cover' };
+        }
         if (!widthRaw && !heightRaw && !fitRaw)
             return {};
         const access = (await this.sysConfig.get('security'))?.access || {};
@@ -391,7 +438,7 @@ let LinkController = class LinkController {
         }
         return { width, height, fit };
     }
-    async serveTransformedImage(res, candidates, t) {
+    async serveTransformedImage(res, candidates, t, longCache = false) {
         const timeoutMs = Number(await this.settings.get('proxyTimeoutMs', '15000')) || 15000;
         let lastErr = '';
         for (const cand of candidates) {
@@ -422,7 +469,7 @@ let LinkController = class LinkController {
                 };
                 res.setHeader('Content-Type', types[out.info.format] || 'application/octet-stream');
                 res.setHeader('Content-Length', String(out.data.length));
-                res.setHeader('Cache-Control', 'public, max-age=3600');
+                res.setHeader('Cache-Control', longCache ? 'public, max-age=2592000, immutable' : 'public, max-age=3600');
                 res.setHeader('X-Imgbed-Transformed', '1');
                 return res.end(out.data);
             }
@@ -471,6 +518,34 @@ let LinkController = class LinkController {
         }
         if (!(await this.checkAccess(req, res, record)))
             return;
+        if (!adminPreview) {
+            const needHashes = await (0, folder_meta_service_1.requiredPasswordHashes)(record);
+            if (needHashes.length) {
+                const clientHashes = new Set(this.verifiedPwHashes(req));
+                const pwRaw = String(req.query.pw ?? '');
+                let matchedByParam = false;
+                if (pwRaw) {
+                    const given = (0, folder_meta_service_1.sha256Hex)(pwRaw);
+                    if (needHashes.includes(given)) {
+                        clientHashes.add(given);
+                        matchedByParam = true;
+                    }
+                }
+                if (needHashes.some((h) => clientHashes.has(h))) {
+                    if (matchedByParam) {
+                        res.setHeader('Set-Cookie', `${FILE_PW_COOKIE}=${encodeURIComponent(JSON.stringify(Array.from(clientHashes)))}; Path=/; Max-Age=2592000; HttpOnly; SameSite=Lax`);
+                    }
+                }
+                else {
+                    if ((0, folder_meta_service_1.shouldLogPasswordFailure)(record.name, req.ip || '')) {
+                        app_log_1.appLog.warn('file', `外链密码验证失败：${record.name}`, '来源=文件自身密码', req.ip || '');
+                    }
+                    res.setHeader('Cache-Control', 'no-store');
+                    res.status(401).send('需要密码：请通过 ?pw=<密码> 访问该文件');
+                    return;
+                }
+            }
+        }
         if (req.query.from !== 'admin') {
             void prisma_1.prisma.fileRecord
                 .update({ where: { id: record.id }, data: { views: { increment: 1 } } })
@@ -546,9 +621,17 @@ let LinkController = class LinkController {
                     candidates.push({ url: absoluteRemote, label: ch.name });
                     continue;
                 }
+                if ((0, file_view_1.isRecordFile)(record) && copy.objectPath) {
+                    const q = String(copy.urlQuery || '').trim();
+                    candidates.push({
+                        url: `${(0, request_origin_1.signOrigin)(req)}/${String(copy.objectPath).replace(/^\/+/, '')}${q ? `?${q}` : ''}`,
+                        label: ch.name,
+                    });
+                    continue;
+                }
                 if (candidates.length > 0)
                     continue;
-                const abs = (0, local_adapter_1.localFileAbs)(copy.remoteKey);
+                const abs = await (0, local_adapter_1.localFileAbsOf)(copy.remoteKey);
                 if (!abs)
                     continue;
                 return this.sendLocalFile(req, res, abs, record);
@@ -560,16 +643,22 @@ let LinkController = class LinkController {
                 config: this.channels.decryptConfig(ch.type, ch.config),
                 metas: {},
             };
-            if (!absoluteRemote && copy.remoteKey && (0, record_link_1.hasRecordDomains)(info.config)) {
-                const recordUrl = (0, record_link_1.joinRecordUrl)((0, record_link_1.recordLoadOrigin)(info.config, preferInternal), copy.remoteKey);
+            if (!absoluteRemote && copy.objectPath && (0, file_view_1.isRecordFile)(record)) {
+                const recordDynamic = (0, adapter_factory_1.createAdapter)(info).buildDirectUrl((0, adapter_factory_1.toCopyInfo)(copy), info, preferInternal);
+                if (recordDynamic) {
+                    candidates.push({ url: recordDynamic, label: ch.name });
+                    continue;
+                }
+            }
+            if (!absoluteRemote && copy.remoteKey && (0, file_view_1.isRecordFile)(record) && (0, record_link_1.hasRecordDomains)(info.config, ch.type)) {
+                const recordUrl = (0, record_link_1.joinRecordUrl)((0, record_link_1.recordLoadOrigin)(info.config, preferInternal, ch.type), (0, channel_domain_1.ensureBucketInKey)(ch.type, info.config, copy.remoteKey));
                 if (recordUrl) {
                     candidates.push({ url: recordUrl, label: ch.name });
                     continue;
                 }
             }
-            const url = absoluteRemote && ch.type !== 'custom'
-                ? absoluteRemote
-                : (0, adapter_factory_1.createAdapter)(info).buildDirectUrl((0, adapter_factory_1.toCopyInfo)(copy), info, preferInternal);
+            const dynamicUrl = (0, adapter_factory_1.createAdapter)(info).buildDirectUrl((0, adapter_factory_1.toCopyInfo)(copy), info, preferInternal);
+            const url = dynamicUrl || (absoluteRemote && ch.type !== 'custom' ? absoluteRemote : '');
             if (url)
                 candidates.push({ url, label: ch.name });
         }
@@ -580,15 +669,333 @@ let LinkController = class LinkController {
         const t = await this.resolveImageTransform(req);
         if (t.error)
             return res.status(400).send(t.error);
-        const imgExt = (0, file_view_1.fileExtOf)(record.name).toLowerCase().replace(/^\./, '');
+        const imgExt = (0, file_view_1.fileExtOf)(record.originalName || record.name, record.mime || '').toLowerCase().replace(/^\./, '');
         const scalable = ['jpg', 'jpeg', 'png', 'webp', 'avif'].includes(imgExt);
-        if ((t.width || t.height) && scalable && preferInternal) {
-            return this.serveTransformedImage(res, candidates, t);
+        const wantThumb = String(req.query.thumb ?? '').trim() !== '';
+        if ((t.width || t.height) && scalable && (preferInternal || wantThumb)) {
+            return this.serveTransformedImage(res, candidates, t, wantThumb);
         }
         if (preferInternal)
             return this.proxyStream(req, res, candidates);
         res.setHeader('Cache-Control', 'no-cache, max-age=0');
         return res.redirect(302, candidates[0].url);
+    }
+    sessionUser(req) {
+        return (0, auth_guard_1.currentSession)(req)?.user || '';
+    }
+    sessionAdmin(req) {
+        return (0, auth_guard_1.isAdminRole)((0, auth_guard_1.currentSession)(req)?.role);
+    }
+    async getFolderMeta(req, q) {
+        const path = (0, folder_meta_service_1.normalizeFolderPath)(q.path);
+        if (!path)
+            return { success: false, message: '缺少 path' };
+        const row = await (0, folder_meta_service_1.findFolderMeta)(path, String(q.instanceId ?? ''));
+        if (!row)
+            return { exists: false };
+        const me = this.sessionUser(req);
+        const admin = this.sessionAdmin(req);
+        const shared = (0, folder_meta_service_1.parseSharedUsers)(row.sharedUsers).includes(me);
+        if (!admin && row.owner !== me && !shared) {
+            return { exists: false, forbidden: true };
+        }
+        return { exists: true, meta: (0, folder_meta_service_1.serializeFolderMeta)(row, { hideNote: !admin && row.owner !== me }) };
+    }
+    async saveFolderMeta(req, body) {
+        const path = (0, folder_meta_service_1.normalizeFolderPath)(body?.path);
+        if (!path)
+            return { success: false, message: '缺少 path' };
+        const me = this.sessionUser(req);
+        if (!me)
+            return { success: false, message: '未登录' };
+        const instanceId = String(body?.instanceId ?? '');
+        let row = await (0, folder_meta_service_1.findFolderMeta)(path, instanceId, me);
+        const metasObj = row ? (0, file_view_1.safeParse)(row.metas) : {};
+        if (body?.name !== undefined)
+            metasObj.displayName = String(body.name || '').slice(0, 200);
+        const metasJson = JSON.stringify(metasObj);
+        let passwordHash = row?.passwordHash || '';
+        if (body?.password !== undefined) {
+            passwordHash = String(body.password || '') ? (0, folder_meta_service_1.sha256Hex)(String(body.password)) : '';
+        }
+        let sharedUsers = row?.sharedUsers || '[]';
+        if (body?.sharedUsers !== undefined) {
+            const list = Array.isArray(body.sharedUsers)
+                ? body.sharedUsers
+                : String(body.sharedUsers).split(',');
+            sharedUsers = JSON.stringify(Array.from(new Set(list.map((s) => String(s || '').trim()).filter(Boolean))));
+        }
+        const sharedPerm = body?.sharedPerm !== undefined ? (0, folder_meta_service_1.normalizeSharedPerm)(body.sharedPerm) : (0, folder_meta_service_1.normalizeSharedPerm)(row?.sharedPerm);
+        const gallery = body?.gallery === undefined ? (row?.gallery ?? false) : body.gallery === true || body.gallery === 'true';
+        if (row) {
+            row = await prisma_1.prisma.folderMeta.update({
+                where: { id: row.id },
+                data: {
+                    passwordHash,
+                    note: body?.note !== undefined ? String(body.note || '').slice(0, 4000) : row.note,
+                    sharedUsers,
+                    sharedPerm,
+                    metas: metasJson,
+                    gallery,
+                },
+            });
+        }
+        else {
+            row = await prisma_1.prisma.folderMeta.create({
+                data: {
+                    owner: me,
+                    path,
+                    instanceId,
+                    passwordHash,
+                    note: String(body?.note || '').slice(0, 4000),
+                    sharedUsers,
+                    sharedPerm,
+                    metas: metasJson,
+                    gallery,
+                },
+            });
+        }
+        let galleryDirs;
+        if (body?.gallery !== undefined || gallery) {
+            try {
+                galleryDirs = await (0, folder_meta_service_1.setGalleryPath)(this.sysConfig, path, gallery);
+            }
+            catch (err) {
+                app_log_1.appLog.warn('file', `访客图库白名单更新失败：${path}`, err.message);
+            }
+        }
+        app_log_1.appLog.info('file', `目录属性已保存：${path}`, `实例=${instanceId || '默认'} ｜ 加密=${!!passwordHash} ｜ 共享=${(0, folder_meta_service_1.parseSharedUsers)(sharedUsers).length}人(${sharedPerm}) ｜ 访客图库=${gallery}`);
+        return { success: true, meta: (0, folder_meta_service_1.serializeFolderMeta)(row), galleryDirs };
+    }
+    async deleteFolderMeta(req, q) {
+        const path = (0, folder_meta_service_1.normalizeFolderPath)(q.path);
+        if (!path)
+            return { success: false, message: '缺少 path' };
+        const row = await (0, folder_meta_service_1.findFolderMeta)(path, String(q.instanceId ?? ''));
+        if (!row)
+            return { success: false, message: '目录属性不存在' };
+        const me = this.sessionUser(req);
+        if (!this.sessionAdmin(req) && row.owner !== me) {
+            return { success: false, message: '只有目录归属者或管理员可以删除目录属性' };
+        }
+        if (row.gallery) {
+            try {
+                await (0, folder_meta_service_1.setGalleryPath)(this.sysConfig, row.path, false);
+            }
+            catch {
+            }
+        }
+        await prisma_1.prisma.folderMeta.delete({ where: { id: row.id } });
+        app_log_1.appLog.info('file', `目录属性已删除：${path}`, `owner=${row.owner}`);
+        return { success: true };
+    }
+    async sharedFolders(req, q) {
+        const list = await (0, folder_meta_service_1.listSharedFoldersFor)(this.sessionUser(req), String(q.instanceId ?? ''));
+        return { success: true, data: list };
+    }
+    async tagsManage(req, q) {
+        const instanceId = String(q.instanceId ?? '');
+        const tags = await prisma_1.prisma.tag.findMany({ where: { instanceId }, orderBy: { createdAt: 'asc' } });
+        const links = await prisma_1.prisma.fileTag.findMany({
+            where: { tagId: { in: tags.map((t) => t.id) } },
+            select: { tagId: true, file: { select: { status: true } } },
+        });
+        const counts = new Map();
+        for (const l of links) {
+            if ((l.file?.status || 'active') === 'active')
+                counts.set(l.tagId, (counts.get(l.tagId) || 0) + 1);
+        }
+        const items = tags.map((t) => ({
+            id: t.id,
+            name: t.name,
+            count: counts.get(t.id) || 0,
+            encrypted: !!(0, file_view_1.safeParse)(t.metas).passwordHash,
+            note: String((0, file_view_1.safeParse)(t.metas).note || ''),
+            createdAt: t.createdAt,
+        }));
+        const order = String(q.order || 'desc').toLowerCase() === 'asc' ? 1 : -1;
+        const sort = String(q.sort || 'createdAt');
+        items.sort((a, b) => {
+            if (sort === 'name')
+                return a.name.localeCompare(b.name) * order;
+            if (sort === 'count')
+                return (a.count - b.count) * order;
+            return (new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()) * order;
+        });
+        return { success: true, data: items };
+    }
+    async tagUpdate(req, id, body) {
+        const tag = await prisma_1.prisma.tag.findUnique({ where: { id } });
+        if (!tag)
+            return { success: false, message: '标签不存在' };
+        const data = {};
+        if (body?.name !== undefined) {
+            const name = String(body.name || '').trim();
+            if (!name)
+                return { success: false, message: '标签名不能为空' };
+            if (name !== tag.name) {
+                const dup = await prisma_1.prisma.tag.findFirst({ where: { name, instanceId: tag.instanceId, NOT: { id } } });
+                if (dup)
+                    return { success: false, message: `同实例下已存在标签「${name}」` };
+                data.name = name;
+            }
+        }
+        if (body?.note !== undefined) {
+            const metas = (0, file_view_1.safeParse)(data.metas ? data.metas : tag.metas);
+            const note = String(body.note || '').slice(0, 2000);
+            if (note)
+                metas.note = note;
+            else
+                delete metas.note;
+            data.metas = JSON.stringify(metas);
+        }
+        if (body?.password !== undefined) {
+            const metas = (0, file_view_1.safeParse)(data.metas ? data.metas : tag.metas);
+            if (String(body.password || ''))
+                metas.passwordHash = (0, folder_meta_service_1.sha256Hex)(String(body.password));
+            else
+                delete metas.passwordHash;
+            data.metas = JSON.stringify(metas);
+        }
+        const updated = await prisma_1.prisma.tag.update({ where: { id }, data });
+        app_log_1.appLog.info('file', `标签已更新：${tag.name} → ${updated.name}`, `加密=${!!(0, file_view_1.safeParse)(updated.metas).passwordHash}`);
+        return {
+            success: true,
+            data: {
+                id: updated.id,
+                name: updated.name,
+                encrypted: !!(0, file_view_1.safeParse)(updated.metas).passwordHash,
+                note: String((0, file_view_1.safeParse)(updated.metas).note || ''),
+            },
+        };
+    }
+    async tagDelete(req, id) {
+        const tag = await prisma_1.prisma.tag.findUnique({ where: { id } });
+        if (!tag)
+            return { success: false, message: '标签不存在' };
+        await prisma_1.prisma.tag.delete({ where: { id } });
+        app_log_1.appLog.info('file', `标签已删除：${tag.name}`, `实例=${tag.instanceId || '默认'}`);
+        return { success: true };
+    }
+    async tagsMerge(req, body) {
+        const sourceIds = Array.isArray(body?.sourceIds) ? body.sourceIds.map(String).filter(Boolean) : [];
+        if (!sourceIds.length)
+            return { success: false, message: '缺少 sourceIds' };
+        const sources = await prisma_1.prisma.tag.findMany({ where: { id: { in: sourceIds } } });
+        if (!sources.length)
+            return { success: false, message: '源标签不存在' };
+        const sourceIdSet = new Set(sources.map((s) => s.id));
+        const instanceId = sources[0].instanceId;
+        let target = null;
+        if (body?.targetId) {
+            const row = await prisma_1.prisma.tag.findUnique({ where: { id: String(body.targetId) } });
+            if (row)
+                target = { id: row.id, name: row.name };
+        }
+        if (!target && body?.targetName) {
+            const name = String(body.targetName || '').trim();
+            if (!name)
+                return { success: false, message: 'targetName 不能为空' };
+            const row = (await prisma_1.prisma.tag.findFirst({ where: { name, instanceId } })) ||
+                (await prisma_1.prisma.tag.create({ data: { name, instanceId } }));
+            target = { id: row.id, name: row.name };
+        }
+        if (!target)
+            return { success: false, message: '缺少 targetId 或 targetName' };
+        if (sourceIdSet.has(target.id))
+            return { success: false, message: '目标标签不能同时是源标签' };
+        let moved = 0;
+        for (const sid of sourceIdSet) {
+            const links = await prisma_1.prisma.fileTag.findMany({ where: { tagId: sid } });
+            for (const link of links) {
+                const exists = await prisma_1.prisma.fileTag.findUnique({
+                    where: { fileId_tagId: { fileId: link.fileId, tagId: target.id } },
+                });
+                if (exists)
+                    await prisma_1.prisma.fileTag.delete({ where: { id: link.id } });
+                else {
+                    await prisma_1.prisma.fileTag.update({ where: { id: link.id }, data: { tagId: target.id } });
+                    moved += 1;
+                }
+            }
+        }
+        await prisma_1.prisma.tag.deleteMany({ where: { id: { in: Array.from(sourceIdSet) } } });
+        app_log_1.appLog.info('file', `标签合并完成：${sourceIdSet.size} 个标签 → 「${target.name}」`, `迁移关联 ${moved} 条`);
+        return { success: true, data: { moved, targetId: target.id, targetName: target.name } };
+    }
+    async canAccessInstance(req, instanceId) {
+        if (this.sessionAdmin(req))
+            return true;
+        const id = String(instanceId || '');
+        if (!id)
+            return true;
+        const me = this.sessionUser(req);
+        if (!me)
+            return false;
+        const inst = await prisma_1.prisma.instance.findUnique({ where: { id } });
+        if (!inst)
+            return false;
+        if (inst.ownerName === me)
+            return true;
+        try {
+            const members = JSON.parse(inst.metas || '{}')?.members;
+            return Array.isArray(members) && members.map((m) => String(m)).includes(me);
+        }
+        catch {
+            return false;
+        }
+    }
+    async tagSplit(req, id, body) {
+        const tag = await prisma_1.prisma.tag.findUnique({ where: { id: String(id || '') } });
+        if (!tag)
+            throw new common_1.NotFoundException('标签不存在');
+        if (!(await this.canAccessInstance(req, tag.instanceId))) {
+            throw new common_1.ForbiddenException('无权操作该实例下的标签');
+        }
+        const raw = Array.isArray(body?.names) ? body.names : [];
+        const names = Array.from(new Set(raw
+            .map((n) => String(n ?? '').trim())
+            .filter(Boolean)
+            .filter((n) => n !== tag.name)));
+        if (!names.length)
+            throw new common_1.BadRequestException('names 不能为空');
+        const links = await prisma_1.prisma.fileTag.findMany({ where: { tagId: tag.id }, select: { fileId: true } });
+        const created = [];
+        let linked = 0;
+        for (const name of names) {
+            const existed = await prisma_1.prisma.tag.findFirst({ where: { name, instanceId: tag.instanceId } });
+            const target = existed || (await prisma_1.prisma.tag.create({ data: { name, instanceId: tag.instanceId } }));
+            created.push({ id: target.id, name: target.name });
+            if (links.length) {
+                const res = await prisma_1.prisma.fileTag.createMany({
+                    data: links.map((l) => ({ fileId: l.fileId, tagId: target.id })),
+                    skipDuplicates: true,
+                });
+                linked += res.count;
+            }
+        }
+        app_log_1.appLog.info('tag', `拆分标签 ${tag.name} → ${created.map((c) => c.name).join('、')}`, `复制关联 ${linked} 条（源标签 ${links.length} 条 / 实例=${tag.instanceId || '默认'}）`);
+        return { success: true, created, linked };
+    }
+    async tagsBatchPassword(req, body) {
+        const ids = Array.isArray(body?.ids) ? body.ids.map(String).filter(Boolean) : [];
+        if (!ids.length)
+            return { success: false, message: '缺少 ids' };
+        let updated = 0;
+        for (const id of ids) {
+            const tag = await prisma_1.prisma.tag.findUnique({ where: { id } });
+            if (!tag)
+                continue;
+            const metas = (0, file_view_1.safeParse)(tag.metas);
+            if (String(body?.password || ''))
+                metas.passwordHash = (0, folder_meta_service_1.sha256Hex)(String(body.password));
+            else
+                delete metas.passwordHash;
+            await prisma_1.prisma.tag.update({ where: { id }, data: { metas: JSON.stringify(metas) } });
+            updated += 1;
+        }
+        app_log_1.appLog.info('file', `批量设置标签密码：${updated} 个`, String(body?.password || '') ? '设置' : '清除');
+        return { success: true, data: { updated } };
     }
 };
 exports.LinkController = LinkController;
@@ -600,6 +1007,98 @@ __decorate([
     __metadata("design:paramtypes", [Object, Object]),
     __metadata("design:returntype", Promise)
 ], LinkController.prototype, "serve", null);
+__decorate([
+    (0, common_1.Get)('api/folders/meta'),
+    (0, common_1.UseGuards)(auth_guard_1.ManageAuthGuard),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Query)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Object]),
+    __metadata("design:returntype", Promise)
+], LinkController.prototype, "getFolderMeta", null);
+__decorate([
+    (0, common_1.Post)('api/folders/meta'),
+    (0, common_1.UseGuards)(auth_guard_1.ManageAuthGuard),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Object]),
+    __metadata("design:returntype", Promise)
+], LinkController.prototype, "saveFolderMeta", null);
+__decorate([
+    (0, common_1.Delete)('api/folders/meta'),
+    (0, common_1.UseGuards)(auth_guard_1.ManageAuthGuard),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Query)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Object]),
+    __metadata("design:returntype", Promise)
+], LinkController.prototype, "deleteFolderMeta", null);
+__decorate([
+    (0, common_1.Get)('api/folders/shared'),
+    (0, common_1.UseGuards)(auth_guard_1.ManageAuthGuard),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Query)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Object]),
+    __metadata("design:returntype", Promise)
+], LinkController.prototype, "sharedFolders", null);
+__decorate([
+    (0, common_1.Get)('api/tags/manage'),
+    (0, common_1.UseGuards)(auth_guard_1.ManageAuthGuard),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Query)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Object]),
+    __metadata("design:returntype", Promise)
+], LinkController.prototype, "tagsManage", null);
+__decorate([
+    (0, common_1.Patch)('api/tags/:id'),
+    (0, common_1.UseGuards)(auth_guard_1.ManageAuthGuard),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Param)('id')),
+    __param(2, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, String, Object]),
+    __metadata("design:returntype", Promise)
+], LinkController.prototype, "tagUpdate", null);
+__decorate([
+    (0, common_1.Delete)('api/tags/:id'),
+    (0, common_1.UseGuards)(auth_guard_1.ManageAuthGuard),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Param)('id')),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, String]),
+    __metadata("design:returntype", Promise)
+], LinkController.prototype, "tagDelete", null);
+__decorate([
+    (0, common_1.Post)('api/tags/merge'),
+    (0, common_1.UseGuards)(auth_guard_1.ManageAuthGuard),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Object]),
+    __metadata("design:returntype", Promise)
+], LinkController.prototype, "tagsMerge", null);
+__decorate([
+    (0, common_1.Post)('api/tags/:id/split'),
+    (0, common_1.UseGuards)(auth_guard_1.ManageAuthGuard),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Param)('id')),
+    __param(2, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, String, Object]),
+    __metadata("design:returntype", Promise)
+], LinkController.prototype, "tagSplit", null);
+__decorate([
+    (0, common_1.Post)('api/tags/batch-password'),
+    (0, common_1.UseGuards)(auth_guard_1.ManageAuthGuard),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Object]),
+    __metadata("design:returntype", Promise)
+], LinkController.prototype, "tagsBatchPassword", null);
 exports.LinkController = LinkController = __decorate([
     (0, common_1.Controller)(),
     __metadata("design:paramtypes", [settings_service_1.SettingsService,
@@ -637,6 +1136,42 @@ let ManageController = class ManageController {
         }
         return fileIds.filter((f) => ok.has(f));
     }
+    numOrNullParam(raw, max) {
+        if (raw === undefined || raw === null || String(raw) === '')
+            return null;
+        const n = Number(raw);
+        if (!Number.isFinite(n))
+            return null;
+        return Math.max(0, Math.min(max, n));
+    }
+    async dropReadonlyShared(rows, req) {
+        const me = (0, auth_guard_1.currentSession)(req)?.user || '';
+        if (!rows.length || !me)
+            return { ok: rows, denied: [] };
+        const cache = new Map();
+        const ok = [];
+        const denied = [];
+        for (const r of rows) {
+            const folder = String(r.folder || '');
+            const key = `${r.instanceId || ''}\u0000${folder}`;
+            let readonly = cache.get(key);
+            if (readonly === undefined) {
+                const info = folder
+                    ? await (0, folder_meta_service_1.folderSharedPermission)(folder, r.instanceId || '', me)
+                    : { shared: false, owner: '', perm: 'edit' };
+                readonly = info.shared && info.perm === 'readonly';
+                cache.set(key, readonly);
+            }
+            if (readonly)
+                denied.push(String(r.name || '').replace(/\.[^.]*$/, ''));
+            else
+                ok.push(r);
+        }
+        if (denied.length) {
+            app_log_1.appLog.warn('file', `批量操作已拦截（只读共享目录）：${denied.slice(0, 5).join(', ')}${denied.length > 5 ? ' …' : ''}`, `共 ${denied.length} 个文件位于别人共享给当前用户（${me}）的只读目录内`);
+        }
+        return { ok, denied };
+    }
     async userPerm(req, kind) {
         if (this.admin(req))
             return true;
@@ -648,8 +1183,46 @@ let ManageController = class ManageController {
             return false;
         return kind === 'edit' ? u.canEdit : u.canDelete;
     }
-    filterGroups(r, f) {
+    async sharedScopeDirs(scope, username, instanceId) {
+        const user = String(username || '').trim();
+        if (!user)
+            return [];
+        const rows = await prisma_1.prisma.folderMeta.findMany({
+            where: {
+                ...(String(instanceId) === '*' ? {} : { instanceId: instanceId || '' }),
+                sharedUsers: { not: '[]' },
+            },
+            select: { path: true, owner: true, sharedUsers: true },
+        });
+        const seen = new Set();
+        const out = [];
+        for (const r of rows) {
+            const path = String(r.path || '').replace(/^\/+|\/+$/g, '');
+            if (!path)
+                continue;
+            const shared = (0, folder_meta_service_1.parseSharedUsers)(r.sharedUsers);
+            if (!shared.length)
+                continue;
+            const owner = String(r.owner || '');
+            const hit = scope === 'tome'
+                ? !!owner && owner !== user && shared.includes(user)
+                : owner === user;
+            const key = `${owner}\u0000${path}`;
+            if (!hit || seen.has(key))
+                continue;
+            seen.add(key);
+            out.push({ path, owner });
+        }
+        return out.sort((a, b) => a.path.localeCompare(b.path));
+    }
+    filterGroups(r, f, matchMode = 'all') {
         const groups = [];
+        const pushGroup = (values, pred) => {
+            if (matchMode === 'all')
+                values.forEach((v) => groups.push(pred(v)));
+            else
+                groups.push(values.some((v) => pred(v)));
+        };
         const tagNames = Array.isArray(r.tags) ? r.tags.map((t) => t?.tag?.name).filter(Boolean) : [];
         if (f.hasTags === 'yes')
             groups.push(tagNames.length > 0);
@@ -663,40 +1236,34 @@ let ManageController = class ManageController {
         const metas = (0, file_view_1.safeParse)(r.metas);
         const listType = metas.ListType || 'None';
         const label = metas.Label || 'None';
-        if (f.listType.length)
-            groups.push(f.listType.includes(listType));
-        if (f.label.length)
-            groups.push(f.label.includes(label));
-        if (f.fileType.length)
-            groups.push(f.fileType.includes((0, file_view_1.fileTypeOf)(r.mime)));
+        pushGroup(f.listType, (v) => v === listType);
+        pushGroup(f.label, (v) => v === label);
+        pushGroup(f.fileType, (v) => v === (0, file_view_1.fileTypeOf)(r.mime));
         const copies = Array.isArray(r.copies) ? r.copies : [];
         const primary = copies.find((c) => c?.channel?.isMain) || copies[0];
         const chType = primary?.channel?.type || '';
         const chLabel = chType ? file_view_1.CHANNEL_LABEL[chType] || chType : '';
         const chName = String(primary?.channel?.name || '');
-        if (f.channel.length)
-            groups.push(f.channel.includes(chLabel));
-        if (f.channelName.length)
-            groups.push(f.channelName.includes(chName));
-        if (f.uploadSource.length) {
-            groups.push(f.uploadSource.includes((0, file_view_1.normalizeUploadSource)(r.uploadSource)));
-        }
-        if (f.users.length)
-            groups.push(f.users.includes(String(r.uploader || '')));
+        pushGroup(f.channel, (v) => v === chLabel);
+        pushGroup(f.channelName, (v) => v === chName);
+        pushGroup(f.uploadSource, (v) => v === (0, file_view_1.normalizeUploadSource)(r.uploadSource));
+        pushGroup(f.users, (v) => v === String(r.uploader || ''));
         if (f.backup.length) {
             const hasBackup = copies.some((c) => c !== primary && c?.status === 'active' && (c?.remoteKey || c?.remoteUrl));
-            groups.push((f.backup.includes('backedup') && hasBackup) || (f.backup.includes('unbackedup') && !hasBackup));
+            pushGroup(f.backup, (v) => (v === 'backedup' ? hasBackup : !hasBackup));
         }
         if (f.redirect.length) {
             const has = !!r.redirectUrl;
-            groups.push((f.redirect.includes('yes') && has) || (f.redirect.includes('no') && !has));
+            pushGroup(f.redirect, (v) => (v === 'yes' ? has : !has));
         }
         if (f.access.length) {
             const deleted = String(r.status || 'active') === 'deleted';
-            groups.push((f.access.includes('deleted') && deleted) ||
-                (!deleted && f.access.includes('normal') && listType === 'None') ||
-                (!deleted && f.access.includes('block') && listType === 'Block') ||
-                (!deleted && f.access.includes('white') && listType === 'White'));
+            const encrypted = !!String(metas.AccessPasswordHash || '').trim();
+            pushGroup(f.access, (v) => (v === 'encrypted' && encrypted) ||
+                (v === 'deleted' && deleted) ||
+                (!deleted && v === 'normal' && listType === 'None') ||
+                (!deleted && v === 'block' && listType === 'Block') ||
+                (!deleted && v === 'white' && listType === 'White'));
         }
         if (f.fromMs || f.toMs) {
             const t = r.createdAt ? new Date(r.createdAt).getTime() : 0;
@@ -706,18 +1273,25 @@ let ManageController = class ManageController {
             const cmpSize = f.sizeMode === 'original' ? Number(r.originalSize) || r.size || 0 : r.size || 0;
             groups.push((!f.sizeMin || cmpSize >= f.sizeMin) && (!f.sizeMax || cmpSize <= f.sizeMax));
         }
+        if (f.ratingMin !== null || f.ratingMax !== null || f.levelMin !== null || f.levelMax !== null) {
+            const rating = Number(r.rating) || 0;
+            const level = Number(r.level) || 0;
+            groups.push((f.ratingMin === null || rating >= f.ratingMin) &&
+                (f.ratingMax === null || rating <= f.ratingMax) &&
+                (f.levelMin === null || level >= f.levelMin) &&
+                (f.levelMax === null || level <= f.levelMax));
+        }
         if (f.validity.length) {
             const exp = r.linkExpiresAt;
             const expMs = exp ? new Date(exp).getTime() : 0;
             const now = Date.now();
-            groups.push((f.validity.includes('limited') && expMs > now) ||
-                (f.validity.includes('expired') && expMs > 0 && expMs <= now) ||
-                (f.validity.includes('permanent') && !expMs));
+            pushGroup(f.validity, (v) => (v === 'limited' && expMs > now) ||
+                (v === 'expired' && expMs > 0 && expMs <= now) ||
+                (v === 'permanent' && !expMs));
         }
         if (f.nameChanged.length) {
             const renamed = !!String(r.prevName || '');
-            groups.push((f.nameChanged.includes('changed') && renamed) ||
-                (f.nameChanged.includes('unchanged') && !renamed));
+            pushGroup(f.nameChanged, (v) => (v === 'changed' ? renamed : !renamed));
         }
         if (f.dimPreset.length || f.widthMin || f.widthMax || f.heightMin || f.heightMax) {
             const w = Number(metas.Width || 0);
@@ -793,6 +1367,11 @@ let ManageController = class ManageController {
         const hasTags = String(q.hasTags || '').toLowerCase();
         const fListType = splitCsv(q.listType);
         const fAccess = splitCsv(q.accessStatus);
+        if (q.encryptedOnly === '1' || q.encryptedOnly === 'true') {
+            if (!fAccess.includes('encrypted'))
+                fAccess.push('encrypted');
+        }
+        const encryptedOnly = fAccess.includes('encrypted');
         const fLabel = splitCsv(q.label);
         const fFileType = splitCsv(q.fileType);
         const fChannel = splitCsv(q.channel);
@@ -820,7 +1399,20 @@ let ManageController = class ManageController {
         const widthMax = Math.max(0, Number(q.widthMax) || 0);
         const heightMin = Math.max(0, Number(q.heightMin) || 0);
         const heightMax = Math.max(0, Number(q.heightMax) || 0);
-        const matchMode = String(q.matchMode || '').toLowerCase() === 'any' ? 'any' : 'all';
+        const numOrNull = (raw, max) => {
+            if (raw === undefined || raw === null || String(raw) === '')
+                return null;
+            const n = Number(raw);
+            if (!Number.isFinite(n))
+                return null;
+            return Math.max(0, Math.min(max, n));
+        };
+        const ratingMin = numOrNull(q.ratingMin, 5);
+        const ratingMax = numOrNull(q.ratingMax, 5);
+        const levelMin = numOrNull(q.levelMin, 5);
+        const levelMax = numOrNull(q.levelMax, 5);
+        const matchModeRaw = String(q.matchMode || '').toLowerCase();
+        const matchMode = matchModeRaw === 'any' || matchModeRaw === 'or' ? 'any' : 'all';
         const fUsers = splitCsv(q.filterUsers);
         const withDeleted = fAccess.includes('deleted');
         const filterOpts = {
@@ -844,16 +1436,38 @@ let ManageController = class ManageController {
             sizeMin,
             sizeMax,
             sizeMode,
+            ratingMin,
+            ratingMax,
+            levelMin,
+            levelMax,
             dimPreset: fDimPreset,
             widthMin,
             widthMax,
             heightMin,
             heightMax,
         };
+        const rawInstance = String(q.instanceId ?? '');
+        const allInstances = rawInstance === '*';
+        const instanceFilter = allInstances ? '' : rawInstance;
+        const shareScope = q.shareScope === 'mine' || q.shareScope === 'tome' ? q.shareScope : '';
+        const shareDirs = shareScope
+            ? await this.sharedScopeDirs(shareScope, session?.user || '', allInstances ? '*' : instanceFilter)
+            : [];
+        const shareFolderOr = shareDirs.flatMap((d) => [
+            { folder: d.path },
+            { folder: { startsWith: `${d.path}/` } },
+        ]);
         const rows = await prisma_1.prisma.fileRecord.findMany({
             where: {
                 status: withDeleted ? { in: ['active', 'deleted'] } : 'active',
-                ...(ownerFilter ? { uploader: ownerFilter } : {}),
+                ...(allInstances ? {} : { instanceId: instanceFilter }),
+                ...(ownerFilter && !shareScope ? { uploader: ownerFilter } : {}),
+                ...(encryptedOnly ? { metas: { contains: '"AccessPasswordHash"' } } : {}),
+                ...(shareScope
+                    ? shareFolderOr.length
+                        ? { OR: shareFolderOr }
+                        : { folder: { in: [] } }
+                    : {}),
             },
             include: {
                 copies: { include: { channel: true } },
@@ -861,8 +1475,39 @@ let ManageController = class ManageController {
             },
             orderBy: { createdAt: 'desc' },
         });
+        const sharedMark = [];
+        if (session?.user) {
+            const markInstance = allInstances ? '*' : instanceFilter;
+            const [toMe, byMe] = await Promise.all([
+                (0, folder_meta_service_1.listSharedFoldersFor)(session.user, markInstance),
+                (0, folder_meta_service_1.listFoldersSharedBy)(session.user, markInstance),
+            ]);
+            const seenMark = new Set();
+            for (const d of [
+                ...byMe.map((x) => ({ ...x, sharedPerm: 'edit' })),
+                ...toMe,
+            ]) {
+                const key = `${d.path}\u0000${d.owner}`;
+                if (seenMark.has(key))
+                    continue;
+                seenMark.add(key);
+                sharedMark.push({ path: d.path, owner: d.owner, sharedPerm: d.sharedPerm });
+            }
+        }
+        const sharedInfoOf = (r) => {
+            const f = r.folder || '';
+            const hit = sharedMark.find((d) => f === d.path || f.startsWith(`${d.path}/`));
+            if (!hit)
+                return null;
+            return { owner: hit.owner, self: hit.owner === session?.user, perm: hit.sharedPerm };
+        };
         const allFolders = new Set(rows.map((r) => r.folder).filter(Boolean));
-        for (const d of await this.extraFolders(req))
+        for (const f of Array.from(allFolders)) {
+            const segs = String(f).split('/').filter(Boolean);
+            for (let i = 1; i < segs.length; i++)
+                allFolders.add(segs.slice(0, i).join('/'));
+        }
+        for (const d of shareScope ? [] : await this.extraFolders(req))
             allFolders.add(d);
         const matched = rows.filter((r) => {
             if (search) {
@@ -899,15 +1544,72 @@ let ManageController = class ManageController {
                 return false;
             if (excludeTags.length && excludeTags.some((t) => r.tags.map((x) => x.tag.name).includes(t)))
                 return false;
-            const groups = this.filterGroups(r, filterOpts);
+            const groups = this.filterGroups(r, filterOpts, matchMode);
             if (!groups.length)
                 return true;
             return matchMode === 'any' ? groups.some(Boolean) : groups.every(Boolean);
         });
+        const filterActive = !!search ||
+            !!includeTags.length ||
+            !!excludeTags.length ||
+            !!filterTags.length ||
+            !!hasTags ||
+            !!fListType.length ||
+            !!fAccess.length ||
+            !!fLabel.length ||
+            !!fFileType.length ||
+            !!fChannel.length ||
+            !!fChannelName.length ||
+            !!fUploadSource.length ||
+            !!fBackup.length ||
+            !!fRedirect.length ||
+            !!fValidity.length ||
+            !!fNameChanged.length ||
+            !!fUsers.length ||
+            !!fromMs ||
+            !!toMs ||
+            sizeMin > 0 ||
+            sizeMax > 0 ||
+            ratingMin !== null ||
+            ratingMax !== null ||
+            levelMin !== null ||
+            levelMax !== null ||
+            !!fDimPreset.length ||
+            widthMin > 0 ||
+            widthMax > 0 ||
+            heightMin > 0 ||
+            heightMax > 0 ||
+            !!shareScope ||
+            !!(this.admin(req) && q.user && q.user !== 'all');
+        if (filterActive) {
+            const keep = new Set();
+            const addChain = (p) => {
+                const segs = String(p).split('/').filter(Boolean);
+                for (let i = 1; i <= segs.length; i += 1)
+                    keep.add(segs.slice(0, i).join('/'));
+            };
+            for (const r of matched)
+                if (r.folder)
+                    addChain(r.folder);
+            if (search) {
+                for (const f of Array.from(allFolders)) {
+                    const leaf = String(f).split('/').pop() || '';
+                    if (leaf.toLowerCase().includes(search))
+                        addChain(f);
+                }
+            }
+            allFolders.clear();
+            for (const f of keep)
+                allFolders.add(f);
+        }
+        const flat = q.flat === 'true';
         const dirBare = dir.replace(/\/+$/, '');
         let files;
         let directories = [];
-        if (recursive) {
+        if (flat) {
+            files = matched.filter((r) => (!dirBare ? true : r.folder === dirBare || r.folder.startsWith(`${dirBare}/`)));
+        }
+        else if (recursive) {
             files = matched.filter((r) => (!dirBare ? true : r.folder === dirBare || r.folder.startsWith(`${dirBare}/`)));
         }
         else {
@@ -925,7 +1627,7 @@ let ManageController = class ManageController {
             directories = Array.from(set).sort();
         }
         const directoryStats = {};
-        if (!recursive) {
+        if (!flat && !recursive) {
             for (const d of directories) {
                 const prefix = `${d}/`;
                 let sub = 0;
@@ -955,9 +1657,66 @@ let ManageController = class ManageController {
         const totalCount = files.length;
         if (sumOnly)
             return { sum: totalCount, indexLastUpdated: Date.now() };
+        const folderDisplayNames = {};
+        if (directories.length) {
+            try {
+                const metaRows = await prisma_1.prisma.folderMeta.findMany({
+                    where: {
+                        ...(allInstances ? {} : { instanceId: instanceFilter || '' }),
+                        path: { in: directories },
+                    },
+                    select: { path: true, metas: true },
+                });
+                for (const row of metaRows) {
+                    const name = String((0, file_view_1.safeParse)(row.metas).displayName || '').trim();
+                    if (name)
+                        folderDisplayNames[row.path] = name;
+                }
+            }
+            catch (err) {
+                app_log_1.appLog.warn('file', '目录显示名查询失败', err.message);
+            }
+        }
         const paged = count === -1 ? files.slice(start) : files.slice(start, start + count);
         const resolveDirectUrl = this.directUrlResolver();
-        const fileItems = paged.map((r) => (0, file_view_1.serializeFile)(r, r.copies, { tags: r.tags.map((t) => t.tag.name), resolveDirectUrl }));
+        const resolveLoadUrl = this.directUrlResolver(true);
+        const fileItems = paged.map((r) => {
+            const item = (0, file_view_1.serializeFile)(r, r.copies, { tags: r.tags.map((t) => t.tag.name), resolveDirectUrl, resolveLoadUrl });
+            item.instanceId = r.instanceId || '';
+            item.folder = r.folder || '';
+            const sharedInfo = sharedInfoOf(r);
+            if (sharedInfo) {
+                item.shared = true;
+                item.sharedOwner = sharedInfo.owner;
+                item.sharedSelf = sharedInfo.self;
+                item.sharedPerm = sharedInfo.perm;
+            }
+            return item;
+        });
+        try {
+            const instIdSet = new Set();
+            for (const i of fileItems) {
+                const v = String(i.instanceId || '');
+                if (v)
+                    instIdSet.add(v);
+            }
+            const instIds = Array.from(instIdSet);
+            if (instIds.length) {
+                const instRows = await prisma_1.prisma.instance.findMany({
+                    where: { id: { in: instIds } },
+                    select: { id: true, name: true },
+                });
+                const nameById = new Map(instRows.map((r) => [String(r.id), String(r.name)]));
+                for (const item of fileItems) {
+                    const nm = nameById.get(String(item.instanceId || ''));
+                    if (nm)
+                        item.metadata = { ...(item.metadata || {}), InstanceName: nm };
+                }
+            }
+        }
+        catch (err) {
+            app_log_1.appLog.warn('file', `实例名回填失败（不影响列表）：${err?.message || err}`);
+        }
         try {
             const fallback = new Map();
             for (const item of fileItems) {
@@ -978,10 +1737,19 @@ let ManageController = class ManageController {
         return {
             files: fileItems,
             directories,
+            folderDisplayNames,
+            folders: flat ? [] : undefined,
+            sharedFolders: sharedMark.map((d) => ({
+                path: d.path,
+                owner: d.owner,
+                mine: d.owner === (session?.user || ''),
+                sharedPerm: d.sharedPerm,
+            })),
+            flat,
             directoryStats,
             totalCount,
             directFileCount: files.length,
-            directFolderCount: directories.length,
+            directFolderCount: flat ? 0 : directories.length,
             returnedCount: paged.length,
             indexLastUpdated: Date.now(),
             isIndexedResponse: true,
@@ -1204,20 +1972,75 @@ let ManageController = class ManageController {
             return { success: false, message: '缺少文件名' };
         const owner = this.admin(req) ? '' : (0, auth_guard_1.currentSession)(req)?.user || '';
         const own = owner ? { uploader: owner } : {};
+        let sharedToMeDirs = [];
+        if (!this.admin(req) && owner) {
+            sharedToMeDirs = await (0, folder_meta_service_1.listSharedFoldersFor)(owner, '*');
+        }
+        const sharedHitOf = (folder) => sharedToMeDirs.find((d) => folder === d.path || folder.startsWith(`${d.path}/`));
         if (q.folder === 'true') {
             const prefix = key.replace(/\/+$/, '');
+            const hit = sharedHitOf(prefix);
+            if (hit) {
+                return { success: false, message: `「${hit.path}」是 ${hit.owner} 共享给你的目录，不允许删除` };
+            }
             const rows = await prisma_1.prisma.fileRecord.findMany({
                 where: { status: 'active', ...own, OR: [{ folder: prefix }, { folder: { startsWith: `${prefix}/` } }] },
             });
             for (const r of rows)
                 await this.trashRecord(r.id, r.name);
-            return { success: true, deleted: rows.length };
+            const unregistered = await this.unregisterFolders(owner, prefix);
+            let metaRemoved = 0;
+            let metaSnapshot = null;
+            try {
+                const metas = await prisma_1.prisma.folderMeta.findMany({
+                    where: {
+                        OR: [{ path: prefix }, { path: { startsWith: `${prefix}/` } }],
+                        ...(owner ? { owner } : {}),
+                    },
+                });
+                if (metas.length) {
+                    const self = metas.find((m) => m.path === prefix);
+                    if (self) {
+                        const { id, createdAt, ...rest } = self;
+                        metaSnapshot = rest;
+                    }
+                    const del = await prisma_1.prisma.folderMeta.deleteMany({ where: { id: { in: metas.map((m) => m.id) } } });
+                    metaRemoved = del.count;
+                }
+            }
+            catch (err) {
+                app_log_1.appLog.warn('file', `目录属性清理失败：${prefix}`, err.message);
+            }
+            try {
+                await this.addDeletedFolder(owner, {
+                    path: prefix,
+                    deletedAt: new Date().toISOString(),
+                    instanceId: String(metaSnapshot?.instanceId ?? ''),
+                    meta: metaSnapshot,
+                });
+            }
+            catch (err) {
+                app_log_1.appLog.warn('file', `目录移入回收站登记失败：${prefix}`, err.message);
+            }
+            app_log_1.appLog.info('file', `目录已移入回收站：${prefix}`, `文件 ${rows.length} 条 ｜ 登记目录 ${unregistered} 条 ｜ 目录属性 ${metaRemoved} 条`);
+            return { success: true, deleted: rows.length, folders: 1, unregistered, metaRemoved };
+        }
+        const reqFolder = String(q.folder || '');
+        if (reqFolder && reqFolder !== 'true') {
+            const hitByFolder = sharedHitOf(reqFolder);
+            if (hitByFolder) {
+                return { success: false, message: `「${hitByFolder.path}」是 ${hitByFolder.owner} 共享给你的目录，不允许删除` };
+            }
         }
         const record = await prisma_1.prisma.fileRecord.findFirst({
             where: { status: 'active', ...own, OR: [{ name: key }, { name: key.replace(/\.[^.]*$/, '') }] },
         });
         if (!record)
             return { success: false, message: '文件不存在' };
+        const sharedHit = sharedHitOf(record.folder || '');
+        if (sharedHit) {
+            return { success: false, message: `该文件位于 ${sharedHit.owner} 共享给你的「${sharedHit.path}」内，不允许删除` };
+        }
         await this.trashRecord(record.id, record.name);
         return { success: true, deleted: 1 };
     }
@@ -1226,17 +2049,23 @@ let ManageController = class ManageController {
     }
     async trashList(req, q) {
         const owner = this.admin(req) ? '' : (0, auth_guard_1.currentSession)(req)?.user || '';
+        const instanceFilter = String(q.instanceId ?? '');
         const rows = await prisma_1.prisma.fileRecord.findMany({
-            where: { status: 'deleted', ...(owner ? { uploader: owner } : {}) },
+            where: {
+                status: 'deleted',
+                instanceId: instanceFilter,
+                ...(owner ? { uploader: owner } : {}),
+            },
             include: {
                 copies: { include: { channel: true } },
                 tags: { include: { tag: true } },
             },
             orderBy: { deletedAt: 'desc' },
-            take: 500,
+            take: 2000,
         });
         const search = (q.search || '').trim().toLowerCase();
-        const matchMode = String(q.matchMode || '').toLowerCase() === 'any' ? 'any' : 'all';
+        const matchModeRaw = String(q.matchMode || '').toLowerCase();
+        const matchMode = matchModeRaw === 'any' || matchModeRaw === 'or' ? 'any' : 'all';
         const dateFrom = /^\d{4}-\d{2}-\d{2}$/.test(String(q.dateFrom || '')) ? String(q.dateFrom) : '';
         const dateTo = /^\d{4}-\d{2}-\d{2}$/.test(String(q.dateTo || '')) ? String(q.dateTo) : '';
         const tzMin = Number(q.tz);
@@ -1268,6 +2097,10 @@ let ManageController = class ManageController {
             sizeMin: Math.max(0, Number(q.sizeMin) || 0),
             sizeMax: Math.max(0, Number(q.sizeMax) || 0),
             sizeMode: String(q.sizeMode || 'actual').toLowerCase() === 'original' ? 'original' : 'actual',
+            ratingMin: this.numOrNullParam(q.ratingMin, 5),
+            ratingMax: this.numOrNullParam(q.ratingMax, 5),
+            levelMin: this.numOrNullParam(q.levelMin, 5),
+            levelMax: this.numOrNullParam(q.levelMax, 5),
             dimPreset: splitCsv(q.dimPreset).map((v) => v.toLowerCase()),
             widthMin: Math.max(0, Number(q.widthMin) || 0),
             widthMax: Math.max(0, Number(q.widthMax) || 0),
@@ -1284,7 +2117,7 @@ let ManageController = class ManageController {
                 if (!hit)
                     return false;
             }
-            const groups = this.filterGroups(r, filterOpts);
+            const groups = this.filterGroups(r, filterOpts, matchMode);
             if (!groups.length)
                 return true;
             return matchMode === 'any' ? groups.some(Boolean) : groups.every(Boolean);
@@ -1295,7 +2128,7 @@ let ManageController = class ManageController {
             select: { id: true, name: true, type: true },
         });
         const chMap = new Map(channels.map((c) => [c.id, c]));
-        const items = filtered.map((r) => ({
+        const mapped = filtered.map((r) => ({
             id: r.id,
             name: r.name,
             originalName: r.originalName,
@@ -1313,34 +2146,88 @@ let ManageController = class ManageController {
                 status: c.status,
             })),
         }));
-        return { success: true, items, total: items.length };
+        const pageSize = Math.min(200, Math.max(1, Number(q.pageSize) || 48));
+        const page = Math.max(1, Number(q.page) || 1);
+        let folderItems = [];
+        try {
+            folderItems = (await this.listDeletedFolders(owner))
+                .filter((e) => (e.instanceId || '') === instanceFilter)
+                .map((e) => {
+                const base = e.path.split('/').pop() || e.path;
+                return {
+                    id: `folder:${e.path}`,
+                    name: base,
+                    originalName: base,
+                    size: 0,
+                    mime: '',
+                    folder: e.path.includes('/') ? e.path.slice(0, e.path.lastIndexOf('/')) : '',
+                    uploader: owner,
+                    uploadSource: '',
+                    status: 'deleted',
+                    deletedAt: e.deletedAt,
+                    isFolder: true,
+                    channels: [],
+                };
+            });
+        }
+        catch (err) {
+            app_log_1.appLog.warn('file', `回收站目录条目读取失败`, err.message);
+        }
+        const merged = [...folderItems, ...mapped].sort((a, b) => new Date(b.deletedAt).getTime() - new Date(a.deletedAt).getTime());
+        const total = merged.length;
+        const start = (page - 1) * pageSize;
+        const items = merged.slice(start, start + pageSize);
+        return { success: true, items, total, page, pageSize, totalPages: Math.max(1, Math.ceil(total / pageSize)) };
     }
     async trashRestore(req) {
         if (!(await this.userPerm(req, 'delete')))
             return { success: false, message: '没有恢复权限' };
         const key = wildcardParam(req);
+        if (key.startsWith('folder:')) {
+            const path = key.slice('folder:'.length);
+            const owner = this.admin(req) ? '' : (0, auth_guard_1.currentSession)(req)?.user || '';
+            const hit = (await this.listDeletedFolders(owner)).some((e) => e.path === path);
+            if (!hit)
+                return { success: false, message: '回收站中不存在该目录' };
+            const restored = await this.restoreFolderEntry(owner, path);
+            return { success: true, folder: true, restoredFiles: restored.filesRestored };
+        }
         const record = await prisma_1.prisma.fileRecord.findFirst({ where: { id: key, status: 'deleted' } });
         if (!record)
             return { success: false, message: '回收站中不存在该文件' };
         await this.uploadSvc.restoreFile(record.id, record.name);
         return { success: true };
     }
-    async trashPurge(req) {
-        return this.trashPurgeOne(req);
+    async trashPurge(req, q) {
+        return this.trashPurgeOne(req, String(q?.totpCode || ''));
     }
-    async trashPurgeDelete(req) {
-        return this.trashPurgeOne(req);
+    async trashPurgeDelete(req, q) {
+        return this.trashPurgeOne(req, String(q?.totpCode || ''));
     }
-    async trashPurgeOne(req) {
+    async trashPurgeOne(req, totpCode = '') {
         if (!(await this.userPerm(req, 'delete')))
             return { success: false, message: '没有删除权限' };
         const key = wildcardParam(req);
         const owner = this.admin(req) ? '' : (0, auth_guard_1.currentSession)(req)?.user || '';
+        if (key.startsWith('folder:')) {
+            const path = key.slice('folder:'.length);
+            const hit = (await this.listDeletedFolders(owner)).some((e) => e.path === path);
+            if (!hit)
+                return { success: false, message: '回收站中不存在该目录' };
+            const gate = await this.verifyTrashTotp(req, totpCode);
+            if (gate)
+                return gate;
+            const n = await this.purgeFolderEntry(owner, path);
+            return { success: true, folder: true, purged: n };
+        }
         const record = await prisma_1.prisma.fileRecord.findFirst({
             where: { id: key, status: 'deleted', ...(owner ? { uploader: owner } : {}) },
         });
         if (!record)
             return { success: false, message: '回收站中不存在该文件' };
+        const gate = await this.verifyTrashTotp(req, totpCode);
+        if (gate)
+            return gate;
         await this.uploadSvc.removeFile(record.id, record.name);
         return { success: true };
     }
@@ -1352,12 +2239,39 @@ let ManageController = class ManageController {
         if (!ids.length)
             return { success: false, message: '缺少 ids' };
         const owner = this.admin(req) ? '' : (0, auth_guard_1.currentSession)(req)?.user || '';
+        if (action === 'purge') {
+            const gate = await this.verifyTrashTotp(req, body?.totpCode);
+            if (gate)
+                return gate;
+        }
+        const folderPaths = new Set((await this.listDeletedFolders(owner)).map((e) => e.path));
         const rows = await prisma_1.prisma.fileRecord.findMany({
             where: { id: { in: ids }, status: 'deleted', ...(owner ? { uploader: owner } : {}) },
         });
         const found = new Set(rows.map((r) => r.id));
         const results = [];
         for (const id of ids) {
+            if (id.startsWith('folder:')) {
+                const path = id.slice('folder:'.length);
+                if (!folderPaths.has(path)) {
+                    results.push({ id, ok: false, message: '目录不存在或无权限' });
+                    continue;
+                }
+                try {
+                    if (action === 'purge') {
+                        const n = await this.purgeFolderEntry(owner, path);
+                        results.push({ id, ok: true, message: `连带文件 ${n} 条` });
+                    }
+                    else {
+                        const restored = await this.restoreFolderEntry(owner, path);
+                        results.push({ id, ok: true, message: `连带恢复文件 ${restored.filesRestored} 条` });
+                    }
+                }
+                catch (err) {
+                    results.push({ id, ok: false, message: err.message });
+                }
+                continue;
+            }
             if (!found.has(id)) {
                 results.push({ id, ok: false, message: '不存在或无权限' });
                 continue;
@@ -1382,9 +2296,471 @@ let ManageController = class ManageController {
             failCount: results.filter((r) => !r.ok).length,
         };
     }
-    directUrlResolver() {
+    async deletedFoldersRead() {
+        const raw = await this.settings.get('deletedFolders', '{}');
+        return (0, file_view_1.safeParse)(raw);
+    }
+    async deletedFoldersWrite(map) {
+        await this.settings.set('deletedFolders', JSON.stringify(map));
+    }
+    async listDeletedFolders(owner) {
+        const map = await this.deletedFoldersRead();
+        return Array.isArray(map[owner]) ? map[owner] : [];
+    }
+    async addDeletedFolder(owner, entry) {
+        const map = await this.deletedFoldersRead();
+        const list = (map[owner] || []).filter((e) => e.path !== entry.path);
+        list.unshift(entry);
+        map[owner] = list;
+        await this.deletedFoldersWrite(map);
+    }
+    async removeDeletedFolder(owner, path) {
+        const map = await this.deletedFoldersRead();
+        if (!map[owner])
+            return null;
+        const hit = map[owner].find((e) => e.path === path) || null;
+        map[owner] = map[owner].filter((e) => e.path !== path);
+        await this.deletedFoldersWrite(map);
+        return hit;
+    }
+    async restoreFolderEntry(owner, path) {
+        try {
+            const raw = await this.settings.get('extraFolders', '{}');
+            const map = (0, file_view_1.safeParse)(raw);
+            const list = new Set(map[owner] || []);
+            list.add(path);
+            map[owner] = Array.from(list).sort();
+            await this.settings.set('extraFolders', JSON.stringify(map));
+        }
+        catch (err) {
+            app_log_1.appLog.warn('file', `回收站恢复目录登记失败：${path}`, err.message);
+        }
+        let metaRestored = 0;
+        const entry = await this.removeDeletedFolder(owner, path);
+        if (entry?.meta && Object.keys(entry.meta).length) {
+            try {
+                const exists = await prisma_1.prisma.folderMeta.findFirst({
+                    where: { path, ...(owner ? { owner } : {}) },
+                    select: { id: true },
+                });
+                if (!exists) {
+                    await prisma_1.prisma.folderMeta.create({ data: entry.meta });
+                    metaRestored = 1;
+                }
+            }
+            catch (err) {
+                app_log_1.appLog.warn('file', `回收站恢复目录属性失败：${path}`, err.message);
+            }
+        }
+        let filesRestored = 0;
+        try {
+            const res = await prisma_1.prisma.fileRecord.updateMany({
+                where: {
+                    status: 'deleted',
+                    ...(owner ? { uploader: owner } : {}),
+                    OR: [{ folder: path }, { folder: { startsWith: `${path}/` } }],
+                },
+                data: { status: 'active', deletedAt: null },
+            });
+            filesRestored = res.count;
+        }
+        catch (err) {
+            app_log_1.appLog.warn('file', `回收站恢复目录内的文件失败：${path}`, err.message);
+        }
+        app_log_1.appLog.info('file', `目录已从回收站恢复：${path}`, `目录属性还原 ${metaRestored} 条 ｜ 连带恢复文件 ${filesRestored} 条`);
+        return { metaRestored, filesRestored };
+    }
+    async purgeFolderEntry(owner, path) {
+        await this.removeDeletedFolder(owner, path);
+        const rows = await prisma_1.prisma.fileRecord.findMany({
+            where: {
+                status: 'deleted',
+                ...(owner ? { uploader: owner } : {}),
+                OR: [{ folder: path }, { folder: { startsWith: `${path}/` } }],
+            },
+            select: { id: true, name: true },
+        });
+        let n = 0;
+        for (const r of rows) {
+            try {
+                await this.uploadSvc.removeFile(r.id, r.name);
+                n++;
+            }
+            catch (err) {
+                app_log_1.appLog.warn('file', `回收站目录连带删除失败：${r.name}`, err.message);
+            }
+        }
+        app_log_1.appLog.info('file', `回收站目录已彻底删除：${path}`, `连带文件 ${n} 条（已恢复到别处/重建目录中的活跃文件不受影响）`);
+        return n;
+    }
+    async verifyTrashTotp(req, code = '') {
+        const me = (0, auth_guard_1.currentSession)(req)?.user || '';
+        if (!me)
+            return null;
+        const u = await prisma_1.prisma.user.findUnique({
+            where: { username: me },
+            select: { totpEnabled: true, totpSecret: true },
+        });
+        if (!u || !u.totpEnabled || !u.totpSecret)
+            return null;
+        const c = String(code || '').trim();
+        if (!c) {
+            app_log_1.appLog.warn('file', `彻底删除被拦截：账户已开启两步验证`, `user=${me}`);
+            return { success: false, needTotp: true, message: '该账户已开启两步验证，彻底删除需输入动态验证码' };
+        }
+        try {
+            if ((0, totp_1.verifyTotp)(crypto_service_1.CryptoService.decrypt(u.totpSecret), c))
+                return null;
+        }
+        catch {
+        }
+        app_log_1.appLog.warn('file', `彻底删除两步验证失败`, `user=${me}`);
+        return { success: false, needTotp: true, message: '两步验证码不匹配' };
+    }
+    bodyIds(body) {
+        return Array.isArray(body?.ids) ? body.ids.map(String).filter(Boolean) : [];
+    }
+    async loadOwned(ids, req) {
+        if (!ids.length)
+            return [];
+        return prisma_1.prisma.fileRecord.findMany({
+            where: {
+                ...(this.admin(req) ? {} : { uploader: (0, auth_guard_1.currentSession)(req)?.user || '' }),
+                OR: [{ id: { in: ids } }, { name: { in: ids } }],
+            },
+        });
+    }
+    async batchOriginalName(req, body) {
+        if (!(await this.userPerm(req, 'edit')))
+            return { success: false, message: '没有编辑权限' };
+        const ids = this.bodyIds(body);
+        if (!ids.length)
+            return { success: false, message: '缺少 ids' };
+        const mode = String(body.mode || '');
+        if (!['replace', 'rewrite', 'prepend', 'append', 'ext'].includes(mode)) {
+            return { success: false, message: 'mode 不合法（replace / rewrite / prepend / append / ext）' };
+        }
+        const { ok: rows } = await this.dropReadonlyShared(await this.loadOwned(ids, req), req);
+        const byKey = new Map();
+        for (const r of rows) {
+            byKey.set(r.id, r);
+            byKey.set(r.name, r);
+        }
+        const failed = [];
+        const plan = [];
+        for (const id of ids) {
+            const rec = byKey.get(id);
+            if (!rec) {
+                failed.push({ id, error: '不存在或无权限' });
+                continue;
+            }
+            const cur = rec.originalName;
+            const dot = cur.lastIndexOf('.');
+            const stem = dot > 0 ? cur.slice(0, dot) : cur;
+            const ext = dot > 0 ? cur.slice(dot + 1) : '';
+            let target = cur;
+            try {
+                if (mode === 'replace') {
+                    const find = String(body.find ?? '');
+                    if (!find)
+                        throw new Error('缺少 find');
+                    const replaced = stem.split(find).join(String(body.replace ?? ''));
+                    if (!replaced.trim())
+                        throw new Error('替换后名称为空');
+                    target = replaced + (ext ? `.${ext}` : '');
+                }
+                else if (mode === 'rewrite') {
+                    const value = String(body.value ?? '').trim();
+                    if (!value)
+                        throw new Error('缺少 value');
+                    const hasExt = /\.[A-Za-z0-9]{1,12}$/.test(value);
+                    target = hasExt || !ext ? value : `${value}.${ext}`;
+                }
+                else if (mode === 'prepend') {
+                    target = String(body.value ?? '') + cur;
+                }
+                else if (mode === 'append') {
+                    target = stem + String(body.value ?? '') + (ext ? `.${ext}` : '');
+                }
+                else if (mode === 'ext') {
+                    const e = String(body.ext ?? '').replace(/^\.+/, '').trim();
+                    if (!e)
+                        throw new Error('缺少 ext');
+                    target = `${stem}.${e}`;
+                }
+            }
+            catch (err) {
+                failed.push({ id, error: err.message });
+                continue;
+            }
+            if (!target || target === cur) {
+                failed.push({ id, error: '新名称为空或未变化' });
+                continue;
+            }
+            plan.push({ rec, target });
+        }
+        const taken = new Set();
+        if (plan.length) {
+            const exists = await prisma_1.prisma.fileRecord.findMany({
+                where: {
+                    originalName: { in: plan.map((u) => u.target) },
+                    NOT: { id: { in: plan.map((u) => u.rec.id) } },
+                },
+                select: { originalName: true },
+            });
+            for (const e of exists)
+                taken.add(e.originalName);
+        }
+        const applied = [];
+        for (const u of plan) {
+            let target = u.target;
+            if (taken.has(target)) {
+                const dot = target.lastIndexOf('.');
+                const ts = String(Date.now());
+                const withTs = (base, suffix) => {
+                    const d = base.lastIndexOf('.');
+                    return d > 0 ? `${base.slice(0, d)}-${suffix}${base.slice(d)}` : `${base}-${suffix}`;
+                };
+                target = withTs(target, ts);
+                let n = 1;
+                while (taken.has(target))
+                    target = withTs(u.target, `${ts}-${n++}`);
+            }
+            taken.add(target);
+            applied.push({ rec: u.rec, target });
+        }
+        let updated = 0;
+        for (const u of applied) {
+            try {
+                await prisma_1.prisma.fileRecord.update({ where: { id: u.rec.id }, data: { originalName: u.target } });
+                updated += 1;
+            }
+            catch (err) {
+                failed.push({ id: u.rec.id, error: err.message });
+            }
+        }
+        app_log_1.appLog.info('manage', `批量改名完成：mode=${mode}`, `总数=${ids.length} 更新=${updated} 失败=${failed.length}`);
+        return { success: failed.length === 0, updated, failed };
+    }
+    async batchExpiry(req, body) {
+        if (!(await this.userPerm(req, 'edit')))
+            return { success: false, message: '没有编辑权限' };
+        const ids = this.bodyIds(body);
+        if (!ids.length)
+            return { success: false, message: '缺少 ids' };
+        const { ok: rows } = await this.dropReadonlyShared(await this.loadOwned(ids, req), req);
+        const raw = String(body?.linkExpiresAt ?? '');
+        let at = null;
+        if (raw) {
+            const t = Date.parse(raw);
+            if (!Number.isFinite(t))
+                return { success: false, message: 'linkExpiresAt 不是合法的时间字符串' };
+            at = new Date(t);
+        }
+        const failed = [];
+        let updated = 0;
+        for (const r of rows) {
+            try {
+                await prisma_1.prisma.fileRecord.update({ where: { id: r.id }, data: { linkExpiresAt: at } });
+                updated += 1;
+            }
+            catch (err) {
+                failed.push({ id: r.id, error: err.message });
+            }
+        }
+        app_log_1.appLog.info('manage', `批量限时${raw ? '设置' : '取消'}完成`, `更新=${updated} 失败=${failed.length}`);
+        return { success: true, updated, failed };
+    }
+    async batchRedirect(req, body) {
+        if (!(await this.userPerm(req, 'edit')))
+            return { success: false, message: '没有编辑权限' };
+        const ids = this.bodyIds(body);
+        if (!ids.length)
+            return { success: false, message: '缺少 ids' };
+        const { ok: rows } = await this.dropReadonlyShared(await this.loadOwned(ids, req), req);
+        const url = String(body?.redirectUrl ?? '').trim();
+        if (url) {
+            try {
+                const u = new URL(url);
+                if (!['http:', 'https:'].includes(u.protocol))
+                    return { success: false, message: '仅支持 http/https 地址' };
+            }
+            catch {
+                return { success: false, message: 'URL 格式不正确' };
+            }
+        }
+        const failed = [];
+        let updated = 0;
+        for (const r of rows) {
+            try {
+                await prisma_1.prisma.fileRecord.update({ where: { id: r.id }, data: { redirectUrl: url } });
+                updated += 1;
+            }
+            catch (err) {
+                failed.push({ id: r.id, error: err.message });
+            }
+        }
+        app_log_1.appLog.info('manage', `批量重定向${url ? '设置' : '取消'}完成`, `更新=${updated} 失败=${failed.length}`);
+        return { success: true, updated, failed };
+    }
+    async applyFilePassword(rec, password) {
+        const metas = (0, file_view_1.safeParse)(rec.metas);
+        if (String(password || ''))
+            metas.AccessPasswordHash = (0, folder_meta_service_1.sha256Hex)(String(password));
+        else
+            delete metas.AccessPasswordHash;
+        await prisma_1.prisma.fileRecord.update({ where: { id: rec.id }, data: { metas: JSON.stringify(metas) } });
+    }
+    async batchPassword(req, body) {
+        if (!(await this.userPerm(req, 'edit')))
+            return { success: false, message: '没有编辑权限' };
+        const ids = this.bodyIds(body);
+        if (!ids.length)
+            return { success: false, message: '缺少 ids' };
+        const { ok: rows } = await this.dropReadonlyShared(await this.loadOwned(ids, req), req);
+        const failed = [];
+        let updated = 0;
+        for (const r of rows) {
+            try {
+                await this.applyFilePassword(r, String(body?.password ?? ''));
+                updated += 1;
+            }
+            catch (err) {
+                failed.push({ id: r.id, error: err.message });
+            }
+        }
+        app_log_1.appLog.info('manage', `批量${String(body?.password || '') ? '设置' : '清除'}文件密码完成`, `更新=${updated} 失败=${failed.length}`);
+        return { success: true, updated, failed };
+    }
+    async setPassword(req, id, body) {
+        if (!(await this.userPerm(req, 'edit')))
+            return { success: false, message: '没有编辑权限' };
+        const owner = this.admin(req) ? '' : (0, auth_guard_1.currentSession)(req)?.user || '';
+        const rec = await this.resolveFile(id, owner);
+        if (!rec)
+            return { success: false, message: '文件不存在' };
+        await this.applyFilePassword(rec, String(body?.password ?? ''));
+        app_log_1.appLog.info('manage', `文件密码已${String(body?.password || '') ? '设置' : '清除'}：${rec.name}`);
+        return { success: true, data: { name: rec.name, encrypted: !!String(body?.password || '') } };
+    }
+    async batchMove(req, body) {
+        if (!(await this.userPerm(req, 'edit')))
+            return { success: false, message: '没有编辑权限' };
+        const ids = this.bodyIds(body);
+        const folders = (Array.isArray(body?.folders) ? body.folders : [])
+            .map((f) => (0, folder_meta_service_1.normalizeFolderPath)(String(f || '')))
+            .filter(Boolean);
+        if (!ids.length && !folders.length)
+            return { success: false, message: '缺少 ids' };
+        if (body?.folder === undefined && body?.instanceId === undefined) {
+            return { success: false, message: '缺少 folder 或 instanceId' };
+        }
+        const targetInstance = body?.instanceId !== undefined ? String(body.instanceId ?? '') : undefined;
+        if (targetInstance) {
+            const inst = await prisma_1.prisma.instance.findUnique({ where: { id: targetInstance }, select: { id: true } });
+            if (!inst)
+                throw new common_1.BadRequestException('目标实例不存在');
+        }
+        const data = {};
+        if (targetInstance !== undefined)
+            data.instanceId = targetInstance;
+        if (body?.folder !== undefined)
+            data.folder = (0, folder_meta_service_1.normalizeFolderPath)(String(body.folder));
+        else if (targetInstance !== undefined)
+            data.folder = '';
+        const failed = [];
+        let moved = 0;
+        let movedFolders = 0;
+        let movedRegistered = 0;
+        if (folders.length) {
+            const me = (0, auth_guard_1.currentSession)(req)?.user || '';
+            const isAdmin = this.admin(req);
+            const distBase = data.folder !== undefined ? data.folder : '';
+            for (const f of folders) {
+                if (me) {
+                    const info = await (0, folder_meta_service_1.folderSharedPermission)(f, targetInstance || '', me);
+                    if (info.shared && info.perm === 'readonly') {
+                        failed.push({ id: f, error: '只读共享目录，不允许移动' });
+                        continue;
+                    }
+                }
+                const leaf = f.split('/').filter(Boolean).pop() || '';
+                const newRoot = [distBase, leaf].filter(Boolean).join('/');
+                const rowsInFolder = await prisma_1.prisma.fileRecord.findMany({
+                    where: {
+                        ...(isAdmin ? {} : { uploader: me }),
+                        OR: [{ folder: f }, { folder: { startsWith: `${f}/` } }],
+                    },
+                    select: { id: true, folder: true },
+                });
+                for (const r of rowsInFolder) {
+                    const suffix = String(r.folder || '').slice(f.length).replace(/^\/+/, '');
+                    try {
+                        await prisma_1.prisma.fileRecord.update({
+                            where: { id: r.id },
+                            data: {
+                                folder: suffix ? `${newRoot}/${suffix}` : newRoot,
+                                ...(targetInstance !== undefined ? { instanceId: targetInstance } : {}),
+                            },
+                        });
+                        moved += 1;
+                    }
+                    catch (err) {
+                        failed.push({ id: r.id, error: err.message });
+                    }
+                }
+                try {
+                    const metas = await prisma_1.prisma.folderMeta.findMany({
+                        where: { OR: [{ path: f }, { path: { startsWith: `${f}/` } }] },
+                    });
+                    for (const m of metas) {
+                        const suffix = String(m.path || '').slice(f.length).replace(/^\/+/, '');
+                        await prisma_1.prisma.folderMeta.update({
+                            where: { id: m.id },
+                            data: {
+                                path: suffix ? `${newRoot}/${suffix}` : newRoot,
+                                ...(targetInstance !== undefined ? { instanceId: targetInstance } : {}),
+                            },
+                        });
+                    }
+                }
+                catch (err) {
+                    app_log_1.appLog.warn('file', `目录属性搬家失败：${f}`, err.message);
+                }
+                try {
+                    movedRegistered += await this.moveRegisteredFolders(isAdmin ? '' : me, [f], distBase);
+                }
+                catch (err) {
+                    app_log_1.appLog.warn('file', `登记目录搬家失败：${f}`, err.message);
+                }
+                movedFolders += 1;
+            }
+        }
+        const { ok: rows } = await this.dropReadonlyShared(await this.loadOwned(ids, req), req);
+        for (const r of rows) {
+            try {
+                await prisma_1.prisma.fileRecord.update({ where: { id: r.id }, data });
+                moved += 1;
+            }
+            catch (err) {
+                failed.push({ id: r.id, error: err.message });
+            }
+        }
+        const dirText = data.folder === undefined ? '(不变)' : data.folder || '(根目录)';
+        app_log_1.appLog.info('manage', `批量移动 ${rows.length} 个文件 / ${movedFolders} 个目录 → 实例 ${targetInstance !== undefined ? targetInstance || 'default' : '(不变)'}`, `请求 ${ids.length} 个文件，成功 ${moved} 条记录，失败 ${failed.length} 个 ｜ 目标目录=${dirText}`);
+        return {
+            success: true,
+            moved,
+            movedFolders,
+            movedRegistered,
+            updated: moved,
+            ...(targetInstance !== undefined ? { instanceId: targetInstance } : {}),
+            failed,
+        };
+    }
+    directUrlResolver(preferInternal = false) {
         const infoCache = new Map();
-        return (copy) => {
+        return (copy, rec) => {
             const ch = copy.channel;
             if (!ch)
                 return null;
@@ -1400,12 +2776,21 @@ let ManageController = class ManageController {
                     };
                     infoCache.set(ch.id, info);
                 }
-                if (!copy.remoteUrl && copy.remoteKey && (0, record_link_1.hasRecordDomains)(info.config)) {
-                    const url = (0, record_link_1.joinRecordUrl)((0, record_link_1.recordLoadOrigin)(info.config, false), copy.remoteKey);
-                    if (url)
-                        return url;
+                if (!copy.objectPath &&
+                    !copy.remoteUrl &&
+                    copy.remoteKey &&
+                    (0, file_view_1.isRecordFile)(rec) &&
+                    (0, record_link_1.hasRecordDomains)(info.config, ch.type)) {
+                    const url = (0, record_link_1.joinRecordUrl)((0, record_link_1.recordLoadOrigin)(info.config, preferInternal, ch.type), (0, channel_domain_1.ensureBucketInKey)(ch.type, info.config, copy.remoteKey));
+                    if (url) {
+                        return preferInternal ? url : (0, channel_domain_1.publicizeExternalUrl)(url, ch.type, info.config);
+                    }
                 }
-                return (0, adapter_factory_1.createAdapter)(info).buildDirectUrl((0, adapter_factory_1.toCopyInfo)(copy), info);
+                if (!preferInternal) {
+                    const built = (0, adapter_factory_1.createAdapter)(info).buildDirectUrl((0, adapter_factory_1.toCopyInfo)(copy), info, false);
+                    return (0, channel_domain_1.publicizeExternalUrl)(built, ch.type, info.config);
+                }
+                return (0, adapter_factory_1.createAdapter)(info).buildDirectUrl((0, adapter_factory_1.toCopyInfo)(copy), info, preferInternal);
             }
             catch {
                 return null;
@@ -1468,7 +2853,7 @@ let ManageController = class ManageController {
         return {
             success: true,
             newFileId: newId,
-            metadata: (0, file_view_1.serializeFile)(updated, updated.copies, { tags: updated.tags.map((t) => t.tag.name), resolveDirectUrl: this.directUrlResolver() }).metadata,
+            metadata: (0, file_view_1.serializeFile)(updated, updated.copies, { tags: updated.tags.map((t) => t.tag.name), resolveDirectUrl: this.directUrlResolver(), resolveLoadUrl: this.directUrlResolver(true) }).metadata,
         };
     }
     async resolveFile(fileId, owner = '') {
@@ -1486,7 +2871,7 @@ let ManageController = class ManageController {
             return { success: false, message: '文件不存在' };
         const metadata = (0, file_view_1.serializeFile)(rec, rec.copies, {
             tags: rec.tags.map((t) => t.tag.name),
-            resolveDirectUrl: this.directUrlResolver(),
+            resolveDirectUrl: this.directUrlResolver(), resolveLoadUrl: this.directUrlResolver(true),
         }).metadata;
         metadata.LinkExpiresAt = rec.linkExpiresAt ? rec.linkExpiresAt.getTime() : 0;
         try {
@@ -1521,6 +2906,20 @@ let ManageController = class ManageController {
     }
     canUseNote(req, rec) {
         return this.admin(req) || this.isAuthor(req, rec);
+    }
+    async canRate(req, rec) {
+        if (this.canUseNote(req, rec))
+            return true;
+        const me = (0, auth_guard_1.currentSession)(req)?.user || '';
+        if (!me)
+            return false;
+        try {
+            const hit = await (0, folder_meta_service_1.folderSharedPermission)(rec.folder || '', rec.instanceId || '', me);
+            return hit.shared && hit.perm === 'edit';
+        }
+        catch {
+            return false;
+        }
     }
     async setExpiry(req, body) {
         if (!(await this.userPerm(req, 'edit')))
@@ -1590,6 +2989,18 @@ let ManageController = class ManageController {
                     return { success: false, message: '只有上传者本人或管理员可以编辑备注' };
                 patch.note = String(b.Note ?? b.note ?? '').slice(0, 4000);
             }
+            if (b.Rating !== undefined || b.rating !== undefined) {
+                if (!(await this.canRate(req, rec)))
+                    return { success: false, message: '只有上传者本人、管理员或可编辑共享用户可以评分' };
+                const raw = Number(b.Rating ?? b.rating);
+                patch.rating = Number.isFinite(raw) ? Math.max(0, Math.min(5, Math.round(raw))) : 0;
+            }
+            if (b.Level !== undefined || b.level !== undefined) {
+                if (!(await this.canRate(req, rec)))
+                    return { success: false, message: '只有上传者本人、管理员或可编辑共享用户可以设置等级' };
+                const raw = Number(b.Level ?? b.level);
+                patch.level = Number.isFinite(raw) ? Math.max(0, Math.min(5, Math.round(raw))) : 0;
+            }
             if (b.FileName !== undefined) {
                 const next = String(b.FileName || '').trim();
                 if (next)
@@ -1615,6 +3026,9 @@ let ManageController = class ManageController {
         await prisma_1.prisma.fileRecord.update({ where: { id: rec.id }, data: { metas: metasRaw, ...patch } });
         if (patch.note !== undefined)
             app_log_1.appLog.info('file', `文件备注已保存：${rec.name}`);
+        if (patch.rating !== undefined || patch.level !== undefined) {
+            app_log_1.appLog.info('file', `文件评分/等级已保存：${rec.name}`, `评分=${patch.rating ?? '-'} ｜ 等级=${patch.level ?? '-'}`);
+        }
         const updated = await this.resolveFile(rec.name, owner);
         return {
             success: true,
@@ -1623,7 +3037,7 @@ let ManageController = class ManageController {
                 name: rec.name,
                 ...(this.canUseNote(req, rec) ? { note: patch.note !== undefined ? patch.note : rec.note } : {}),
                 metadata: updated
-                    ? (0, file_view_1.serializeFile)(updated, updated.copies, { tags: updated.tags.map((t) => t.tag.name), resolveDirectUrl: this.directUrlResolver() }).metadata
+                    ? (0, file_view_1.serializeFile)(updated, updated.copies, { tags: updated.tags.map((t) => t.tag.name), resolveDirectUrl: this.directUrlResolver(), resolveLoadUrl: this.directUrlResolver(true) }).metadata
                     : undefined,
             },
         };
@@ -1709,6 +3123,107 @@ let ManageController = class ManageController {
         catch {
             return [];
         }
+    }
+    async unregisterFolders(owner, prefix) {
+        const p = String(prefix || '').replace(/^\/+|\/+$/g, '');
+        if (!p)
+            return 0;
+        let map = {};
+        try {
+            map = JSON.parse((await this.settings.get('extraFolders', '{}')) || '{}');
+        }
+        catch {
+            map = {};
+        }
+        const list = Array.isArray(map[owner]) ? map[owner] : [];
+        const kept = list.filter((d) => d !== p && !String(d).startsWith(`${p}/`));
+        const removed = list.length - kept.length;
+        if (removed > 0) {
+            map[owner] = kept;
+            await this.settings.set('extraFolders', JSON.stringify(map));
+        }
+        return removed;
+    }
+    async moveRegisteredFolders(owner, folders, distBase) {
+        if (!folders.length)
+            return 0;
+        let map = {};
+        try {
+            map = JSON.parse((await this.settings.get('extraFolders', '{}')) || '{}');
+        }
+        catch {
+            map = {};
+        }
+        let list = Array.isArray(map[owner]) ? [...map[owner]] : [];
+        let changed = 0;
+        for (const raw of folders) {
+            const f = String(raw || '').replace(/^\/+|\/+$/g, '');
+            if (!f)
+                continue;
+            const leaf = f.split('/').filter(Boolean).pop() || '';
+            const newRoot = [String(distBase || '').replace(/^\/+|\/+$/g, ''), leaf].filter(Boolean).join('/');
+            const next = [];
+            for (const d of list) {
+                if (d === f || d.startsWith(`${f}/`)) {
+                    const suffix = d.slice(f.length).replace(/^\/+/, '');
+                    next.push(suffix ? `${newRoot}/${suffix}` : newRoot);
+                    changed += 1;
+                }
+                else {
+                    next.push(d);
+                }
+            }
+            list = next;
+        }
+        if (changed > 0) {
+            map[owner] = Array.from(new Set(list)).sort();
+            await this.settings.set('extraFolders', JSON.stringify(map));
+        }
+        return changed;
+    }
+    async foldersAll(req, q) {
+        const instanceId = String(q.instanceId ?? '');
+        const admin = this.admin(req);
+        const me = (0, auth_guard_1.currentSession)(req)?.user || '';
+        const rows = await prisma_1.prisma.fileRecord.groupBy({
+            by: ['folder'],
+            where: { status: 'active', instanceId, ...(admin ? {} : { uploader: me }) },
+        });
+        const base = new Set(rows.map((r) => r.folder).filter(Boolean));
+        if (!admin) {
+            for (const d of await (0, folder_meta_service_1.listSharedFoldersFor)(me, instanceId))
+                base.add(d.path);
+        }
+        const metas = await prisma_1.prisma.folderMeta.findMany({
+            where: { instanceId, ...(admin ? {} : { owner: me }) },
+            select: { path: true, metas: true },
+        });
+        const displayNames = {};
+        for (const m of metas) {
+            const p = String(m.path || '').replace(/^\/+|\/+$/g, '');
+            if (!p)
+                continue;
+            base.add(p);
+            const name = String((0, file_view_1.safeParse)(m.metas).displayName || '').trim();
+            if (name)
+                displayNames[p] = name;
+        }
+        for (const d of await this.extraFolders(req)) {
+            const p = String(d || '').replace(/^\/+|\/+$/g, '');
+            if (p)
+                base.add(p);
+        }
+        const all = new Set();
+        for (const f of base) {
+            const segs = f.split('/').filter(Boolean);
+            for (let i = 1; i <= segs.length; i += 1)
+                all.add(segs.slice(0, i).join('/'));
+        }
+        return {
+            success: true,
+            data: Array.from(all).sort((a, b) => a.localeCompare(b)),
+            displayNames,
+        };
     }
     async stats() {
         const [fileCount, sizeAgg, channels] = await Promise.all([
@@ -1967,15 +3482,17 @@ __decorate([
 __decorate([
     (0, common_1.Get)('trash/purge/*'),
     __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Query)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [Object]),
+    __metadata("design:paramtypes", [Object, Object]),
     __metadata("design:returntype", Promise)
 ], ManageController.prototype, "trashPurge", null);
 __decorate([
     (0, common_1.Delete)('trash/purge/*'),
     __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Query)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [Object]),
+    __metadata("design:paramtypes", [Object, Object]),
     __metadata("design:returntype", Promise)
 ], ManageController.prototype, "trashPurgeDelete", null);
 __decorate([
@@ -1986,6 +3503,55 @@ __decorate([
     __metadata("design:paramtypes", [Object, Object]),
     __metadata("design:returntype", Promise)
 ], ManageController.prototype, "trashBatch", null);
+__decorate([
+    (0, common_1.Post)('batch/original-name'),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Object]),
+    __metadata("design:returntype", Promise)
+], ManageController.prototype, "batchOriginalName", null);
+__decorate([
+    (0, common_1.Post)('batch/expiry'),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Object]),
+    __metadata("design:returntype", Promise)
+], ManageController.prototype, "batchExpiry", null);
+__decorate([
+    (0, common_1.Post)('batch/redirect'),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Object]),
+    __metadata("design:returntype", Promise)
+], ManageController.prototype, "batchRedirect", null);
+__decorate([
+    (0, common_1.Post)('batch/password'),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Object]),
+    __metadata("design:returntype", Promise)
+], ManageController.prototype, "batchPassword", null);
+__decorate([
+    (0, common_1.Post)(':id/password'),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Param)('id')),
+    __param(2, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, String, Object]),
+    __metadata("design:returntype", Promise)
+], ManageController.prototype, "setPassword", null);
+__decorate([
+    (0, common_1.Post)('batch/move'),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Object]),
+    __metadata("design:returntype", Promise)
+], ManageController.prototype, "batchMove", null);
 __decorate([
     (0, common_1.Post)('rename/*'),
     __param(0, (0, common_1.Req)()),
@@ -2087,6 +3653,14 @@ __decorate([
     __metadata("design:paramtypes", [Object, Object]),
     __metadata("design:returntype", Promise)
 ], ManageController.prototype, "createFolder", null);
+__decorate([
+    (0, common_1.Get)('folders/all'),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Query)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Object]),
+    __metadata("design:returntype", Promise)
+], ManageController.prototype, "foldersAll", null);
 __decorate([
     (0, common_1.Get)('stats'),
     (0, common_1.UseGuards)(auth_guard_1.AdminGuard),
@@ -2287,7 +3861,32 @@ let UserConfigController = class UserConfigController {
     async userConfig(req) {
         const s = this.settings;
         const uploader = (0, auth_guard_1.currentSession)(req)?.user || '';
-        const domain = (await s.getServerDomain()) || `${req.protocol}://${req.get('host')}`;
+        const domain = (await s.getServerDomain()) || (0, request_origin_1.signOrigin)(req);
+        let accountTotpEnabled = false;
+        let accountUploadBk = [];
+        let accountAdminBk = [];
+        if (uploader) {
+            const u = await prisma_1.prisma.user
+                .findUnique({
+                where: { username: uploader },
+                select: { totpEnabled: true, uploadBkImg: true, adminBkImg: true },
+            })
+                .catch(() => null);
+            accountTotpEnabled = !!u?.totpEnabled;
+            const parseBk = (raw) => {
+                if (!raw)
+                    return [];
+                try {
+                    const a = JSON.parse(raw);
+                    return Array.isArray(a) ? a.filter((x) => typeof x === 'string' && x.trim()) : [];
+                }
+                catch {
+                    return [];
+                }
+            };
+            accountUploadBk = parseBk(u?.uploadBkImg);
+            accountAdminBk = parseBk(u?.adminBkImg);
+        }
         const bool = async (k, d = false) => (await s.get(k, d ? 'true' : 'false')) === 'true';
         let page = { config: [] };
         try {
@@ -2353,11 +3952,13 @@ let UserConfigController = class UserConfigController {
             defaultUploadNameType: pv('defaultUploadNameType', 'default'),
             defaultUploadFolder: pv('defaultUploadFolder', ''),
             defaultConvertToWebp: pv('defaultConvertToWebp', false) === true,
+            webpMode: pv('webpMode', 'lossless') === 'lossy' ? 'lossy' : 'lossless',
             defaultCustomerCompress: pv('defaultCustomerCompress', true) === true,
             webpEnabled: pv('defaultConvertToWebp', false) === true,
             compressEnabled: pv('defaultCustomerCompress', true) === true,
             transcodePolicy: await this.uploadSvc.videoTranscodePolicy(uploader),
             transcodeGlobal: await this.uploadSvc.globalTranscodeEnabled(),
+            uploadConcurrency: Math.min(10, Math.max(1, Number(pv('defaultUploadConcurrency', '3')) || 3)),
             autoRetry: pb('defaultAutoRetry', true),
             retryTimes: this.parseRetryTimes(pv('defaultRetryTimes', '3')),
             autoSwitch: pb('defaultAutoSwitch', true),
@@ -2373,29 +3974,37 @@ let UserConfigController = class UserConfigController {
             autoDarkMode: pv('autoDarkMode', true) !== false,
             bkInterval: Number(pv('bkInterval', 3000)) || 3000,
             bkOpacity: Number(pv('bkOpacity', 1)) || 1,
-            uploadBkImg: asBk(pv('uploadBkImg', [])),
-            adminBkImg: asBk(pv('adminBkImg', [])),
+            uploadBkImg: accountUploadBk.length ? accountUploadBk : asBk(pv('uploadBkImg', [])),
+            adminBkImg: accountAdminBk.length ? accountAdminBk : asBk(pv('adminBkImg', [])),
             adminLoginBkImg: asBk(pv('adminLoginBkImg', [])),
             showDirectorySuggestions: pv('showDirectorySuggestions', true) !== false,
+            accountTotpEnabled,
         };
     }
-    async directoryTree(req) {
+    async directoryTree(req, q) {
         const session = (0, auth_guard_1.currentSession)(req);
         const admin = (0, auth_guard_1.isAdminRole)(session?.role);
         const owner = admin ? '' : session?.user || '';
-        const rows = await prisma_1.prisma.fileRecord.groupBy({
-            by: ['folder'],
-            where: { status: 'active', ...(owner ? { uploader: owner } : {}) },
-        });
-        const dirs = rows.map((r) => r.folder).filter(Boolean);
+        const instanceId = String(q.instanceId ?? '');
         try {
-            const map = JSON.parse((await this.settings.get('extraFolders', '{}')) || '{}');
-            const extra = Array.isArray(map[owner]) ? map[owner] : [];
-            dirs.push(...extra);
+            const rows = await prisma_1.prisma.fileRecord.groupBy({
+                by: ['folder'],
+                where: { status: 'active', instanceId, ...(owner ? { uploader: owner } : {}) },
+            });
+            const dirs = rows.map((r) => r.folder).filter(Boolean);
+            try {
+                const map = JSON.parse((await this.settings.get('extraFolders', '{}')) || '{}');
+                const extra = Array.isArray(map[owner]) ? map[owner] : [];
+                dirs.push(...extra);
+            }
+            catch {
+            }
+            return { success: true, tree: (0, file_view_1.buildDirectoryTree)(Array.from(new Set(dirs)).sort()) };
         }
-        catch {
+        catch (err) {
+            app_log_1.appLog.error('file', `目录树加载失败：${err.message}`, `owner=${owner || '-'} instance=${instanceId || 'default'}`);
+            throw err;
         }
-        return { success: true, tree: (0, file_view_1.buildDirectoryTree)(Array.from(new Set(dirs)).sort()) };
     }
     async publicList(q, res) {
         const others = (await this.sysConfig.get('others'));
@@ -2573,7 +4182,7 @@ let UserConfigController = class UserConfigController {
         }
         res.setHeader('Cache-Control', 'no-store');
         if (asJson) {
-            const origin = `${req.protocol}://${req.get('host')}`;
+            const origin = (0, request_origin_1.signOrigin)(req);
             const prefix = await this.settings.getLinkPrefix(origin);
             const items = picked.map((r) => ({
                 src: `${prefix}${encodeURIComponent(r.name)}`,
@@ -2599,8 +4208,9 @@ __decorate([
 __decorate([
     (0, common_1.Get)('directoryTree'),
     __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Query)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [Object]),
+    __metadata("design:paramtypes", [Object, Object]),
     __metadata("design:returntype", Promise)
 ], UserConfigController.prototype, "directoryTree", null);
 __decorate([

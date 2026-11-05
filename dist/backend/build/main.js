@@ -3,6 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+const settings_service_1 = require("./settings/settings.service");
 require("./common/load-env");
 require("reflect-metadata");
 const core_1 = require("@nestjs/core");
@@ -11,6 +12,7 @@ const cookie_parser_1 = __importDefault(require("cookie-parser"));
 const express_1 = __importDefault(require("express"));
 const path_1 = require("path");
 const fs_1 = require("fs");
+const zlib_1 = require("zlib");
 const app_module_1 = require("./app.module");
 const channels_controller_1 = require("./channels/channels.controller");
 const access_service_1 = require("./access/access.service");
@@ -177,6 +179,81 @@ async function bootstrap() {
     });
     const frontendDir = (0, project_paths_1.frontendAppDir)();
     if (frontendDir) {
+        const GZIP_TYPES = {
+            '.js': 'application/javascript; charset=utf-8',
+            '.mjs': 'application/javascript; charset=utf-8',
+            '.css': 'text/css; charset=utf-8',
+            '.json': 'application/json; charset=utf-8',
+            '.svg': 'image/svg+xml',
+            '.txt': 'text/plain; charset=utf-8',
+            '.map': 'application/json; charset=utf-8',
+            '.html': 'text/html; charset=utf-8',
+        };
+        const gzipCache = new Map();
+        const GZIP_MAX_ENTRIES = 240;
+        server.use((req, res, next) => {
+            if (req.method !== 'GET' && req.method !== 'HEAD')
+                return next();
+            if (!/\bgzip\b/i.test(String(req.headers['accept-encoding'] || '')))
+                return next();
+            if (res.getHeader('Content-Encoding'))
+                return next();
+            let rel = req.path || '';
+            if (!rel || rel === '/' || rel.includes('..'))
+                return next();
+            const dot = rel.lastIndexOf('.');
+            if (dot < 0)
+                return next();
+            const ext = rel.slice(dot).toLowerCase();
+            const contentType = GZIP_TYPES[ext];
+            if (!contentType)
+                return next();
+            let full;
+            try {
+                rel = decodeURIComponent(rel);
+                if (rel.includes('..'))
+                    return next();
+                full = (0, path_1.join)(frontendDir, rel);
+            }
+            catch (e) {
+                return next();
+            }
+            let st;
+            try {
+                st = (0, fs_1.statSync)(full);
+                if (!st.isFile())
+                    return next();
+            }
+            catch (e) {
+                return next();
+            }
+            if (st.size < 1024)
+                return next();
+            try {
+                const hit = gzipCache.get(full);
+                let body;
+                if (hit && hit.mtime === st.mtimeMs) {
+                    body = hit.body;
+                }
+                else {
+                    body = (0, zlib_1.gzipSync)((0, fs_1.readFileSync)(full), { level: 6 });
+                    if (gzipCache.size >= GZIP_MAX_ENTRIES)
+                        gzipCache.clear();
+                    gzipCache.set(full, { mtime: st.mtimeMs, body });
+                }
+                res.setHeader('Content-Type', contentType);
+                res.setHeader('Content-Encoding', 'gzip');
+                res.setHeader('Vary', 'Accept-Encoding');
+                res.setHeader('Content-Length', String(body.length));
+                res.setHeader('Cache-Control', /[/\\]assets[/\\]/.test(full) ? 'public, max-age=31536000, immutable' : 'no-cache');
+                if (req.method === 'HEAD')
+                    return res.status(200).end();
+                return res.status(200).end(body);
+            }
+            catch (e) {
+                return next();
+            }
+        });
         server.use(express_1.default.static(frontendDir, {
             index: false,
             setHeaders(res, filePath) {
@@ -272,9 +349,15 @@ async function bootstrap() {
     await app.init();
     try {
         await app.get(channels_controller_1.ChannelsService).ensureBuiltinLocalChannel();
+        await app.get(channels_controller_1.ChannelsService).ensureBuiltinLocalFilesChannel();
     }
     catch (err) {
         console.warn(`[local-channel] 内置本地存储渠道初始化失败：${err.message}`);
+    }
+    try {
+        await app.get(settings_service_1.SettingsService).getServerDomain();
+    }
+    catch {
     }
     try {
         const svc = app.get(access_service_1.AccessService);

@@ -1,3 +1,4 @@
+import { signOrigin } from '../common/request-origin';
 import { All, Controller, Req, Res } from '@nestjs/common';
 import { Request, Response } from 'express';
 import { prisma } from '../common/prisma';
@@ -190,7 +191,7 @@ export class WebDavController {
             include: { copies: true },
           });
           if (!rec) return res.status(404).send('Not Found');
-          const origin = `${req.protocol}://${req.get('host')}`;
+          const origin = signOrigin(req);
           // 对外只跳 go-imgbed 的签发链接，并走全站统一出口（自定义访问域名优先）；
           // 标识里已带扩展名就不再追加，没有才补原文件扩展名（仅作标识用）。
           const prefix = await this.settings.getLinkPrefix(origin);
@@ -247,7 +248,7 @@ export class WebDavController {
            * 那个地址在本系统里是不存在的（本系统的外链是 /file/<File_ID>）——
            * 这里显式给出正确链接，客户端可优先取用。
            */
-          const origin = `${req.protocol}://${req.get('host')}`;
+          const origin = signOrigin(req);
           const prefix = await this.settings.getLinkPrefix(origin);
           const signedUrl = `${prefix}${this.encodePath(r.id)}${extSuffixFor(r.id, last)}`;
           res.setHeader('Location', signedUrl);
@@ -322,7 +323,7 @@ export class WebDavController {
    *   - href 按「路径段」编码，避免 # ? 等字符截断 URL
    */
   private async propfind(req: Request, res: Response, folder: string, path: string, isDirRequest: boolean) {
-    const origin = `${req.protocol}://${req.get('host')}`;
+    const origin = signOrigin(req);
     const depth = String(req.headers.depth ?? '1').trim().toLowerCase();
     const selfOnly = depth === '0';
 

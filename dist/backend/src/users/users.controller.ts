@@ -156,6 +156,8 @@ export class UsersController {
       canEdit: u.canEdit,
       canDelete: u.canDelete,
       linkEnabled: u.linkEnabled,
+      // v3.0.0：对外分享权限（管理员默认拥有，与 sessionCheck 保持一致）
+      shareEnabled: u.role === 'admin' || u.role === 'super' ? true : !!u.shareEnabled,
       enforceLimits: u.enforceLimits,
       // v2.8.8：账户级「视频兼容转码」策略 + 单文件大小限制
       transcodePolicy: u.transcodePolicy || 'inherit',
@@ -196,6 +198,7 @@ export class UsersController {
         canEdit: true,
         canDelete: true,
         linkEnabled: true,
+        shareEnabled: true,
         enforceLimits: prof.enforceLimits !== false,
         transcodePolicy: String(prof.transcodePolicy || 'inherit'),
         maxFileSizeMB: Number(prof.maxFileSizeMB) || 0,
@@ -352,6 +355,8 @@ export class UsersController {
           canEdit: true,
           canDelete: true,
           linkEnabled: true,
+          // v3.0.0：管理员默认拥有对外分享权限
+          shareEnabled: true,
           enforceLimits: prof.enforceLimits !== false,
           transcodePolicy: String(prof.transcodePolicy || 'inherit'),
           maxFileSizeMB: Number(prof.maxFileSizeMB) || 0,
@@ -382,6 +387,8 @@ export class UsersController {
         canEdit: u.canEdit,
         canDelete: u.canDelete,
         linkEnabled: u.linkEnabled,
+        // v3.0.0：对外分享权限（管理员默认拥有）
+        shareEnabled: u.role === 'admin' || u.role === 'super' ? true : !!u.shareEnabled,
         enforceLimits: u.enforceLimits,
         // v2.8.8：账户级转码策略与单文件大小限制（管理员操作模块展示）
         transcodePolicy: u.transcodePolicy || 'inherit',
@@ -396,6 +403,9 @@ export class UsersController {
         mailReady: await this.mail.configured(),
         frontSessionDays: u.frontSessionDays ?? DEFAULT_SESSION_DAYS,
         backSessionDays: u.backSessionDays ?? DEFAULT_SESSION_DAYS,
+        // v3.0.0（R16）：账户自定义背景图（JSON 数组字符串，空串 = 跟随系统设置）
+        uploadBkImg: u.uploadBkImg || '',
+        adminBkImg: u.adminBkImg || '',
         // 管理备注只回给管理员
         adminNote: admin ? u.adminNote || '' : '',
         createdAt: u.createdAt,
@@ -419,6 +429,8 @@ export class UsersController {
       canEdit?: boolean;
       canDelete?: boolean;
       linkEnabled?: boolean;
+      /** v3.0.0：对外分享权限（管理员操作 → 分享权限） */
+      shareEnabled?: boolean;
       enforceLimits?: boolean;
       /** v2.8.8：账户级「视频兼容转码」策略 */
       transcodePolicy?: string;
@@ -477,6 +489,8 @@ export class UsersController {
       oldPassword?: string;
       emailCode?: string;
       totpCode?: string;
+      /** v3.0.0（R12）：三选一合并为一个输入框后的统一凭据（自动识别类型） */
+      verifyCode?: string;
       /** v2.6.0：管理员改他人密码时必填 —— 管理员自己的密码 */
       adminPassword?: string;
       nickname?: string;
@@ -485,6 +499,8 @@ export class UsersController {
       canEdit?: boolean;
       canDelete?: boolean;
       linkEnabled?: boolean;
+      /** v3.0.0：对外分享权限（管理员操作 → 分享权限） */
+      shareEnabled?: boolean;
       enforceLimits?: boolean;
       /** v2.8.8：账户级「视频兼容转码」策略 */
       transcodePolicy?: string;
@@ -495,6 +511,9 @@ export class UsersController {
       adminNote?: string;
       frontSessionDays?: number | null;
       backSessionDays?: number | null;
+      /** v3.0.0（R16）：账户自定义背景图（JSON 数组字符串） */
+      uploadBkImg?: string;
+      adminBkImg?: string;
     },
   ) {
     // ---- 老库的虚拟管理员行（users 表无 admin 时）----
@@ -574,12 +593,25 @@ export class UsersController {
       data[key] = Math.floor(n);
     }
 
+    /*
+     * v3.0.0（R16）：账户自定义背景图 —— 本人与管理员都可改（属于账户个人偏好，
+     * 只影响自己的上传页 / 管理页观感，不涉及全局配置）。
+     */
+    for (const key of ['uploadBkImg', 'adminBkImg'] as const) {
+      if (body[key] === undefined) continue;
+      const v = normalizeBkImg(body[key]);
+      if (v === null) return { success: false, message: '背景图格式不正确，需为 ["图片地址1","图片地址2"]' };
+      data[key] = v;
+    }
+
     // ---- 以下字段仅管理员可改 ----
     if (admin) {
       if (body.enabled !== undefined) data.enabled = !!body.enabled;
       if (body.canEdit !== undefined) data.canEdit = !!body.canEdit;
       if (body.canDelete !== undefined) data.canDelete = !!body.canDelete;
       if (body.linkEnabled !== undefined) data.linkEnabled = !!body.linkEnabled;
+      // v3.0.0：对外分享权限（管理员操作 → 分享权限）
+      if (body.shareEnabled !== undefined) data.shareEnabled = !!body.shareEnabled;
       if (body.enforceLimits !== undefined) data.enforceLimits = !!body.enforceLimits;
       if (body.transcodePolicy !== undefined) data.transcodePolicy = normalizeTranscodePolicy(body.transcodePolicy);
       if (body.maxFileSizeMB !== undefined) data.maxFileSizeMB = clampMaxFileSizeMB(body.maxFileSizeMB);
@@ -720,7 +752,9 @@ export class UsersController {
     const email = String(body?.email || target.u.email || '').trim().toLowerCase();
     if (!email) return { success: false, message: '请先填写邮箱地址' };
     const code = String(body?.code || '').trim();
-    if (!/^\d{6}$/.test(code)) return { success: false, message: '请输入 6 位验证码' };
+    // v3.0.0（R9 修复）：邮箱验证码为 6 位字母数字（与前端 R8 放开的规则一致）——
+    // 此前后端仍只认纯数字，字母验证码即使输对也被这里拦下并提示「请输入 6 位验证码」。
+    if (!/^[0-9A-Za-z]{6}$/.test(code)) return { success: false, message: '请输入 6 位验证码' };
     const r = this.mail.consumeCode(email, 'verify-email', code);
     if (!r.ok) return { success: false, message: r.message };
 
@@ -770,8 +804,56 @@ export class UsersController {
    */
   private verifySelfPassword(
     u: { passwordHash: string; email: string; emailVerified: boolean; totpEnabled: boolean; totpSecret: string },
-    body: { oldPassword?: string; emailCode?: string; totpCode?: string },
+    body: { oldPassword?: string; emailCode?: string; totpCode?: string; verifyCode?: string; verifyType?: string },
   ): { ok: boolean; message?: string } {
+    /*
+     * v3.0.0（R14）：编辑页一个输入框 + 三个显式切换按钮（原密码 / 邮箱验证 / 两步验证），
+     * 前端提交 verifyType（password / email / totp）+ verifyCode —— 按选定方式校验，
+     * 不再「按内容猜」；邮箱验证码为 6 位大小写字母 + 数字（R12 的 /^\d{6}$/ 限制是
+     * 混合字符集验证码永远匹配不上的根因，此处一并修复）。
+     * 未传 verifyType 时保留 R12 的自动识别（兼容旧前端 / API 调用方）。
+     */
+    const merged = String(body.verifyCode || '').trim();
+    const vType = String(body.verifyType || '').trim().toLowerCase();
+    if (merged && vType) {
+      if (vType === 'password') {
+        if (CryptoService.verifyPassword(merged, u.passwordHash)) return { ok: true };
+        return { ok: false, message: '原密码不正确' };
+      }
+      if (vType === 'email') {
+        if (!u.email || !u.emailVerified) return { ok: false, message: '该账户邮箱未验证，无法使用邮箱验证码改密' };
+        const r = this.mail.consumeAnyCode(u.email, ['change-password', 'login'], merged);
+        return r.ok ? { ok: true } : { ok: false, message: r.message };
+      }
+      if (vType === 'totp') {
+        if (!u.totpEnabled || !u.totpSecret) return { ok: false, message: '该账户未启用两步验证' };
+        try {
+          if (verifyTotp(CryptoService.decrypt(u.totpSecret), merged)) return { ok: true };
+        } catch {
+          /* 解密失败按动态码错误处理 */
+        }
+        return { ok: false, message: '动态码错误或已过期' };
+      }
+      return { ok: false, message: '身份验证方式无效' };
+    }
+    if (merged) {
+      /* R12 兼容：未指定类型时按内容自动识别 */
+      if (CryptoService.verifyPassword(merged, u.passwordHash)) return { ok: true };
+      if (merged.length <= 8) {
+        if (u.email && u.emailVerified) {
+          const r = this.mail.consumeAnyCode(u.email, ['change-password', 'login'], merged);
+          if (r.ok) return { ok: true };
+        }
+        if (u.totpEnabled && u.totpSecret) {
+          try {
+            if (verifyTotp(CryptoService.decrypt(u.totpSecret), merged)) return { ok: true };
+          } catch {
+            /* 解密失败按动态码错误处理 */
+          }
+        }
+      }
+      return { ok: false, message: '身份验证失败：原密码 / 邮箱验证码 / 两步验证动态码均不匹配' };
+    }
     const oldPassword = String(body.oldPassword || '');
     const emailCode = String(body.emailCode || '').trim();
     const totpCode = String(body.totpCode || '').trim();
@@ -1036,6 +1118,41 @@ function clampMaxFileSizeMB(raw: unknown): number {
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0) return 0;
   return Math.min(1048576, Math.round(n));
+}
+
+/**
+ * v3.0.0（R16）：账户自定义背景图字段归一化。
+ *
+ * 前端输入框格式为 JSON 数组字符串：`["https://a.jpg","https://b.jpg"]`。
+ * 兼容三种写法：空串（= 跟随系统设置）、合法 JSON 数组、单个 URL（自动包成数组）。
+ * 只接受 http(s) / 站内绝对路径（/ 开头），最多 20 张，单条最长 2000 字符。
+ * 返回 null 表示格式不合法（调用方回错误信息）。
+ */
+function normalizeBkImg(raw: unknown): string | null {
+  if (raw === undefined) return null;
+  if (raw === null) return '';
+  const text = String(raw).trim();
+  if (!text) return '';
+  let arr: unknown[];
+  if (text.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(text);
+      if (!Array.isArray(parsed)) return null;
+      arr = parsed;
+    } catch {
+      return null;
+    }
+  } else {
+    arr = [text];
+  }
+  const list = arr
+    .map((x) => (typeof x === 'string' ? x.trim() : ''))
+    .filter(Boolean)
+    .map((x) => x.slice(0, 2000))
+    .filter((x) => /^https?:\/\//i.test(x) || x.startsWith('/'))
+    .slice(0, 20);
+  // 数组里全是不合法地址 → 视为清空（不让脏数据落库）
+  return list.length ? JSON.stringify(list) : '';
 }
 
 /** 头像目录：<后端根>/uploads/avatars */

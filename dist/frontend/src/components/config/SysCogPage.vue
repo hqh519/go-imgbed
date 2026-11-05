@@ -161,6 +161,10 @@ methods: {
      * 其余多行字段保持 2 行，避免表单过长。
      */
     textareaMinRows(setting) {
+        // v3.0.0（R17）：配置项自己声明 rows 时以它为准
+        //（背景图 uploadBkImg / adminLoginBkImg / adminBkImg 已改为多行文本，rows = 3）
+        const declared = Number(setting?.rows);
+        if (Number.isFinite(declared) && declared > 0) return declared;
         if (setting?.id === 'announcement') return 4;
         if (setting?.id === 'footerLink') return 8;
         return 2;

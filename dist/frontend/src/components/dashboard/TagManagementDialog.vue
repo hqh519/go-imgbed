@@ -6,6 +6,17 @@
         :before-close="beforeClose"
         @close="handleClose"
     >
+        <!-- v3.0.0：「标签管理」标题后加问号说明（自动打标签规则） -->
+        <template #header="{ titleId, titleClass }">
+            <div class="tag-dialog-title">
+                <span :id="titleId" :class="titleClass">{{ $t('tagManagement.title') }}</span>
+                <el-tooltip :content="$t('tagManagement.autoTagHint')" placement="bottom" effect="dark">
+                    <button type="button" class="tag-help-button" :aria-label="$t('tagManagement.autoTagHint')">
+                        <font-awesome-icon icon="question-circle" />
+                    </button>
+                </el-tooltip>
+            </div>
+        </template>
         <div class="tag-dialog-content tag-management-container">
             <section class="tag-section">
                 <div class="tag-section-header">
@@ -58,6 +69,8 @@
             <el-alert v-if="indexPending" :title="$t('tagManagement.indexPending')" type="warning" show-icon :closable="false">
                 <el-button size="small" :loading="loading" :disabled="false" @click="repairIndex"><font-awesome-icon icon="redo" /> {{ $t('aiTags.retry') }}</el-button>
             </el-alert>
+
+            <!-- v3.0.0：标签加密区已移除（标签加密不再参与外链鉴权，相关 i18n 键保留备用） -->
         </div>
         <template #footer>
             <div class="dialog-footer"><el-button :disabled="loading" @click="handleClose">{{ $t('tagManagement.close') }}</el-button></div>
@@ -325,5 +338,15 @@ export default {
     margin-top: 16px;
     padding-top: 16px;
     border-top: 1px solid var(--el-border-color-lighter);
+}
+/* v3.0.0：标题后问号图标 */
+.tag-dialog-title {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+.tag-dialog-title .tag-help-button {
+    flex: 0 0 auto;
 }
 </style>

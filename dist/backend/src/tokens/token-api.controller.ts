@@ -1,3 +1,4 @@
+import { signOrigin } from '../common/request-origin';
 import { Body, Controller, Delete, Get, Head, HttpCode, Post, Put, Req, Res, UploadedFile, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { Request, Response } from 'express';
@@ -10,6 +11,7 @@ import { SettingsService } from '../settings/settings.service';
 import { NO_BACKUP_VALUES, StorageChannelService } from '../storage/storage-channel.service';
 import { extSuffixFor } from '../common/file-view';
 import { appLog } from '../common/app-log';
+import { expandFolderPlaceholders } from './folder-placeholders';
 
 /**
  * API Token 接入端点 —— 为 go-imgbed 规划的两套自有规则。
@@ -194,6 +196,7 @@ export class TokenApiController {
       owner?: string;
       defaultBucket?: string;
       defaultBackup?: string;
+      defaultCategory?: string;
     };
 
     /*
@@ -284,12 +287,22 @@ export class TokenApiController {
     const tokenBackupFlag = String(tokenMetas.defaultBackup || '').trim().toLowerCase();
     const backupOff = !useUserStore && NO_BACKUP_VALUES.includes(tokenBackupFlag);
 
+    /*
+     * 默认分类目录（v3.0.0 R18）：支持占位符 {tokenName} {user} {y} {m} {d}。
+     * 展开在服务端做 —— 同一个 Token 被不同账户 / 不同时间使用时，
+     * 目录会按「Token 名称 / 用户名 / 年月日」分别落位。
+     */
+    const tokenFolder = expandFolderPlaceholders(String(tokenMetas.defaultCategory || ''), {
+      tokenName: auth.token.name,
+      user: owner,
+    });
+
     const opts = {
       channelId: channelId || undefined,
       // 渠道已在上面按 v1.8.0 规则显式解析，不再让 tokenId 参与隐式候选链
       tokenId: undefined,
-      // 分类：已取消 category 参数，统一走系统默认（默认上传目录 → 年份/月份）
-      uploadFolder: '',
+      // 分类：Token 的「默认分类目录」（已展开占位符）；留空走「默认上传目录 → 年份/月份」
+      uploadFolder: tokenFolder,
       uploadNameType: String(body.nameType || 'default'),
       uploader: owner,
       ip,
@@ -330,7 +343,7 @@ export class TokenApiController {
       const r = await this.uploadSvc.upload({ buffer, mime, originalName }, opts);
       if (r.error) return res.status(500).json({ success: false, message: r.error });
       // 对外只返回 go-imgbed 的「签发链接」，并走全站统一出口（自定义访问域名优先）
-      const origin = `${req.protocol}://${req.get('host')}`;
+      const origin = signOrigin(req);
       const prefix = await this.settings.getLinkPrefix(origin);
       // 标识里已带扩展名就不再追加；没有则补上原文件扩展名（仅作标识用）
       const ext = extSuffixFor(r.id, originalName);
@@ -409,6 +422,8 @@ export class TokenApiController {
     accessKey: string,
   ): Promise<{
     tokenId: string;
+    /** Token 名称（「默认分类目录」占位符 {tokenName} 用） */
+    tokenName: string;
     secretKey: string;
     owner: string;
     defaultBackup: string;
@@ -425,6 +440,7 @@ export class TokenApiController {
         try {
           return {
             tokenId: t.id,
+            tokenName: String(t.name || '').trim(),
             secretKey: CryptoService.decrypt(metas.secretKeyEnc),
             owner: String(metas.owner || '').trim(),
             defaultBackup: String(metas.defaultBackup || '').trim(),
@@ -499,9 +515,13 @@ export class TokenApiController {
      * 逻辑分类目录（folder）：优先用 Token 上配置的「默认分类目录」。
      * 早前 S3 通道完全没传 folder，导致「默认分类目录」形同虚设 ——
      * 文件一律落到全局默认目录（或按 年/月 自动分类）。
+     * v3.0.0（R18）：支持占位符 {tokenName} {user} {y} {m} {d}，与 Web 通用通道共用同一实现。
      * 留空时交给 UploadService 走「后台上传设置 → 年/月」的既有兜底。
      */
-    const uploadFolder = String(found.defaultCategory || '').replace(/^\/+|\/+$/g, '');
+    const uploadFolder = expandFolderPlaceholders(String(found.defaultCategory || ''), {
+      tokenName: found.tokenName,
+      user: owner,
+    });
     try {
       const r = await this.uploadSvc.upload(
         { buffer: body, mime: headers['content-type'] || 'application/octet-stream', originalName },
@@ -542,7 +562,7 @@ export class TokenApiController {
        * 同时放进标准 Location 头与自定义头，方便客户端/网关直接取用，
        * 避免客户端拿 endpoint + bucket + key 自行拼出一个无法访问的地址。
        */
-      const origin = `${req.protocol}://${req.get('host')}`;
+      const origin = signOrigin(req);
       const prefix = await this.settings.getLinkPrefix(origin);
       // 标识（= 客户端上传的 Object Key）里已带扩展名就不再追加
       const signedUrl = `${prefix}${this.encodePath(r.id)}${extSuffixFor(r.id, originalName)}`;

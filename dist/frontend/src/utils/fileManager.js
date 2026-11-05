@@ -285,6 +285,15 @@ class FileManager {
         if ((Number(filters.widthMax) || 0) > 0) params += `&widthMax=${Number(filters.widthMax)}`;
         if ((Number(filters.heightMin) || 0) > 0) params += `&heightMin=${Number(filters.heightMin)}`;
         if ((Number(filters.heightMax) || 0) > 0) params += `&heightMax=${Number(filters.heightMax)}`;
+        /*
+         * v3.0.0（R8）：评级筛选（评分 0-5 半星 / 等级 0-5）——
+         * null = 该侧不限（不传）；「未评分 / 未设等级」= 0 与 0（要传，后端据此要求正好等于 0）。
+         */
+        const numParam = (v) => (v === null || v === undefined || v === '' ? null : Number(v));
+        if (numParam(filters.ratingMin) !== null) params += `&ratingMin=${numParam(filters.ratingMin)}`;
+        if (numParam(filters.ratingMax) !== null) params += `&ratingMax=${numParam(filters.ratingMax)}`;
+        if (numParam(filters.levelMin) !== null) params += `&levelMin=${numParam(filters.levelMin)}`;
+        if (numParam(filters.levelMax) !== null) params += `&levelMax=${numParam(filters.levelMax)}`;
         return params;
     }
 

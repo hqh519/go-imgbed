@@ -8,6 +8,7 @@
  *
  * 约定：所有返回结构严格对齐前端既有解析逻辑，避免页面报错。
  */
+import { signOrigin } from '../common/request-origin';
 import { Body, Controller, Delete, Get, Header, Param, Post, Put, Query, Req, UseGuards } from '@nestjs/common';
 import { Request } from 'express';
 import { createHash, randomBytes } from 'crypto';
@@ -114,7 +115,7 @@ export class ManageCompatController {
   @Get('apiTokens')
   async listTokens(@Req() req: Request) {
     const rows = await prisma.apiToken.findMany({ orderBy: { createdAt: 'desc' } });
-    const origin = `${req.protocol}://${req.get('host')}`;
+    const origin = signOrigin(req);
     return {
       tokens: rows.map((t) => {
         const metas = JSON.parse(t.metas || '{}');
@@ -234,7 +235,7 @@ export class ManageCompatController {
         }),
       },
     });
-    const origin = `${req.protocol}://${req.get('host')}`;
+    const origin = signOrigin(req);
     // 创建时返回明文凭据（列表中也可再次查看）
     return {
       success: true,
@@ -370,11 +371,48 @@ export class ManageCompatController {
     return { success: true, count: ids.length };
   }
 
+  /**
+   * 批量打标签 / 删标签 / 清空标签。
+   *
+   * v3.0.0（R17）修复「提示失败但实际已经加上标签」：
+   *   前端 BatchTagDialog 的 finishTagOperation() 依赖 `results` 逐条回填，
+   *   而这里原先只返回 `{ success, count }` —— 前端拿到 undefined 去 for...of
+   *   直接抛 TypeError，被外层 catch 当成失败弹「添加失败」，可后端其实已经写库成功。
+   *   现在按前端约定的结构返回：{ success, updated, results:[{ fileId, saved, tags, indexPending }] }。
+   *
+   * action：add = 追加 / remove = 删除指定标签 / set = 全量覆盖（先清空再写，tags 为空即清空）。
+   */
   @Post('tags/batch')
   async tagsBatch(@Body() body: { fileIds?: string[]; tags?: string[]; action?: string }) {
-    const ids = body.fileIds || [];
-    for (const id of ids) await this.applyTags(id, body.tags || [], body.action || 'add');
-    return { success: true, count: ids.length };
+    const ids = Array.isArray(body.fileIds) ? body.fileIds : [];
+    const tags = Array.isArray(body.tags) ? body.tags.map((t) => String(t).trim()).filter(Boolean) : [];
+    const raw = String(body.action || 'add').toLowerCase();
+    const action = raw === 'remove' || raw === 'set' ? raw : 'add';
+    const results: Array<{ fileId: string; saved: boolean; tags: string[]; indexPending: boolean; error?: string }> = [];
+    for (const id of ids) {
+      const rec = await this.findFile(id);
+      if (!rec) {
+        results.push({ fileId: String(id), saved: false, tags: [], indexPending: false, error: '文件不存在' });
+        continue;
+      }
+      let savedTags: string[] = [];
+      if (action === 'set') {
+        // 全量覆盖：清空该文件的全部标签，再按需写入
+        await prisma.fileTag.deleteMany({ where: { fileId: rec.id } });
+        savedTags = tags.length ? await this.applyTags(id, tags, 'add') : [];
+      } else {
+        savedTags = await this.applyTags(id, tags, action);
+      }
+      results.push({ fileId: String(id), saved: true, tags: savedTags, indexPending: false });
+    }
+    const updated = results.filter((r) => r.saved).length;
+    return {
+      // 一条都没传 / 有文件没保存成功 → success=false（前端据此提示「部分保存」）
+      success: ids.length > 0 && updated === ids.length,
+      updated,
+      count: ids.length,
+      results,
+    };
   }
 
   @Get('tags/*')
@@ -407,7 +445,12 @@ export class ManageCompatController {
     for (const raw of tags) {
       const name = String(raw).trim();
       if (!name) continue;
-      const tag = await prisma.tag.upsert({ where: { name }, update: {}, create: { name } });
+      // v3.0.0：tags 表改为 [name, instanceId] 联合唯一（API 通道一律归属默认实例，instanceId 空串）
+      const tag = await prisma.tag.upsert({
+        where: { name_instanceId: { name, instanceId: '' } },
+        update: {},
+        create: { name, instanceId: '' },
+      });
       if (action === 'remove') {
         await prisma.fileTag.deleteMany({ where: { fileId: rec.id, tagId: tag.id } });
       } else {

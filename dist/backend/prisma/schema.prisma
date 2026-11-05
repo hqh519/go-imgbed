@@ -94,7 +94,18 @@ model User {
   // frontSessionDays 管「前端上传页/画廊」登录态；backSessionDays 管「后台管理页」的 2FA 验证态。
   frontSessionDays Int?
   backSessionDays  Int?
+  // ---- 对外分享权限（v3.0.0）----
+  // 管理员在「用户管理 → 编辑账户 → 管理员操作 → 分享权限」里开启后，该账户才能
+  // 使用文件夹 / 标签的「对外分享」，用户编辑页也才加载「对外分享」模块。
+  // 默认 false：升级后普通用户不会突然多出对外分享入口，行为与升级前一致。
+  shareEnabled    Boolean  @default(false)
   metas           String   @default("{}")
+  // ---- v3.0.0（R16）：账户自定义背景图 ----
+  // 存 JSON 数组字符串（如 ["https://a.jpg","https://b.jpg"]），空串 = 跟随系统设置。
+  // 上传页背景图覆盖「网页设置 → 上传页背景图」，管理页背景图覆盖「网页设置 → 管理页背景图」；
+  // 每次刷新在数组里随机取一张（前端 backgroundManager 统一处理）。
+  uploadBkImg     String   @default("")
+  adminBkImg      String   @default("")
   createdAt       DateTime @default(now())
 
   @@map("users")
@@ -178,9 +189,19 @@ model FileRecord {
   // 文件备注（v2.1.0）：仅上传者本人（作者）可见，管理端列表不下发；
   // 与 metas 分开存，避免被通用的 metas 覆盖写回逻辑抹掉。
   note         String    @default("")
+  // 评分 / 等级（v3.0.0 R8）：详情页直接点击存库 ——
+  //   rating 0-5，支持 0.5 半星（0 = 未评分）；level 0-5 爱心等级（0 = 未设）。
+  // 独立成列（不走 metas）——「筛选 → 评级」要按范围查库。
+  rating       Float     @default(0)
+  level        Int       @default(0)
   views        Int       @default(0) // 被访问次数（GET /file/:name 命中累计，管理端预览不计）
   status       String    @default("active") // active | deleted（deleted = 在回收站，可恢复）
   deletedAt    DateTime? // 进入回收站的时间；恢复时清空。排序/定期清理依据
+  // v3.0.0 多实例：文件归属的实例 ID。
+  //   空串 = 默认实例（用户初始空间，无需创建、不可删除）——
+  //   不设值可以完全兼容既有数据与查询习惯：无值即默认实例。
+  //   WebDAV / API 等外部入口不指定实例，统一落默认实例。
+  instanceId   String    @default("")
   // 上传计时（后台文件详情 →「上传时长 / 上传速度」）：
   //   uploadStartedAt  请求到达服务端的时刻（分块上传为第一片 init 的时刻）
   //   uploadFinishedAt 文件记录落库的时刻
@@ -193,6 +214,7 @@ model FileRecord {
   tags   FileTag[]
 
   @@index([status, folder, createdAt]) // 目录浏览：过滤回收站 + 目录 + 时间排序
+  @@index([status, instanceId, createdAt]) // v3.0.0 多实例：按实例归集文件列表
   @@index([status, createdAt]) // 全库文件列表 / 回收站列表
   @@index([status, uploader]) // 用户归集统计
   @@index([ip]) // IP 归集统计 / 黑白名单关联
@@ -206,7 +228,20 @@ model FileCopy {
   fileId    String
   channelId String
   remoteKey String // 渠道内资源标识（只存 key，不存 URL —— 直链按渠道当前配置动态构造）
-  remoteUrl String   @default("") // 仅 custom 渠道无法剥离域名时存完整 URL（访问时做域名替换）
+  remoteUrl String   @default("") // 仅「非本渠道上传」的外部地址（登记文件/外链）存完整 URL
+  // ---- v3.0.0（R10）：固化寻址地址 ----
+  // objectPath = 实际上传产出的 URL 去掉 scheme://host 后的 path（不含 ?query）。
+  //   · 域名永不落库：加载时用「渠道当前加载域名 + objectPath」实时拼；
+  //   · 桶名/自定义前缀/文件命名/immich assetId 全部固化在这里 —— 之后改渠道配置不影响已落库文件；
+  //   · 分渠道形态：S3 家族 path-style 含 bucket（test/2026/11/x.png）、
+  //     virtual-host 不含 bucket（2026/11/x.png，bucket 在域名里）；
+  //     webdav = <directory>/<key>；immich = api/assets/<assetId>/original；
+  //     http-post = 响应 URL 的 path；local = 相对渠道根的路径。
+  //   空串 = 老数据，读取侧回退 buildDirectUrl（兼容期永不需要回填）。
+  objectPath String   @default("")
+  // urlQuery = 文件级查询串（不含 ?）。immich 的 key=<shareKey> 必须固化；
+  //   渠道级参数（COS/OSS 的 suffix）不进这里，仍由配置动态取。
+  urlQuery   String   @default("")
   status    String   @default("active") // active | pending | failed
   isPrimary Boolean  @default(false) // 是否主渠道副本
   metas     String   @default("{}")
@@ -240,15 +275,20 @@ model ApiToken {
   @@map("api_tokens")
 }
 
-// 标签
+// 标签（v3.0.0 起按实例隔离：instanceId 空 = 默认实例）
 model Tag {
   id        String   @id @default(cuid())
-  name      String   @unique
+  // 标签名在同一实例内唯一（name + instanceId 联合唯一；
+  // 既有数据 instanceId 全为空串，等价于原来的 name 单列唯一，数据无需迁移）
+  name      String
+  // v3.0.0：标签所属实例（空 = 默认实例）
+  instanceId String  @default("")
   metas     String   @default("{}")
   createdAt DateTime @default(now())
 
   files FileTag[]
 
+  @@unique([name, instanceId])
   @@map("tags")
 }
 
@@ -323,4 +363,81 @@ model AccessLog {
   @@index([ip, createdAt])
   @@index([username, createdAt])
   @@map("access_logs")
+}
+
+// ------------------------------------------------------------
+// v3.0.0 多实例方案
+// ------------------------------------------------------------
+
+// 用户实例（多实例方案的核心表）。
+//   · 每个用户可创建多个实例；文件 / 标签按 instanceId 隔离，配置项（页面设置等）共用；
+//   · id 为空串的引用 = 默认实例（用户初始空间，不建行、不可删除）；
+//   · 邀请码 8 位（大小写 + 数字），可随时关闭（置空）与更新。
+model Instance {
+  id         String   @id @default(cuid())
+  ownerId    String // 创建者用户 id（users.id；内建管理员用 "admin"）
+  ownerName  String   @default("") // 创建者用户名（展示 / 排查用）
+  name       String // 实例名称（同一创建者下不可重复）
+  note       String   @default("") // 备注，仅创建者可见
+  inviteCode String   @default("") // 当前邀请码（空 = 邀请关闭）
+  metas      String   @default("{}")
+  createdAt  DateTime @default(now())
+
+  @@unique([ownerId, name])
+  @@index([ownerId])
+  @@index([inviteCode])
+  @@map("instances")
+}
+
+// 文件夹属性（v3.0.0）：逻辑目录路径 → 属性（加密 / 备注 / 共享 / 访客图库）。
+//   · 目录本身只是 FileRecord.folder 字符串，没有实体行 —— 属性页第一次保存时才落一行；
+//   · 加密后该目录（含子目录）下的文件外链访问需要输入密码；
+//     密码只存 sha256 哈希（metas/验证同规则，任一层级命中即通过）；
+//   · sharedUsers 存用户名 JSON 数组；gallery = 目录对外分享（提交到访客图库）。
+model FolderMeta {
+  id          String   @id @default(cuid())
+  owner       String   @default("") // 归属用户名（空 = 系统/管理员目录）
+  path        String // 逻辑目录路径（FileRecord.folder 原样，如 "2026/10"）
+  instanceId  String   @default("") // 所属实例（空 = 默认实例）
+  passwordHash String  @default("") // 所属文件加密（sha256；空 = 未加密）
+  note        String   @default("") // 备注，仅创建者可见
+  sharedUsers String   @default("[]") // 共享用户名数组（JSON）
+  sharedPerm  String   @default("edit") // 共享权限：edit=可编辑 / readonly=只读（被共享人对目录只读）
+  gallery     Boolean  @default(false) // 目录对外分享（访客图库）
+  metas       String   @default("{}")
+  createdAt   DateTime @default(now())
+
+  @@unique([owner, instanceId, path])
+  @@index([owner])
+  @@map("folder_metas")
+}
+
+// 对外分享记录（v3.0.0）
+//   · 一条记录 = 一个对外可访问的分享地址，来源只有两种：
+//       type=cate → 文件夹属性里的「目录对外分享」，target = 目录路径
+//       type=tag  → 标签属性里的「标签对外分享」，target = 标签名
+//   · 访问地址：/browse/<用户名>/<实例序号>/cate/<目录路径>
+//              /browse/<用户名>/<实例序号>/tag/<标签名>
+//     实例序号：0 = 默认实例，>=1 = 按 createdAt 升序的第 n 个已创建实例
+//   · enabled=false 或 expireAt 已过期 → 分享停止访问（记录保留，便于恢复）
+//   · passwordHash 为分享级访问密码（sha256，空 = 无密码）
+model ShareLink {
+  id           String    @id @default(cuid())
+  owner        String    @default("") // 分享发起人用户名
+  instanceId   String    @default("") // 空 = 默认实例
+  type         String    @default("cate") // cate | tag
+  target       String    @default("") // 目录路径 / 标签名
+  tagId        String    @default("") // type=tag 时的标签 id（改名后仍可定位）
+  enabled      Boolean   @default(true)
+  passwordHash String    @default("")
+  expireAt     DateTime?
+  note         String    @default("")
+  metas        String    @default("{}")
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@unique([owner, instanceId, type, target])
+  @@index([owner])
+  @@index([instanceId])
+  @@map("share_links")
 }

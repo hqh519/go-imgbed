@@ -104,7 +104,8 @@ let AccessService = class AccessService {
             return row.id;
         }
         catch (err) {
-            console.warn('[access] 写入访问记录失败:', err.message);
+            const e = err;
+            console.warn(`[access] 写入访问记录失败: ${e?.name || 'Error'}${e?.code ? ` (${e.code})` : ''} ${e?.message || err}`, e?.meta ? `meta=${JSON.stringify(e.meta)}` : '', `\n${e?.stack || '(无 stack)'}`);
             return '';
         }
     }

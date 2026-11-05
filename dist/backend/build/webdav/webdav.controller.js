@@ -13,6 +13,7 @@ var __param = (this && this.__param) || function (paramIndex, decorator) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.WebDavController = void 0;
+const request_origin_1 = require("../common/request-origin");
 const common_1 = require("@nestjs/common");
 const prisma_1 = require("../common/prisma");
 const crypto_service_1 = require("../common/crypto.service");
@@ -161,7 +162,7 @@ let WebDavController = class WebDavController {
                     });
                     if (!rec)
                         return res.status(404).send('Not Found');
-                    const origin = `${req.protocol}://${req.get('host')}`;
+                    const origin = (0, request_origin_1.signOrigin)(req);
                     const prefix = await this.settings.getLinkPrefix(origin);
                     res.setHeader('Location', `${prefix}${this.encodePath(rec.name)}${(0, file_view_1.extSuffixFor)(rec.name, last)}`);
                     return res.status(302).send('');
@@ -189,7 +190,7 @@ let WebDavController = class WebDavController {
                     });
                     if (r.error)
                         return res.status(500).send(r.error);
-                    const origin = `${req.protocol}://${req.get('host')}`;
+                    const origin = (0, request_origin_1.signOrigin)(req);
                     const prefix = await this.settings.getLinkPrefix(origin);
                     const signedUrl = `${prefix}${this.encodePath(r.id)}${(0, file_view_1.extSuffixFor)(r.id, last)}`;
                     res.setHeader('Location', signedUrl);
@@ -250,7 +251,7 @@ let WebDavController = class WebDavController {
         });
     }
     async propfind(req, res, folder, path, isDirRequest) {
-        const origin = `${req.protocol}://${req.get('host')}`;
+        const origin = (0, request_origin_1.signOrigin)(req);
         const depth = String(req.headers.depth ?? '1').trim().toLowerCase();
         const selfOnly = depth === '0';
         const href = (p, dir) => {

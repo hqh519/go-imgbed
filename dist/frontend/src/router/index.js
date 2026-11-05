@@ -453,6 +453,26 @@ const routes = [
     component: () => import('../views/WhiteListOn.vue'),
   },
   {
+    /*
+     * v3.0.0：本地文件（只读浏览 + 一键上传到图床）。
+     * 守卫沿用后台页（userManageGuard）—— 管理员与普通用户都能进，
+     * 具体能看到哪些「本地文件」渠道由后端按渠道授权名单隔离。
+     */
+    path: '/localFiles',
+    name: 'localFiles',
+    component: () => import('../views/LocalFilesPage.vue'),
+    beforeEnter: userManageGuard
+  },
+  {
+    // v3.0.0：分享记录页 —— 系统设置「访客图库」与用户编辑页「对外分享」都以新标签打开本页。
+    // 必须放在 /browse/:dir* 之前，否则会被通配路由吞掉。
+    // 守卫沿用其它后台页（userManageGuard）：管理员与普通用户都可进，可见范围由后端按角色隔离。
+    path: '/share-records',
+    name: 'shareRecords',
+    component: () => import('../views/ShareRecordsPage.vue'),
+    beforeEnter: userManageGuard
+  },
+  {
     path: '/browse/:dir*',
     name: 'publicBrowse',
     component: () => import('../views/PublicBrowse.vue'),
@@ -479,6 +499,25 @@ const router = createRouter({
     }
     return position
   }
+})
+
+/*
+ * v3.0.0：路由懒加载 chunk 拉取失败（部署更新后旧标签页仍持有旧哈希文件名，
+ * 或长时间闲置后被浏览器回收、恢复瞬间网络未就绪）时，整页重新加载一次。
+ * 只在确认是「chunk 加载失败」时触发，其它导航错误保持原样抛出。
+ */
+router.onError((error) => {
+  const message = String((error && error.message) || error || '')
+  const isChunkError =
+    /Failed to fetch dynamically imported module/i.test(message) ||
+    /Loading chunk [\w-]+ failed/i.test(message) ||
+    /Importing a module script failed/i.test(message)
+  if (!isChunkError) return
+  try {
+    // eslint-disable-next-line no-console
+    console.warn('[router] 懒加载资源失效，正在重新加载页面：' + message)
+    window.location.reload()
+  } catch (e) { /* 忽略 */ }
 })
 
 export default router

@@ -8,6 +8,12 @@
                         <span class="bottom-sheet-title">{{ title }}</span>
                     </div>
                     <div class="bottom-sheet-content">
+                        <!-- v3.0.0：选择文件（进入多选并选中该文件），文件与文件夹都提供
+                             v3.0.0（R8）：只读共享条目不可选中 → 隐藏 -->
+                        <div v-if="!sharedReadonly" class="bottom-sheet-item" @click="handleAction('select')">
+                            <font-awesome-icon icon="check-square" class="bottom-sheet-icon"></font-awesome-icon>
+                            <span>{{ $t('fileManager.selectFile') }}</span>
+                        </div>
                         <!-- 文件操作 -->
                         <template v-if="!isFolder">
                             <div class="bottom-sheet-item" @click="handleAction('detail')">
@@ -42,8 +48,9 @@
                                 <span>{{ $t('mobileAction.moveFolder') }}</span>
                             </div>
                         </template>
-                        <!-- 删除操作 -->
-                        <div class="bottom-sheet-item bottom-sheet-danger" @click="handleAction('delete')">
+                        <!-- 删除操作
+                             v3.0.0（R8）：共享（别人共享给我的，无论只读/编辑）一律不可删除 → 隐藏 -->
+                        <div v-if="!sharedNoDelete" class="bottom-sheet-item bottom-sheet-danger" @click="handleAction('delete')">
                             <font-awesome-icon icon="trash-alt" class="bottom-sheet-icon"></font-awesome-icon>
                             <span>{{ isFolder ? $t('mobileAction.deleteFolder') : $t('mobileAction.deleteFile') }}</span>
                         </div>
@@ -60,7 +67,11 @@ export default {
     props: {
         modelValue: { type: Boolean, default: false },
         title: { type: String, default: '' },
-        isFolder: { type: Boolean, default: false }
+        isFolder: { type: Boolean, default: false },
+        // v3.0.0（R8）：只读共享（别人共享给我且权限只读）—— 隐藏「选择」
+        sharedReadonly: { type: Boolean, default: false },
+        // v3.0.0（R8）：别人共享给我的（无论只读/编辑）—— 一律隐藏「删除」
+        sharedNoDelete: { type: Boolean, default: false }
     },
     emits: ['update:modelValue', 'action'],
     methods: {

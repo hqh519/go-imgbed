@@ -1,6 +1,7 @@
 import { createHash, createHmac } from 'node:crypto';
 import { AdapterError, ChannelInfo, CopyInfo, StorageAdapter, UploadResult } from './adapter.interface';
 import { ensureProtocol } from '../common/endpoint';
+import { buildAssetUrl } from '../common/asset-url';
 
 /**
  * 阿里云 OSS 专用适配器。
@@ -105,9 +106,11 @@ export class AliyunOssAdapter implements StorageAdapter {
   private bucket: string;
   private endpoint: string;
   private pathStyle: boolean;
+  private channel!: ChannelInfo;
 
   constructor(channel: ChannelInfo) {
     const cfg = channel.config;
+    this.channel = channel;
     const ak = (cfg.accessKeyId || '').trim();
     // 兼容几种常见写法：AccessKeySecret / secretAccessKey 等
     const sk = (cfg.accessKeySecret || cfg.secretAccessKey || '').trim();
@@ -179,7 +182,7 @@ export class AliyunOssAdapter implements StorageAdapter {
     const fullKey = key;
     try {
       await this.request('PUT', fullKey, { body: file.buffer, mime: file.mime });
-      return { remoteKey: fullKey };
+      return { remoteKey: fullKey, objectPath: this.objectPathFor(fullKey) };
     } catch (err) {
       if (err instanceof AdapterError) throw err;
       throw new AdapterError(`上传失败: ${(err as Error).message}`, channel.type);
@@ -200,10 +203,47 @@ export class AliyunOssAdapter implements StorageAdapter {
    *   自定义访问域名（CDN / 绑定域名）优先，直接拼 key；
    *   否则按寻址风格拼 OSS 默认域名（bucket.endpoint 或 endpoint/bucket）。
    */
+  /** v3.0.0（R10）：加载域名基址（不含尾斜杠，路径由 objectPath 补） */
+  private baseUrlOf(preferInternal: boolean): string {
+    const cfg = this.channel?.config || {};
+    const raw = preferInternal && cfg.internalDomain ? cfg.internalDomain : cfg.publicDomain || '';
+    const domain = ensureProtocol(raw || '').replace(/\/+$/, '');
+    if (domain) return domain;
+    const endpoint = this.endpoint.replace(/\/+$/, '');
+    if (!endpoint) return '';
+    if (this.pathStyle) return endpoint;
+    try {
+      const u = new URL(endpoint);
+      return `${u.protocol}//${this.bucket}.${u.host}${u.pathname.replace(/\/+$/, '')}`;
+    } catch {
+      return `${endpoint}/${this.bucket}`;
+    }
+  }
+
+  /**
+   * v3.0.0（R10）：固化路径。
+   * 绑定自定义域名时桶名在域名里（OSS 自定义域与桶绑定）→ 路径不含桶；
+   * 未绑定时 path-style 含桶、virtual-host 不含桶。
+   */
+  private objectPathFor(key: string): string {
+    const cfg = this.channel?.config || {};
+    if (String(cfg.publicDomain || cfg.internalDomain || '').trim()) return key;
+    return this.pathStyle ? `${this.bucket}/${key}` : key;
+  }
+
   buildDirectUrl(copy: CopyInfo, channel: ChannelInfo, preferInternal?: boolean): string | null {
     const cfg = channel.config;
     const key = copy.remoteKey;
     const suffix = cfg.suffix || '';
+    /*
+     * v3.0.0（R10）：新数据「动态域名 + 固化地址」。
+     * domain 不再参与 URL 拼接的路径部分，只作为加载域名基址；改域名立即生效。
+     */
+    if (copy.objectPath) {
+      const base = this.baseUrlOf(!!preferInternal);
+      if (!base) return null;
+      return buildAssetUrl({ base, objectPath: copy.objectPath, urlQuery: copy.urlQuery, suffix });
+    }
     const domain = ensureProtocol(
       (preferInternal && cfg.internalDomain) || cfg.publicDomain || '',
     ).replace(/\/+$/, '');

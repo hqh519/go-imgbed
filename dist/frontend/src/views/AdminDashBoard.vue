@@ -1,25 +1,64 @@
 <template>
-    <div class="container">
+    <!--
+        v3.0.0：dashboard-page-v3 = 本页专属的样式作用域标记。
+        页面切换下拉 / 顶栏属于 AdminHeader（共享组件），这里不改它，
+        改为在本页挂一个标记类，用全局样式（见文件末尾非 scoped 块）限定只影响本页：
+          · 下拉列表尾部注入「切换实例」条目（Teleport）
+          · 页面切换按钮名称后的实例序号角标（CSS ::after）
+          · 移动端顶行五个按钮整组靠右
+    -->
+    <div
+        class="container dashboard-page-v3"
+        :class="{ 'has-instance-badge': instanceSeq > 0, 'is-toolbar-stuck': breadcrumbStuck }"
+        :style="instanceBadgeStyle"
+    >
         <el-container direction="vertical">
             <!-- 「链接格式」是面向管理员的默认外链格式设置，普通用户隐藏该入口 -->
-            <AdminHeader active-tab="dashboard" :show-link-format="isAdminRole" @link-format="showUrlDialog = true">
+            <!-- v3.0.0：移动端「更多菜单」里的标签管理 → 切到标签管理模式 -->
+            <!--
+                v3.0.0：本页的「链接格式 / 标签管理 / 声音切换」都由工具栏内部提供图标按钮，
+                因此给顶栏传 show-link-format=false（不再渲染右侧工具组的链接格式按钮），
+                并用 inline-actions 告诉「更多菜单」不要再重复这三项。
+            -->
+            <AdminHeader
+                active-tab="dashboard"
+                :show-link-format="false"
+                :inline-actions="true"
+                @link-format="showUrlDialog = true"
+                @tag-management="enterTagMode"
+            >
+            >
+                <!--
+                    v3.0.0（R17）：实例入口已收进左上角「页面切换」弹窗列表的尾部，
+                    通过 AdminHeader → DashboardTabs 的 #page-extra 插槽注入（原来是 Teleport）。
+                -->
+                <template #page-extra="{ close }">
+                    <div class="page-option-sep" aria-hidden="true"></div>
+                    <button
+                        type="button"
+                        class="page-option admin-page-instance-option"
+                        @click.stop="openInstanceFromPageSwitch(close)"
+                    >
+                        <!-- v3.0.0：已切换到具体实例时，图标改为该实例的创建序号（默认实例保持 server 图标） -->
+                        <span v-if="instanceSeq > 0" class="admin-page-instance-seq">{{ instanceSeq }}</span>
+                        <font-awesome-icon v-else icon="server" class="admin-page-instance-icon"/>
+                        <span class="admin-page-instance-text">{{ $t('instancePicker.title') }}</span>
+                    </button>
+                </template>
                 <template #search>
                     <div class="search-area" :class="{ 'mobile-search-open': mobileSearchOpen }">
-                        <!-- v2.8.9：移动端搜索按钮（样式同筛选），点一下展开/收起搜索框；刷新页面回到隐藏 -->
-                    <span
-                        class="el-dropdown-link filter-trigger mobile-search-trigger"
-                        role="button"
-                        tabindex="0"
-                        :title="$t('dashboard.searchPlaceholder')"
-                        :aria-label="$t('dashboard.searchPlaceholder')"
-                        :aria-expanded="mobileSearchOpen"
-                        @click="toggleMobileSearch"
-                        @keydown.enter="toggleMobileSearch"
-                    >
-                        <font-awesome-icon icon="search" class="header-icon"/>
-                    </span>
                     <div class="search-card" :class="{ 'is-settings-open': searchSettingsOpen }">
-                            <el-input ref="searchInput" v-model="tempSearch" size="small" :placeholder="$t('dashboard.searchPlaceholder')" @keyup.enter="handleSearch">
+                            <el-input
+                                ref="searchInput"
+                                v-model="tempSearch"
+                                size="small"
+                                :placeholder="$t('dashboard.searchPlaceholder')"
+                                enterkeyhint="search"
+                                @compositionstart="searchComposing = true"
+                                @compositionend="searchComposing = false"
+                                @keydown.enter="handleSearchEnter"
+                                @keyup.enter="handleSearchEnter"
+                            >
                                 <template #prefix>
                                     <!-- 搜索范围：直接嵌在搜索框起始位置，与输入框合成一个整体 -->
                                     <el-select
@@ -69,6 +108,32 @@
                                 </template>
                             </el-input>
                         </div>
+                        <!--
+                            v3.0.0：顶栏按钮条（搜索 / 筛选 / 标签管理 / 刷新 / 回收站 / 声音 / 链接格式）。
+                            · 桌面端：display:contents —— 按钮直接参与 .search-area 的 flex 布局（间距 6px）
+                            · 移动端：变成单行横向滚动的按钮条，左侧「页面切换」与右侧「更多菜单」固定不动
+                        -->
+                        <div class="search-actions">
+                        <!-- v2.8.9：移动端搜索按钮（样式同筛选），点一下展开/收起搜索框；刷新页面回到隐藏 -->
+                        <span
+                            class="el-dropdown-link filter-trigger mobile-search-trigger"
+                            role="button"
+                            tabindex="0"
+                            :title="$t('dashboard.searchPlaceholder')"
+                            :aria-label="$t('dashboard.searchPlaceholder')"
+                            :aria-expanded="mobileSearchOpen"
+                            @click="toggleMobileSearch"
+                            @keydown.enter="toggleMobileSearch"
+                        >
+                            <font-awesome-icon icon="search" class="header-icon"/>
+                            <!-- v3.0.0：搜索框存在内容（已提交或输入中）时显示提醒角标，
+                                 即使搜索框收起也能知道当前带着搜索条件 -->
+                            <span
+                                v-if="search.trim() || tempSearch.trim()"
+                                class="mobile-search-dot"
+                                aria-hidden="true"
+                            ></span>
+                        </span>
                         <!-- v2.8.7：筛选改弹窗（筛选 / 日期 / 大小 三标签页）；有任一筛选值时按钮显示角标 + 高亮提示 -->
                         <span
                             class="el-dropdown-link filter-trigger filter-dialog-trigger"
@@ -92,6 +157,22 @@
                             :userOptions="userFilterOptions"
                             @change="handleFilterChange"
                         />
+                        <!-- v3.0.0：筛选按钮后面的「标签管理」—— PC 工具栏入口（移动端已收进更多菜单），
+                             进入后文件列表区隐藏、改为标签管理模式面板，按钮显示激活态 -->
+                        <span
+                            class="el-dropdown-link filter-trigger tag-mode-trigger"
+                            :class="{ 'is-active': tagModeActive }"
+                            role="button"
+                            tabindex="0"
+                            :title="$t('dashboard.tagManagement')"
+                            :aria-label="$t('dashboard.tagManagement')"
+                            :aria-pressed="tagModeActive"
+                            @click="toggleTagMode"
+                            @keydown.enter="toggleTagMode"
+                        >
+                            <font-awesome-icon icon="tags" class="header-icon"/>
+                            <i v-if="tagModeActive" class="tag-mode-dot"></i>
+                        </span>
                         <!-- v2.8.7c：标签筛选已并入筛选弹窗「标签」页，顶栏原「标签」按钮移除 -->
                         <!-- v2.8.8：刷新 / 回收站 / 声音 三个按钮收进一个容器 —— 移动端整组靠右（见 AdminHeader 断点样式） -->
                         <div class="dashboard-header-buttons">
@@ -115,18 +196,28 @@
                                 @click="toggleTrashMode"
                             >
                                 <font-awesome-icon icon="trash-alt" :class="{ 'fa-spin': trashLoading }" class="refresh-files-icon"/>
+                                <!-- v3.0.0（R7）：进入回收站模式时右上角橙红提示点 -->
+                                <i v-if="trashMode" class="trash-mode-dot" aria-hidden="true"></i>
                             </el-button>
-                            <!-- v2.8.7：全局视频静音开关 —— 控制预览浮层与文件详情页视频是否播放声音（默认静音） -->
-                            <el-button
-                                class="refresh-files-btn mute-toggle-btn"
-                                :class="{ 'is-active': !globalVideoMuted }"
-                                size="small"
-                                :title="globalVideoMuted ? $t('dashboard.videoMutedOn') : $t('dashboard.videoMutedOff')"
-                                :aria-label="globalVideoMuted ? $t('dashboard.videoMutedOn') : $t('dashboard.videoMutedOff')"
-                                @click="toggleVideoMuted"
-                            >
-                                <font-awesome-icon :icon="globalVideoMuted ? 'volume-mute' : 'volume-up'" class="refresh-files-icon"/>
-                            </el-button>
+                            <!--
+                                v2.8.7：全局视频静音开关 —— v3.0.0（R14）按需求迁到「文件详情页 → 下载按钮后面」，
+                                顶栏不再保留（状态仍在 store，详情页与预览浮层共用）。
+                            -->
+                        </div>
+                        <!--
+                            v3.0.0：链接格式入口 —— 从右侧工具组移出（桌面端与移动端同一位置）。
+                            移动端同时也从「更多菜单」里移出，改为这里的图标按钮。
+                        -->
+                        <button
+                            v-if="isAdminRole"
+                            class="link-format-btn"
+                            type="button"
+                            :title="$t('dashboard.linkFormat')"
+                            :aria-label="$t('dashboard.linkFormat')"
+                            @click="showUrlDialog = true"
+                        >
+                            <font-awesome-icon icon="link" class="refresh-files-icon"/>
+                        </button>
                         </div>
                     </div>
                 </template>
@@ -137,201 +228,299 @@
                 <font-awesome-icon icon="trash-alt" class="trash-banner-icon"/>
                 <span class="trash-banner-text">{{ $t('dashboard.trashBanner') }}</span>
             </div>
-            <!-- 目录导航 -->
-            <div class="breadcrumb-container">
-                <DashboardCheckbox
-                    :checked="selectPage"
-                    :indeterminate="selectedPageFiles && !selectPage"
-                    variant="breadcrumb"
-                    @click="handleSelectPage"
-                />
-                <div
-                    class="breadcrumb-view-toggle"
-                    :class="{ 'is-list': viewMode === 'list' }"
-                    role="group"
-                >
-                    <button
-                        class="breadcrumb-view-button"
-                        :class="{ 'is-active': viewMode === 'card' }"
-                        type="button"
-                        :title="$t('dashboard.cardView')"
-                        :aria-pressed="viewMode === 'card'"
-                        @click="setViewMode('card')"
+            <!-- 目录导航（v3.0.0：标签管理模式下第二行整行隐藏，第一行工具栏保留） -->
+            <!-- v3.0.0（R4）：外层只做「吸顶时的占位」，移动端吸顶由 JS 切 fixed 实现 -->
+            <div
+                v-if="!tagModeActive"
+                ref="breadcrumbStickyWrap"
+                class="breadcrumb-sticky-wrap"
+                :class="{ 'is-search-open': mobileSearchOpen }"
+            >
+            <div
+                ref="breadcrumbBar"
+                class="breadcrumb-container"
+                :class="{ 'is-stuck': breadcrumbStuck, 'is-header-hidden': breadcrumbHeaderHidden }"
+            >
+                <!-- v3.0.0（R5）：移动端横向滑动只作用于这一段，「数量统计」固定在最右侧 -->
+                <div class="breadcrumb-scroll-area">
+                    <DashboardCheckbox
+                        :checked="selectPage"
+                        :indeterminate="selectedPageFiles && !selectPage"
+                        variant="breadcrumb"
+                        @click="handleSelectPage"
+                    />
+                    <div
+                        class="breadcrumb-view-toggle"
+                        :class="{ 'is-list': viewMode === 'list' }"
+                        role="group"
                     >
-                        <font-awesome-icon icon="th-large" class="breadcrumb-view-icon"></font-awesome-icon>
-                    </button>
-                    <button
-                        class="breadcrumb-view-button"
-                        :class="{ 'is-active': viewMode === 'list' }"
-                        type="button"
-                        :title="$t('dashboard.listView')"
-                        :aria-pressed="viewMode === 'list'"
-                        @click="setViewMode('list')"
+                        <button
+                            class="breadcrumb-view-button"
+                            :class="{ 'is-active': viewMode === 'card' }"
+                            type="button"
+                            :title="$t('dashboard.cardView')"
+                            :aria-pressed="viewMode === 'card'"
+                            @click="setViewMode('card')"
+                        >
+                            <font-awesome-icon icon="th-large" class="breadcrumb-view-icon"></font-awesome-icon>
+                        </button>
+                        <button
+                            class="breadcrumb-view-button"
+                            :class="{ 'is-active': viewMode === 'list' }"
+                            type="button"
+                            :title="$t('dashboard.listView')"
+                            :aria-pressed="viewMode === 'list'"
+                            @click="setViewMode('list')"
+                        >
+                            <font-awesome-icon icon="list" class="breadcrumb-view-icon"></font-awesome-icon>
+                        </button>
+                    </div>
+                    <!--
+                        v3.0.0：内容展示方式（展示文件夹 = 按目录分层，默认 / 直接展开文件 = 当前目录递归平铺）。
+                        对「全部内容」生效（不依赖搜索或筛选），切换即重新加载（后端 flat 参数）。
+                    -->
+                    <div
+                        class="breadcrumb-view-toggle search-scope-toggle"
+                        :class="{ 'is-expanded': searchResultDisplay === 'expanded' }"
+                        role="group"
+                        :aria-label="$t('fileManager.displayMode')"
                     >
-                        <font-awesome-icon icon="list" class="breadcrumb-view-icon"></font-awesome-icon>
-                    </button>
+                        <button
+                            class="breadcrumb-view-button"
+                            :class="{ 'is-active': searchResultDisplay === 'folders' }"
+                            type="button"
+                            :title="$t('fileManager.showFolders')"
+                            :aria-pressed="searchResultDisplay === 'folders'"
+                            @click="selectSearchResultDisplay('folders')"
+                        >
+                            <font-awesome-icon icon="folder-tree" class="breadcrumb-view-icon"></font-awesome-icon>
+                        </button>
+                        <button
+                            class="breadcrumb-view-button"
+                            :class="{ 'is-active': searchResultDisplay === 'expanded' }"
+                            type="button"
+                            :title="$t('fileManager.expandFiles')"
+                            :aria-pressed="searchResultDisplay === 'expanded'"
+                            @click="selectSearchResultDisplay('expanded')"
+                        >
+                            <font-awesome-icon icon="bars" class="breadcrumb-view-icon"></font-awesome-icon>
+                        </button>
+                    </div>
+                    <el-dropdown
+                        trigger="click"
+                        class="breadcrumb-sort-dropdown"
+                        @command="setSortField"
+                    >
+                        <button
+                            class="breadcrumb-sort-button"
+                            type="button"
+                            :title="sortLabel"
+                        >
+                            <svg class="breadcrumb-sort-icon" viewBox="0 0 30 18" aria-hidden="true">
+                                <g v-if="sortField === 'time'" class="sort-field-glyph">
+                                    <circle cx="7.5" cy="9" r="5.5" />
+                                    <path d="M7.5 5.5V9L10 10.5" />
+                                </g>
+                                <g v-else-if="sortField === 'size'" class="sort-field-glyph">
+                                    <path d="M2 4H13M2 9H10M2 14H7" />
+                                </g>
+                                <g v-else-if="sortField === 'rawName'" class="sort-field-glyph">
+                                    <path d="M5.5 3L4 15M11 3L9.5 15M2.5 7H13M2 11H12.5" />
+                                </g>
+                                <g v-else-if="sortField === 'views'" class="sort-field-glyph">
+                                    <path d="M2 9S4.5 4.5 7.5 4.5 13 9 13 9 10.5 13.5 7.5 13.5 2 9 2 9Z" />
+                                    <circle cx="7.5" cy="9" r="1.8" />
+                                </g>
+                                <g v-else class="sort-field-glyph">
+                                    <path d="M2.5 14L7.5 3L12.5 14M4.3 10H10.7" />
+                                </g>
+                                <path
+                                    v-if="sortOrder === 'asc'"
+                                    class="sort-order-glyph"
+                                    d="M23 13.5V4.5M19 8.5L23 4.5L27 8.5"
+                                />
+                                <path
+                                    v-else
+                                    class="sort-order-glyph"
+                                    d="M23 4.5V13.5M19 9.5L23 13.5L27 9.5"
+                                />
+                            </svg>
+                        </button>
+                        <template #dropdown>
+                            <el-dropdown-menu class="sort-dropdown-menu">
+                                <div class="sort-order-wrapper">
+                                    <el-radio-group v-model="sortOrder" size="small" @change="setSortOrder">
+                                        <el-radio-button label="asc">{{ $t('dashboard.sortAsc') }}</el-radio-button>
+                                        <el-radio-button label="desc">{{ $t('dashboard.sortDesc') }}</el-radio-button>
+                                    </el-radio-group>
+                                </div>
+
+                                <el-divider class="sort-divider" />
+
+                                <el-dropdown-item command="time" :class="{ 'is-selected': sortField === 'time' }">
+                                    <span>{{ $t('dashboard.sortByTime') }}</span>
+                                    <font-awesome-icon v-if="sortField === 'time'" icon="check" class="sort-field-check" />
+                                </el-dropdown-item>
+                                <el-dropdown-item command="size" :class="{ 'is-selected': sortField === 'size' }">
+                                    <span>{{ $t('dashboard.sortBySize') }}</span>
+                                    <font-awesome-icon v-if="sortField === 'size'" icon="check" class="sort-field-check" />
+                                </el-dropdown-item>
+                                <!-- 「文件名」排在「文件 ID」之前 -->
+                                <el-dropdown-item command="fileName" :class="{ 'is-selected': sortField === 'fileName' }">
+                                    <span>{{ $t('dashboard.sortByFileName') }}</span>
+                                    <font-awesome-icon v-if="sortField === 'fileName'" icon="check" class="sort-field-check" />
+                                </el-dropdown-item>
+                                <el-dropdown-item command="rawName" :class="{ 'is-selected': sortField === 'rawName' }">
+                                    <span>{{ $t('dashboard.sortByRawName') }}</span>
+                                    <font-awesome-icon v-if="sortField === 'rawName'" icon="check" class="sort-field-check" />
+                                </el-dropdown-item>
+                                <el-dropdown-item command="fileType" :class="{ 'is-selected': sortField === 'fileType' }">
+                                    <span>{{ $t('dashboard.sortByFileType') }}</span>
+                                    <font-awesome-icon v-if="sortField === 'fileType'" icon="check" class="sort-field-check" />
+                                </el-dropdown-item>
+                                <el-dropdown-item command="views" :class="{ 'is-selected': sortField === 'views' }">
+                                    <span>{{ $t('dashboard.sortByViews') }}</span>
+                                    <font-awesome-icon v-if="sortField === 'views'" icon="check" class="sort-field-check" />
+                                </el-dropdown-item>
+                                <!-- 「上传用户」放在排序项目最后 -->
+                                <el-dropdown-item command="uploader" :class="{ 'is-selected': sortField === 'uploader' }">
+                                    <span>{{ $t('dashboard.sortByUploader') }}</span>
+                                    <font-awesome-icon v-if="sortField === 'uploader'" icon="check" class="sort-field-check" />
+                                </el-dropdown-item>
+                            </el-dropdown-menu>
+                        </template>
+                    </el-dropdown>
+                    <!--
+                        v3.0.0：移动端「目录导航选择」改为与「排序」同款的下拉按钮 ——
+                        · 「当前」= 只在当前路径的父子层级里导航（原有行为）；
+                        · 「全局」= 列出该实例全部目录（按层级缩进、可搜索），点击直接跳转。
+                        每次打开弹窗都回到「当前」。
+                    -->
+                    <!--
+                        v3.0.0（R7）：桌面端在原有「点击展开（默认当前层级）」之上叠加「悬停即展开」——
+                        悬停打开时直接进入「全局」模式并加载当前实例下的全部目录（按目录树缩进）；
+                        触屏 / 窄屏仍只走点击，行为与之前完全一致。
+                    -->
+                    <div
+                        class="breadcrumb-dir-wrap"
+                        @mouseenter="handleDirHoverEnter"
+                        @mouseleave="handleDirHoverLeave"
+                    >
+                    <el-dropdown
+                        ref="dirDropdown"
+                        trigger="click"
+                        class="breadcrumb-dir-dropdown"
+                        popper-class="dir-hover-popper"
+                        @command="navigateToFolder"
+                        @visible-change="handleDirDropdownVisible"
+                    >
+                        <button type="button" class="breadcrumb-dir-button" :title="currentDirFullPath">
+                            <font-awesome-icon icon="folder-open" class="breadcrumb-dir-icon"/>
+                            <span class="breadcrumb-dir-text">{{ currentDirFullPath }}</span>
+                            <font-awesome-icon icon="chevron-down" class="breadcrumb-dir-arrow"/>
+                        </button>
+                        <template #dropdown>
+                            <el-dropdown-menu class="dir-dropdown-menu">
+                                <!-- 顶行「当前 / 全局」切换：样式照抄「排序」下拉顶行的单选按钮组 -->
+                                <div class="sort-order-wrapper dir-scope-wrapper">
+                                    <el-radio-group v-model="dirScope" size="small" @change="handleDirScopeChange">
+                                        <el-radio-button label="current">{{ $t('fileManager.dirScopeCurrent') }}</el-radio-button>
+                                        <el-radio-button label="global">{{ $t('fileManager.dirScopeGlobal') }}</el-radio-button>
+                                    </el-radio-group>
+                                </div>
+                                <el-divider class="sort-divider" />
+                                <!-- 全局模式：目录可能很多，提供搜索 -->
+                                <div v-if="dirScope === 'global'" class="dir-search-wrapper" @click.stop>
+                                    <el-input
+                                        v-model="dirSearch"
+                                        size="small"
+                                        clearable
+                                        :placeholder="$t('fileManager.dirSearchPlaceholder')"
+                                    >
+                                        <template #prefix>
+                                            <font-awesome-icon icon="search" class="dir-search-icon"/>
+                                        </template>
+                                    </el-input>
+                                </div>
+                                <el-dropdown-item
+                                    v-for="opt in activeDirOptions"
+                                    :key="'dir-' + opt.path"
+                                    :command="opt.path"
+                                    :class="{ 'is-selected': opt.path === normalizedCurrentPath, 'is-ancestor': opt.isAncestor }"
+                                >
+                                    <span class="dir-item" :style="{ paddingLeft: (opt.depth * 14) + 'px' }">
+                                        <font-awesome-icon :icon="opt.depth === 0 ? 'home' : 'folder'" class="dir-item-icon"/>
+                                        {{ opt.label }}
+                                    </span>
+                                </el-dropdown-item>
+                                <div
+                                    v-if="dirScope === 'global' && allFoldersLoading"
+                                    class="dir-empty"
+                                >{{ $t('common.loading') }}</div>
+                                <div
+                                    v-else-if="globalDirEmpty"
+                                    class="dir-empty"
+                                >{{ $t('fileManager.dirGlobalEmpty') }}</div>
+                            </el-dropdown-menu>
+                        </template>
+                    </el-dropdown>
+                    </div>
+                    <!--
+                        v3.0.0（R9）：桌面端面包屑已删除，与「目录导航」按钮合二为一 ——
+                        路径展示直接并入目录导航按钮（按钮文本 = 根目录 / 一级 / 二级…），
+                        快速跳转沿用下拉里的「当前」层级列表。
+                    -->
+                    <div class="breadcrumb-right-group">
+                        <!-- v2.9.0：右上「用户选择」移除 —— 用户筛选已并入「筛选」弹窗的「用户」页 -->
+                        <!-- 新建目录：位于历史记录左侧 -->
+                        <el-button class="new-folder-btn" size="small" :title="$t('dashboard.newFolder')" :aria-label="$t('dashboard.newFolder')" @click="handleCreateFolder">
+                            <font-awesome-icon icon="plus" class="new-folder-icon"/>
+                            <span class="new-folder-text">{{ $t('dashboard.newFolder') }}</span>
+                        </el-button>
+                        <!-- v2.8.8：登记文件（与前台共用同一弹窗）—— 把一个已在别处的文件登记进系统，不重复上传
+                             v2.9.0：打开时把「当前所在目录」代入弹窗的「文件分类」 -->
+                        <el-button class="new-folder-btn record-file-btn" size="small" :title="$t('recordFile.title')" :aria-label="$t('recordFile.title')" @click="openRecordDialog">
+                            <font-awesome-icon icon="file-circle-plus" class="new-folder-icon"/>
+                            <span class="new-folder-text">{{ $t('recordFile.title') }}</span>
+                        </el-button>
+                        <!-- 历史记录：位于数量统计徽章左侧
+                             v2.8.6b：去掉 primary plain 配色 —— 文本/边框颜色与「新建目录」一致 -->
+                        <el-button class="history-btn" size="small" :title="$t('dashboard.history')" @click="goHistoryPage">
+                            <font-awesome-icon icon="history" class="history-btn-icon"/>
+                            <span class="history-btn-text">{{ $t('dashboard.history') }}</span>
+                        </el-button>
+                    </div>
                 </div>
                 <!--
-                    v2.9.0：搜索结果展示方式（展示文件夹 / 全部展开）——
-                    从搜索框图标的下拉菜单迁到这里，做成与「卡片 / 列表视图」一致的图标切换按钮。
+                    v3.0.0（R7）：数量统计徽章改为「一键复位」按钮 ——
+                    点击即清空搜索关键词、标签搜索、筛选弹窗里的全部条件（含且/或模式），
+                    回到默认状态。有生效中的搜索 / 筛选时高亮提示可点。
                 -->
-                <div
-                    class="breadcrumb-view-toggle search-scope-toggle"
-                    :class="{ 'is-expanded': searchResultDisplay === 'expanded' }"
-                    role="group"
-                    :aria-label="$t('dashboard.searchResultDisplay')"
+                <button
+                    type="button"
+                    class="stats-badge"
+                    :class="{ 'is-active': hasActiveQuery }"
+                    :title="hasActiveQuery ? $t('dashboard.statsBadgeResetTitle') : $t('dashboard.totalFiles', { count: $data.Number })"
+                    :aria-label="hasActiveQuery ? $t('dashboard.statsBadgeResetTitle') : $t('dashboard.totalFiles', { count: $data.Number })"
+                    @click="resetAllQueryConditions"
                 >
-                    <button
-                        class="breadcrumb-view-button"
-                        :class="{ 'is-active': searchResultDisplay === 'folders' }"
-                        type="button"
-                        :title="$t('dashboard.searchResultFolders')"
-                        :aria-pressed="searchResultDisplay === 'folders'"
-                        @click="selectSearchResultDisplay('folders')"
-                    >
-                        <font-awesome-icon icon="folder-tree" class="breadcrumb-view-icon"></font-awesome-icon>
-                    </button>
-                    <button
-                        class="breadcrumb-view-button"
-                        :class="{ 'is-active': searchResultDisplay === 'expanded' }"
-                        type="button"
-                        :title="$t('dashboard.searchResultExpanded')"
-                        :aria-pressed="searchResultDisplay === 'expanded'"
-                        @click="selectSearchResultDisplay('expanded')"
-                    >
-                        <font-awesome-icon icon="bars" class="breadcrumb-view-icon"></font-awesome-icon>
-                    </button>
-                </div>
-                <el-dropdown
-                    trigger="click"
-                    class="breadcrumb-sort-dropdown"
-                    @command="setSortField"
-                >
-                    <button
-                        class="breadcrumb-sort-button"
-                        type="button"
-                        :title="sortLabel"
-                    >
-                        <svg class="breadcrumb-sort-icon" viewBox="0 0 30 18" aria-hidden="true">
-                            <g v-if="sortField === 'time'" class="sort-field-glyph">
-                                <circle cx="7.5" cy="9" r="5.5" />
-                                <path d="M7.5 5.5V9L10 10.5" />
-                            </g>
-                            <g v-else-if="sortField === 'size'" class="sort-field-glyph">
-                                <path d="M2 4H13M2 9H10M2 14H7" />
-                            </g>
-                            <g v-else-if="sortField === 'rawName'" class="sort-field-glyph">
-                                <path d="M5.5 3L4 15M11 3L9.5 15M2.5 7H13M2 11H12.5" />
-                            </g>
-                            <g v-else-if="sortField === 'views'" class="sort-field-glyph">
-                                <path d="M2 9S4.5 4.5 7.5 4.5 13 9 13 9 10.5 13.5 7.5 13.5 2 9 2 9Z" />
-                                <circle cx="7.5" cy="9" r="1.8" />
-                            </g>
-                            <g v-else class="sort-field-glyph">
-                                <path d="M2.5 14L7.5 3L12.5 14M4.3 10H10.7" />
-                            </g>
-                            <path
-                                v-if="sortOrder === 'asc'"
-                                class="sort-order-glyph"
-                                d="M23 13.5V4.5M19 8.5L23 4.5L27 8.5"
-                            />
-                            <path
-                                v-else
-                                class="sort-order-glyph"
-                                d="M23 4.5V13.5M19 9.5L23 13.5L27 9.5"
-                            />
-                        </svg>
-                    </button>
-                    <template #dropdown>
-                        <el-dropdown-menu class="sort-dropdown-menu">
-                            <div class="sort-order-wrapper">
-                                <el-radio-group v-model="sortOrder" size="small" @change="setSortOrder">
-                                    <el-radio-button label="asc">{{ $t('dashboard.sortAsc') }}</el-radio-button>
-                                    <el-radio-button label="desc">{{ $t('dashboard.sortDesc') }}</el-radio-button>
-                                </el-radio-group>
-                            </div>
-
-                            <el-divider class="sort-divider" />
-
-                            <el-dropdown-item command="time" :class="{ 'is-selected': sortField === 'time' }">
-                                <span>{{ $t('dashboard.sortByTime') }}</span>
-                                <font-awesome-icon v-if="sortField === 'time'" icon="check" class="sort-field-check" />
-                            </el-dropdown-item>
-                            <el-dropdown-item command="size" :class="{ 'is-selected': sortField === 'size' }">
-                                <span>{{ $t('dashboard.sortBySize') }}</span>
-                                <font-awesome-icon v-if="sortField === 'size'" icon="check" class="sort-field-check" />
-                            </el-dropdown-item>
-                            <!-- 「文件名」排在「文件 ID」之前 -->
-                            <el-dropdown-item command="fileName" :class="{ 'is-selected': sortField === 'fileName' }">
-                                <span>{{ $t('dashboard.sortByFileName') }}</span>
-                                <font-awesome-icon v-if="sortField === 'fileName'" icon="check" class="sort-field-check" />
-                            </el-dropdown-item>
-                            <el-dropdown-item command="rawName" :class="{ 'is-selected': sortField === 'rawName' }">
-                                <span>{{ $t('dashboard.sortByRawName') }}</span>
-                                <font-awesome-icon v-if="sortField === 'rawName'" icon="check" class="sort-field-check" />
-                            </el-dropdown-item>
-                            <el-dropdown-item command="fileType" :class="{ 'is-selected': sortField === 'fileType' }">
-                                <span>{{ $t('dashboard.sortByFileType') }}</span>
-                                <font-awesome-icon v-if="sortField === 'fileType'" icon="check" class="sort-field-check" />
-                            </el-dropdown-item>
-                            <el-dropdown-item command="views" :class="{ 'is-selected': sortField === 'views' }">
-                                <span>{{ $t('dashboard.sortByViews') }}</span>
-                                <font-awesome-icon v-if="sortField === 'views'" icon="check" class="sort-field-check" />
-                            </el-dropdown-item>
-                            <!-- 「上传用户」放在排序项目最后 -->
-                            <el-dropdown-item command="uploader" :class="{ 'is-selected': sortField === 'uploader' }">
-                                <span>{{ $t('dashboard.sortByUploader') }}</span>
-                                <font-awesome-icon v-if="sortField === 'uploader'" icon="check" class="sort-field-check" />
-                            </el-dropdown-item>
-                        </el-dropdown-menu>
-                    </template>
-                </el-dropdown>
-                <!-- 移动端目录按钮 -->
-                <div class="mobile-directory-trigger" @click="showMobileDirectoryDrawer = true">
-                    <font-awesome-icon icon="folder-open" class="mobile-directory-icon"/>
-                    <span class="mobile-directory-path">{{ currentPath && currentPath.split('/').filter(Boolean).length > 0 ? currentPath.split('/').filter(Boolean).pop() : $t('dashboard.rootDirectory') }}</span>
-                    <font-awesome-icon icon="chevron-down" class="mobile-directory-arrow"/>
-                </div>
-                <!-- 桌面端面包屑 -->
-                <div class="breadcrumb desktop-only">
-                    <el-breadcrumb separator="/">
-                        <el-breadcrumb-item @click="navigateToFolder('')">
-                            <font-awesome-icon icon="home" class="breadcrumb-home-icon"/>
-                        </el-breadcrumb-item>
-                        <el-breadcrumb-item 
-                            v-for="(folder, index) in currentPath.split('/').filter(Boolean)" 
-                            :key="index"
-                            @click="navigateToFolder(currentPath.split('/').filter(Boolean).slice(0, index + 1).join('/'))">
-                            {{ folder }}
-                        </el-breadcrumb-item>
-                    </el-breadcrumb>
-                </div>
-                <div class="breadcrumb-right-group">
-                    <!-- v2.9.0：右上「用户选择」移除 —— 用户筛选已并入「筛选」弹窗的「用户」页 -->
-                    <!-- 新建目录：位于历史记录左侧 -->
-                    <el-button class="new-folder-btn" size="small" :title="$t('dashboard.newFolder')" :aria-label="$t('dashboard.newFolder')" @click="handleCreateFolder">
-                        <font-awesome-icon icon="plus" class="new-folder-icon"/>
-                        <span class="new-folder-text">{{ $t('dashboard.newFolder') }}</span>
-                    </el-button>
-                    <!-- v2.8.8：登记文件（与前台共用同一弹窗）—— 把一个已在别处的文件登记进系统，不重复上传
-                         v2.9.0：打开时把「当前所在目录」代入弹窗的「文件分类」 -->
-                    <el-button class="new-folder-btn record-file-btn" size="small" :title="$t('recordFile.title')" :aria-label="$t('recordFile.title')" @click="openRecordDialog">
-                        <font-awesome-icon icon="file-circle-plus" class="new-folder-icon"/>
-                        <span class="new-folder-text">{{ $t('recordFile.title') }}</span>
-                    </el-button>
-                    <!-- 历史记录：位于数量统计徽章左侧
-                         v2.8.6b：去掉 primary plain 配色 —— 文本/边框颜色与「新建目录」一致 -->
-                    <el-button class="history-btn" size="small" :title="$t('dashboard.history')" @click="goHistoryPage">
-                        <font-awesome-icon icon="history" class="history-btn-icon"/>
-                        <span class="history-btn-text">{{ $t('dashboard.history') }}</span>
-                    </el-button>
-                    <span class="stats-badge" :title="$t('dashboard.totalFiles', { count: $data.Number })">
-                        <font-awesome-icon icon="database" class="stats-badge-icon"/>
-                        {{ Number }}
-                    </span>
-                </div>
+                    <font-awesome-icon icon="database" class="stats-badge-icon"/>
+                    {{ Number }}
+                </button>
+            </div>
             </div>
             
+            <!-- v3.0.0：标签管理模式 —— 文件列表区隐藏，改由 TagModePanel 接管 -->
+            <TagModePanel
+                v-if="tagModeActive"
+                ref="tagModePanel"
+                :instance-id="instanceId"
+                @close="exitTagMode"
+                @changed="handleTagModeChanged"
+            />
+            <!-- v3.0.0：顶部哨兵 —— 从下往上滚到顶时自动补载上一页（unshift 且保持滚动位置） -->
+            <div v-if="!tagModeActive" ref="topSentinel" class="list-sentinel"></div>
+            <template v-if="!tagModeActive">
             <!-- 卡片视图 -->
             <div
                 v-if="viewMode === 'card'"
@@ -352,15 +541,25 @@
                 </div>
                 <!-- 文件夹和文件列表 -->
                 <template v-else v-for="(item, index) in paginatedTableData" :key="`${item.isFolder ? 'folder' : 'file'}:${item.name}`">
-                    <!-- 文件夹卡片 -->
+                    <!-- 文件夹卡片（回收站里的文件夹条目走文件卡片外观，见 FileCard 的 isFolderItem） -->
                     <FolderCard
-                        v-if="isFolder(item)"
+                        v-if="isFolder(item) && !trashMode"
                         :name="item.name"
                         v-model:selected="item.selected"
                         :folderStats="item.metadata?.folderStats || null"
+                        :shared="!!item.shared"
+                        :sharedOwner="item.sharedOwner || ''"
+                        :sharedSelf="!!item.sharedSelf"
+                        :sharedReadonly="isSharedReadonly(item)"
+                        :displayName="item.displayName || ''"
                         :showActions="!isSearchMode"
+                        :deleting="isDeleting(item)"
+                        :deleting-label="trashMode ? $t('dashboard.trashProcessing') : ''"
                         :disableTooltip="disableTooltip"
+                        :showSelect="hasSelectedFolders"
+                        @click.capture="handleShiftClickCapture($event, index)"
                         @enter="enterFolder(item.name)"
+                        @props="openFolderProps(item)"
                         @copy="handleFolderCopy(item.name)"
                         @move="handleMove(index, item.name)"
                         @delete="handleDelete(index, item.name)"
@@ -376,6 +575,11 @@
                         :fileLink="getFileLink(item.name)"
                         :previewSrcList="item.previewSrcList"
                         :disableTooltip="disableTooltip"
+                        :deleting="isDeleting(item)"
+                        :deleting-label="trashMode ? $t('dashboard.trashProcessing') : ''"
+                        :showSelect="hasSelectedFiles"
+                        :sharedReadonly="isSharedReadonly(item)"
+                        @click.capture="handleShiftClickCapture($event, index)"
                         @detail="openDetailDialog(index, item.name)"
                         @openLink="handleOpenLink(item.name)"
                         @copy="handleCopy(index, item.name)"
@@ -385,9 +589,6 @@
                         @touchstart="handleTouchStart(item, index)"
                         @touchend="handleTouchEnd"
                         @touchmove="handleTouchEnd"
-                        @preview="(evt, opts) => openHoverPreview(item, evt, opts)"
-                        @previewMove="moveHoverPreview($event)"
-                        @previewEnd="closeHoverPreview"
                         @previewMedia="openMediaPreview"
                     />
                 </template>
@@ -422,7 +623,13 @@
                         :item="item"
                         v-model:selected="item.selected"
                         :fileLink="getFileLink(item.name)"
+                        :sharedReadonly="isSharedReadonly(item)"
+                        :deleting="isDeleting(item)"
+                        :deleting-label="trashMode ? $t('dashboard.trashProcessing') : ''"
+                        :folderHint="trashMode && !isFolder(item) ? (item.folder || '') : ''"
+                        @click.capture="handleShiftClickCapture($event, index)"
                         @enter="enterFolder(item.name)"
+                        @props="openFolderProps(item)"
                         @detail="openDetailDialog(index, item.name)"
                         @copy="handleCopy(index, item.name)"
                         @folderCopy="handleFolderCopy(item.name)"
@@ -433,9 +640,6 @@
                         @touchstart="isFolder(item) ? handleFolderTouchStart(item, index) : handleTouchStart(item, index)"
                         @touchend="handleTouchEnd"
                         @touchmove="handleTouchEnd"
-                        @preview="(evt, opts) => openHoverPreview(item, evt, opts)"
-                        @previewMove="moveHoverPreview($event)"
-                        @previewEnd="closeHoverPreview"
                         @previewMedia="openMediaPreview"
                     />
                 </template>
@@ -453,31 +657,37 @@
                 height: selectionRect.height + 'px'
               }"
             ></div>
+            </template>
 
-            <div class="pagination-container">
+            <!-- v3.0.0：底部哨兵 —— 滚动到底自动追加下一页（与「加载更多」同一加载函数） -->
+            <div v-if="!tagModeActive" ref="bottomSentinel" class="list-sentinel"></div>
+
+            <div v-if="!tagModeActive" class="pagination-container">
                 <div class="pagination-center">
+                    <!-- v3.0.0：分页按后端总数（listTotal）计算，翻页时用该页数据替换列表 -->
                     <el-pagination
+                        v-if="listTotal > effectivePageSize"
                         background
                         layout="prev, pager, next"
-                        :total="filteredTableData.length"
-                        :page-size="pageSize"
+                        :total="listTotal"
+                        :page-size="effectivePageSize"
                         :current-page="currentPage"
                         :pager-count="pagerCount"
                         @current-change="handlePageChange">
                     </el-pagination>
-                    <el-button 
-                        type="primary" 
-                        @click="refreshFileList" 
-                        class="refresh-btn">
-                        <font-awesome-icon icon="sync" :class="{ 'fa-spin': refreshLoading }"/>
-                    </el-button>
+                    <!--
+                        v3.0.0：「加载更多」= 把下一页追加到当前列表（不翻页、不改当前页码）；
+                        没有更多时按钮直接隐藏。v3.0.0：底部自动加载已移除，仅手动点击本按钮加载。
+                        v3.0.0：底部「重新加载」按钮已移除（刷新走顶栏「刷新」）。
+                    -->
                     <el-button
-                        v-if="currentPage === Math.ceil(filteredTableData.length / pageSize)" 
-                        type="primary" 
-                        @click="loadMoreData" 
-                        :loading="loading" 
+                        v-if="hasMoreRows"
+                        type="primary"
+                        @click="loadMoreData()"
+                        :loading="listLoading"
                         class="load-more">
                         {{ $t('dashboard.loadMore') }}
+                        <span class="load-more-count">(+{{ Math.max(listTotal - loadedRows, 0) }})</span>
                     </el-button>
                 </div>
                 <div class="pagination-right">
@@ -502,17 +712,7 @@
             @action="handleBatchAction"
             @clear="clearSelection"
         />
-        <!-- v2.8.5：悬停预览大图浮层（PC：卡片小眼睛 / 列表缩略图悬停）
-             v2.8.6：移动端长按小眼睛 / 缩略图同样弹出（浮层居中显示） -->
-        <HoverPreview
-            :visible="hoverPreview.visible"
-            :x="hoverPreview.x"
-            :y="hoverPreview.y"
-            :src="hoverPreview.src"
-            :type="hoverPreview.type"
-            :touch="hoverPreview.touch"
-            :anchor="hoverPreview.anchor"
-        />
+        <!-- v3.0.0（R9）：悬停预览浮层（HoverPreview）已随「小眼睛」一并移除 -->
         <!-- 文件详情弹窗 -->
         <FileDetailDialog
             v-model="showdetailDialog"
@@ -600,14 +800,9 @@
             v-model="showMobileActionModal"
             :title="mobileActionIsFolder ? getFolderName(mobileActionFile?.name || '') : (mobileActionFile?.metadata?.FileName || getFileName(mobileActionFile?.name || ''))"
             :isFolder="mobileActionIsFolder"
+            :sharedReadonly="isSharedReadonly(mobileActionFile)"
+            :sharedNoDelete="isSharedToMe(mobileActionFile)"
             @action="handleMobileAction"
-        />
-        <!-- 移动端目录抽屉 -->
-        <MobileDirectoryDrawer
-            v-model="showMobileDirectoryDrawer"
-            :currentPath="currentPath"
-            @navigate="navigateToFolder"
-            @goBack="handleGoBack"
         />
         <!-- 标签筛选弹窗：多选已有标签，「或 / 且」切换 -->
         <el-dialog
@@ -663,17 +858,105 @@
             v-model="showMediaPreview"
             :items="mediaPreviewItems"
             :startIndex="mediaPreviewIndex"
+            show-detail
+            :detailOpen="showdetailDialog"
             @detail="handleMediaPreviewDetail"
+            @close-detail="showdetailDialog = false"
+            @view-uploaded="handleViewUploadedSnapshot"
         />
 
-        <!-- 移动文件对话框 -->
+        <!--
+            移动文件对话框
+            v3.0.0：批量移动时开 showInstancePicker ——
+            先在弹窗内选「接收实例」，再按目标实例拉目录树选目录（两步每次都重走）。
+        -->
         <MoveFileDialog
             v-model="showMoveDialog"
             :current-directory="currentPath"
             :is-batch-move="isBatchMove"
             :initial-path="moveTargetPath"
+            :show-instance-picker="isBatchMove"
+            :instance-id="instanceId"
             @confirm="confirmMove"
         />
+
+        <!-- v3.0.0：批量编辑原名 -->
+        <BatchOriginalNameDialog
+            v-model="showBatchNameDialog"
+            :ids="selectedFileIds"
+            @done="handleBatchMutated"
+        />
+        <!-- v3.0.0：批量限时 / 重定向（按点进来的按钮预设页签） -->
+        <BatchExpiryDialog
+            v-model="showBatchExpiryDialog"
+            :ids="selectedFileIds"
+            :initial-mode="batchExpiryMode"
+            @done="handleBatchMutated"
+        />
+        <!-- v3.0.0：目录属性（点文件夹名称打开；组件由其它代理提供，缺失时降级提示） -->
+        <FolderPropsDialog
+            v-if="hasFolderPropsDialog"
+            :visible="showFolderProps"
+            :folder-path="folderPropsTarget.path"
+            :folder-name="folderPropsTarget.name"
+            :instance-id="instanceId"
+            @close="showFolderProps = false"
+            @update:visible="showFolderProps = $event"
+            @saved="handleFolderPropsSaved"
+        />
+
+        <!--
+            v3.0.0：「切换实例」居中弹窗（入口在左上角页面切换下拉的尾部）
+            · 列出「默认 + 各实例」，按 index 升序，名称前显示序号（默认实例不显示）；
+            · 底部「实例管理」链接 → 新标签打开用户管理页的实例管理锚点。
+        -->
+        <el-dialog
+            v-model="showInstanceDialog"
+            :title="$t('instancePicker.title')"
+            :width="dialogWidth"
+            append-to-body
+            align-center
+            class="instance-switch-dialog"
+        >
+            <div class="instance-switch-list">
+                <button
+                    type="button"
+                    class="instance-switch-item"
+                    :class="{ 'is-active': !instanceId }"
+                    @click="switchInstanceTo('')"
+                >
+                    <span class="instance-switch-icon"><font-awesome-icon icon="server"/></span>
+                    <span class="instance-switch-name">{{ $t('instancePicker.defaultInstance') }}</span>
+                    <font-awesome-icon v-if="!instanceId" icon="check" class="instance-switch-check"/>
+                </button>
+                <button
+                    v-for="ins in orderedInstances"
+                    :key="'sw-' + ins.id"
+                    type="button"
+                    class="instance-switch-item"
+                    :class="{ 'is-active': String(instanceId) === String(ins.id) }"
+                    @click="switchInstanceTo(ins.id)"
+                >
+                    <span class="instance-switch-seq">{{ instanceSeqOf(ins) }}</span>
+                    <span class="instance-switch-name">{{ ins.name }}</span>
+                    <span v-if="ins.note" class="instance-switch-note">{{ ins.note }}</span>
+                    <font-awesome-icon
+                        v-if="String(instanceId) === String(ins.id)"
+                        icon="check"
+                        class="instance-switch-check"
+                    />
+                </button>
+                <div v-if="!orderedInstances.length" class="instance-switch-empty">
+                    {{ $t('instancePicker.empty') }}
+                </div>
+            </div>
+            <div class="instance-switch-footer">
+                <button type="button" class="instance-switch-manage" @click="openInstanceManagement">
+                    {{ $t('instancePicker.manage') }}
+                </button>
+            </div>
+        </el-dialog>
+
     </div>
 </template>
 
@@ -688,14 +971,16 @@ import FileCard from '@/components/dashboard/FileCard.vue';
 import FolderCard from '@/components/dashboard/FolderCard.vue';
 import MoveFileDialog from '@/components/dashboard/MoveFileDialog.vue';
 import FileListItem from '@/components/dashboard/FileListItem.vue';
-import HoverPreview from '@/components/dashboard/HoverPreview.vue';
 // v2.9.0：媒体预览浮层（图片灯箱 / 视频播放器 / 音频播放器 / 通用弹窗）
 import MediaPreviewOverlay from '@/components/dashboard/MediaPreviewOverlay.vue';
 import FileDetailDialog from '@/components/dashboard/FileDetailDialog.vue';
 import BatchActionBar from '@/components/dashboard/BatchActionBar.vue';
 import MobileActionSheet from '@/components/dashboard/MobileActionSheet.vue';
-import MobileDirectoryDrawer from '@/components/dashboard/MobileDirectoryDrawer.vue';
 import DashboardCheckbox from '@/components/dashboard/DashboardCheckbox.vue';
+// v3.0.0：标签管理模式面板 / 批量改原名 / 批量限时·重定向
+import TagModePanel from '@/components/dashboard/TagModePanel.vue';
+import BatchOriginalNameDialog from '@/components/dashboard/BatchOriginalNameDialog.vue';
+import BatchExpiryDialog from '@/components/dashboard/BatchExpiryDialog.vue';
 import FilterDialog from '@/components/dashboard/FilterDialog.vue';
 import LanguageSwitcher from '@/components/LanguageSwitcher.vue';
 // v2.8.8：登记文件弹窗（与前台共用同一组件）
@@ -717,12 +1002,80 @@ import { copyText } from '@/utils/clipboard';
 import { getLinkPrefix } from '@/utils/fileLink';
 import backgroundManager from '@/mixins/backgroundManager';
 import pageActivation from '@/mixins/pageActivation';
-import { ref } from 'vue';
+import { ref, defineAsyncComponent } from 'vue';
 import { useDragSelect } from '@/utils/dashboard/useDragSelect.js';
+
+/*
+ * v3.0.0：目录属性弹窗（FolderPropsDialog.vue）由其它代理并行新建。
+ * 这里用 import.meta.glob 做「可选加载」：文件还没落地时不会让构建失败，
+ * 点到文件夹名称时给一条提示（落地后自动生效，无需再改本文件）。
+ */
+const folderPropsModules = import.meta.glob('../components/dashboard/FolderPropsDialog.vue');
+// 取第一个加载器（glob 的 key 形式随 Vite 版本可能是相对路径或绝对路径，不依赖具体 key）
+const folderPropsLoader = Object.values(folderPropsModules)[0];
+const FolderPropsDialog = folderPropsLoader ? defineAsyncComponent(folderPropsLoader) : null;
+
+/** v3.0.0：实例选择的 localStorage 键（值 = 实例 id 或空串 = 默认实例） */
+const INSTANCE_STORAGE_KEY = 'goimgbed_instance_id';
+
+/** v3.0.0：默认筛选条件（清空 / 切实例时复用，避免遗漏字段） */
+function createEmptyFilters() {
+    return {
+        accessStatus: [],
+        listType: [],
+        label: [],
+        fileType: [],
+        channel: [],
+        channelName: [],
+        uploadSource: [],
+        backup: [],
+        redirect: [],
+        tags: [],
+        tagNames: [],
+        // 标签模式默认「且」（and），与后端口径一致
+        tagMode: 'and',
+        datePreset: '',
+        dateFrom: '',
+        dateTo: '',
+        sizePreset: '',
+        sizeMin: 0,
+        sizeMax: 0,
+        sizeUnit: 'MB',
+        sizeMode: 'actual',
+        validity: [],
+        nameChanged: [],
+        userNames: [],
+        // v3.0.0：用户共享单选项（'mine' | 'tome' | ''）
+        shareScope: '',
+        // 全局条件组合：and（且）/ or（或）
+        matchMode: 'and',
+        dimPreset: '',
+        widthMin: 0,
+        widthMax: 0,
+        heightMin: 0,
+        heightMax: 0,
+        // v3.0.0（R8）：评级（评分 / 等级范围；null = 不限）
+        ratingMin: null,
+        ratingMax: null,
+        levelMin: null,
+        levelMax: null
+    };
+}
+
+/** v3.0.0：读取持久化的实例 id（没有则默认实例） */
+function readStoredInstanceId() {
+    try {
+        return localStorage.getItem(INSTANCE_STORAGE_KEY) || '';
+    } catch {
+        return '';
+    }
+}
 
 const SORT_FIELDS = ['time', 'size', 'fileName', 'rawName', 'fileType', 'views', 'uploader'];
 const SORT_ORDERS = ['asc', 'desc'];
 const SEARCH_RESULT_DISPLAYS = ['folders', 'expanded'];
+// v3.0.0（R12）：回收站每页条数（需求：每页 48 条；普通文件列表仍为 24）
+const TRASH_PAGE_SIZE = 48;
 
 function getStoredOption(key, validValues, fallback) {
     try {
@@ -754,13 +1107,23 @@ data() {
         userFilter: 'all',
         userOptions: [],
         isSearchMode: false,
-        searchResultDisplay: getStoredOption('searchResultDisplay', SEARCH_RESULT_DISPLAYS, 'expanded'),
+        /*
+         * v3.0.0：内容展示方式 —— 'folders'（展示文件夹，按目录分层，默认）/
+         * 'expanded'（直接展开文件，当前目录递归平铺）。不做持久化，刷新后回到默认。
+         */
+        searchResultDisplay: 'folders',
         searchSettingsOpen: false,
         // v2.8.9：移动端搜索框是否展开（不持久化 —— 刷新页面默认收起）
         mobileSearchOpen: false,
         searchIconPressTimer: null,
         searchIconPressStart: null,
         searchIconLongPressed: false,
+        // v3.0.0：搜索防抖计时器（回车提交时先清掉，保证立即查询）
+        searchDebounceTimer: null,
+        // v3.0.0：中文输入法组词中（此时回车只是确认候选词，不触发搜索）
+        searchComposing: false,
+        // v3.0.0（第三轮）：回车提交去重时间戳（keydown + keyup 各触发一次时只提交一次）
+        lastSearchSubmitAt: 0,
         currentPage: 1,
         pageSize: 24, // v2.5.0：卡片视图每行 8 个 × 3 行 = 24（与历史记录封面样式对齐）
         selectedFiles: [],
@@ -781,18 +1144,33 @@ data() {
         trashMode: false,
         trashLoading: false,
         normalTableData: [], // 退出回收站时还原普通文件列表
+        // v3.0.0（R12）：进入回收站前的分页状态（退出时还原，避免沿用回收站的总数/页码）
+        normalListState: null,
+        // v3.0.0（R12）：回收站服务端分页 —— 每页 48 条（与普通列表的 24 条区分开）
+        trashTotal: 0,
+        // v3.0.0（R12）：正在删除的条目 key 集合（卡片/列表行显示转圈遮罩，需求 43）
+        deletingKeys: [],
+        // v3.0.0（R12）：目录属性里的自定义名称（path → 名称），列表/全局目录各存一份
+        folderNameMap: {},
+        allFolderNames: {},
         showTagDialog: false, // 标签管理对话框
         showBatchTagDialog: false, // 批量标签管理对话框
         currentTagFile: '', // 当前标签管理的文件
         viewMode: 'card', // 视图模式：card 或 list
+        // v3.0.0（R4）：移动端「全选 / 视图切换」工具栏是否已吸附到顶栏下方（仅用于附加背景，不影响定位）
+        breadcrumbStuck: false,
+        // v3.0.0（R14）：第二行吸附的复位阈值（未吸附时测量并缓存，避免吸附期间布局变化导致提前复位）
+        breadcrumbThreshold: null,
+        // v3.0.0（R5）：顶栏是否处于「向下滚动已上滑隐藏」状态 —— 第二行与顶栏同进同出
+        breadcrumbHeaderHidden: false,
         // v2.8.5：悬停预览大图（PC 卡片小眼睛 / 列表缩略图）
-        hoverPreview: { visible: false, x: 0, y: 0, src: '', type: 'image', touch: false, anchor: null },
         showMobileActionModal: false, // 移动端操作模态框
         mobileActionFile: null, // 当前移动端操作的文件
         mobileActionIndex: -1, // 当前移动端操作的文件索引
         mobileActionIsFolder: false, // 是否为文件夹操作
         longPressTimer: null, // 长按计时器
-        showMobileDirectoryDrawer: false, // 移动端目录抽屉
+        // v3.0.0：目录导航下拉「当前」模式的候选目录（当前目录的直接子目录，后端 /list 下发的 directories）
+        directories: [],
         jumpPage: '', // 跳转页码输入
         // 筛选相关状态（数组形式支持多选）
         filters: {
@@ -806,7 +1184,7 @@ data() {
             ,redirect: []      // 重定向: 'yes'（已设置） | 'no'（未设置）
             ,tags: []          // 标签有无: 'has'（含标签） | 'none'（未含标签）
             ,tagNames: []      // 标签筛选弹窗选中的标签名
-            ,tagMode: 'or'     // 标签筛选模式: 'or'（任一） | 'and'（全部）
+            ,tagMode: 'and'    // 标签筛选模式: 'and'（且/全部） | 'or'（或/任一），默认「且」
             // v2.8.7：日期 / 大小筛选（筛选弹窗「日期」「大小」标签页）
             ,datePreset: ''    // 日期快捷预设: today|yesterday|beforeYesterday|thisWeek|lastWeek|thisMonth
             ,dateFrom: ''      // 起始日期 YYYY-MM-DD（含当天）
@@ -820,12 +1198,18 @@ data() {
             ,validity: []        // 有效期: 'limited' | 'expired' | 'permanent'
             ,nameChanged: []     // 名称状态: 'changed'（已改名） | 'unchanged'（未改名）
             ,userNames: []       // v2.9.0 用户页：上传用户（多选，命中任一即可）
-            ,matchMode: 'all'    // v2.9.0 条件组合方式: 'all'（同时） | 'any'（任意）
+            ,shareScope: ''      // v3.0.0 用户共享：'mine'（我共享的）| 'tome'（共享给我的）| ''
+            ,matchMode: 'and'    // v3.0.0 条件组合方式: 'and'（且） | 'or'（或）
             ,dimPreset: ''       // 尺寸快捷: landscape|portrait|square|ratio-4-3|ratio-16-9|360p…8k
             ,widthMin: 0         // 宽最小（px，0 = 不限）
             ,widthMax: 0         // 宽最大
             ,heightMin: 0        // 高最小
             ,heightMax: 0        // 高最大
+            // v3.0.0（R8）：评级筛选（评分 0-5 半星 / 等级 0-5；null = 该侧不限）
+            ,ratingMin: null
+            ,ratingMax: null
+            ,levelMin: null
+            ,levelMax: null
         },
         // v2.8.7：筛选弹窗显隐
         showFilterDialog: false,
@@ -842,7 +1226,8 @@ data() {
         allTags: [], // [{ name, count }]
         tagFilterLoading: false,
         tagDraft: [], // 弹窗内待应用的标签（点确定才生效）
-        tagModeDraft: 'or',
+        // v3.0.0：标签模式草稿默认「且」（and）
+        tagModeDraft: 'and',
         // 移动文件对话框相关状态
         showMoveDialog: false, // 移动文件对话框
         moveTargetPath: '/', // 移动目标路径
@@ -851,7 +1236,42 @@ data() {
         isBatchMove: false, // 是否为批量移动
         pageSwipeStartX: null,
         pageSwipeStartY: null,
-        pageSwipeStartTime: 0
+        pageSwipeStartTime: 0,
+        /* ---------------- v3.0.0 多实例 ---------------- */
+        instanceId: readStoredInstanceId(), // '' = 默认实例
+        instances: [],
+        /* ---------------- v3.0.0（R7）目录导航悬停展开 ---------------- */
+        dirHoverOpened: false,
+        dirHoverLeaveTimer: null,
+        /* ---------------- v3.0.0 标签管理模式 ---------------- */
+        tagModeActive: false,
+        /* ---------------- v3.0.0 列表窗口（服务端分页） ---------------- */
+        listTotal: 0,        // 后端返回的文件总数（当前目录 / 扁平化后）
+        fileWindowStart: 0,  // 当前已加载窗口在文件序列中的起始偏移
+        fileWindowCount: 0,  // 当前已加载的文件条数
+        listLoading: false,
+        lastAutoLoadAt: 0,
+        /* ---------------- v3.0.0 批量操作弹窗 ---------------- */
+        showBatchNameDialog: false,
+        showBatchExpiryDialog: false,
+        batchExpiryMode: 'expiry',
+        /* ---------------- v3.0.0 实例切换弹窗 ---------------- */
+        showInstanceDialog: false,
+        /* ---------------- v3.0.0 目录导航下拉：当前 / 全局 ---------------- */
+        dirScope: 'current',      // 'current'（父子层级）| 'global'（该实例全部目录）
+        dirSearch: '',
+        allFolders: [],           // GET /api/manage/folders/all 的结果（字符串路径数组）
+        allFoldersLoading: false,
+        /* ---------------- v3.0.0 列表缓存时间（页面重新可见时判断是否过期） ---------------- */
+        lastListLoadedAt: 0,
+        /* ---------------- v3.0.0（R16）Shift 区间选择：上次单击选中的行号锚点 ---------------- */
+        lastSelectedIndex: -1,
+        /* ---------------- v3.0.0 移动端返回键：目录层级守卫 ---------------- */
+        isTouchNav: false,
+        /* ---------------- v3.0.0 目录属性 ---------------- */
+        showFolderProps: false,
+        folderPropsTarget: { path: '', name: '' },
+        hasFolderPropsDialog: Boolean(FolderPropsDialog)
     }
 },
 components: {
@@ -862,13 +1282,16 @@ components: {
     FileCard,
     FolderCard,
     FileListItem,
-    HoverPreview,
     MediaPreviewOverlay,
     FileDetailDialog,
     BatchActionBar,
     MobileActionSheet,
-    MobileDirectoryDrawer,
     DashboardCheckbox,
+    TagModePanel,
+    BatchOriginalNameDialog,
+    BatchExpiryDialog,
+    // v3.0.0：目录属性弹窗（可选加载，缺失时为 null 不注册）
+    ...(FolderPropsDialog ? { FolderPropsDialog } : {}),
     FilterDialog,
     MoveFileDialog,
     LanguageSwitcher,
@@ -901,6 +1324,14 @@ setup() {
 computed: {
     tagFileMetadata() { return this.tableData.find(file => file.name === this.currentTagFile)?.metadata || {}; },
     ...mapGetters(['adminUrlSettings', 'userConfig']),
+    /**
+     * v3.0.0（R16）：当前账户是否开启两步验证 ——
+     * 由 /api/userConfig 的 accountTotpEnabled 下发，
+     * 回收站彻底删除据此决定「只验动态码」还是「输入确认删除」。
+     */
+    accountTotpEnabled() {
+        return this.userConfig?.accountTotpEnabled === true;
+    },
     /** v2.8.7：全局视频静音开关（Vuex 持久化，跨页面记忆） */
     globalVideoMuted() {
         return this.$store.state.globalVideoMuted;
@@ -908,13 +1339,148 @@ computed: {
     filteredTableData() {
         return this.tableData;
     },
+    /*
+     * v3.0.0：分页改为「服务端总数」驱动 —— 列表里只放当前已加载的窗口
+     * （翻页时整页替换，加载更多时向后追加，往上滚时向前补载）。
+     */
     totalPages() {
-        return Math.ceil(this.filteredTableData.length / this.pageSize) || 1;
+        return Math.ceil(this.listTotal / this.effectivePageSize) || 1;
     },
-    // 展开结果按递归文件总数分页，目录模式按直接子项分页。
     realTotalPages() {
-        const total = this.recursiveSearchResults ? this.Number : this.directFolderCount + this.directFileCount;
-        return Math.ceil(total / this.pageSize) || 1;
+        return Math.ceil(this.listTotal / this.effectivePageSize) || 1;
+    },
+    /** 已加载的窗口里还有没有下一页（加载更多按钮的显隐依据） */
+    hasMoreRows() {
+        return this.fileWindowStart + this.fileWindowCount < this.listTotal;
+    },
+    /** v3.0.0（R12）：分页条实际使用的每页条数 —— 回收站 48，普通列表 24 */
+    effectivePageSize() {
+        return this.trashMode ? TRASH_PAGE_SIZE : this.pageSize;
+    },
+    /** 加载更多按钮上的「(＋N)」剩余条数 */
+    loadedRows() {
+        return this.fileWindowStart + this.fileWindowCount;
+    },
+    /** 当前窗口里文件夹行数（它们不参与分页，永远排在文件行前面） */
+    folderRowCount() {
+        return this.tableData.filter((item) => item.isFolder).length;
+    },
+    /** v3.0.0：选中文件的 File_ID 列表（批量改原名 / 限时 / 重定向用） */
+    selectedFileIds() {
+        return this.selectedFiles.filter((f) => !f.isFolder).map((f) => f.name);
+    },
+    /**
+     * v3.0.0：卡片视图里是否存在「被选中的文件」。
+     * 有 → 所有文件卡片常显右上角勾选框，避免用户找不到多选入口。
+     */
+    hasSelectedFiles() {
+        return this.selectedFiles.some((f) => !f.isFolder);
+    },
+    /**
+     * v3.0.0（R14）：卡片视图里是否存在「被选中的文件夹」。
+     * 有 → 其余文件夹卡片也常显右上角选择圆圈（与文件卡片同口径）。
+     */
+    hasSelectedFolders() {
+        return this.selectedFiles.some((f) => !!f.isFolder);
+    },
+    /** v3.0.0：实例列表按创建序号（index，1-based）升序，用于「切换实例」弹窗与序号角标 */
+    orderedInstances() {
+        return [...(this.instances || [])].sort((a, b) => {
+            const ia = Number(a?.index) || 0;
+            const ib = Number(b?.index) || 0;
+            if (ia !== ib) return ia - ib;
+            const ta = a?.createdAt ? new Date(a.createdAt).getTime() : 0;
+            const tb = b?.createdAt ? new Date(b.createdAt).getTime() : 0;
+            return ta - tb;
+        });
+    },
+    /**
+     * v3.0.0：当前实例的创建序号（默认实例 = 0，表示不显示角标）。
+     * 取 /api/instances 下发的 index（1-based）；缺失时回落到列表顺序。
+     */
+    instanceSeq() {
+        if (!this.instanceId) return 0;
+        const hit = this.orderedInstances.find((i) => String(i.id) === String(this.instanceId));
+        if (!hit) return 0;
+        const idx = Number(hit.index);
+        if (Number.isFinite(idx) && idx > 0) return idx;
+        const pos = this.orderedInstances.findIndex((i) => String(i.id) === String(this.instanceId));
+        return pos >= 0 ? pos + 1 : 0;
+    },
+    /** v3.0.0：序号角标文案（②、③…；超过 20 用 (n)），通过 CSS 变量交给页面切换按钮的 ::after */
+    instanceBadgeStyle() {
+        const n = this.instanceSeq;
+        if (!n) return null;
+        const circled = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '⑩', '⑪', '⑫', '⑬', '⑭', '⑮', '⑯', '⑰', '⑱', '⑲', '⑳'];
+        const text = n <= circled.length ? circled[n - 1] : `(${n})`;
+        return { '--instance-seq': `"${text}"` };
+    },
+    /** v3.0.0：目录导航下拉的候选项（按 dirScope 切换「当前 / 全局」） */
+    activeDirOptions() {
+        if (this.dirScope !== 'global') return this.directoryNavOptions;
+        const keyword = String(this.dirSearch || '').trim().toLowerCase();
+        const list = keyword
+            ? (this.allFolders || []).filter((p) => String(p).toLowerCase().includes(keyword))
+            : (this.allFolders || []);
+        // v3.0.0（R8）：悬停展开 = 当前实例目录树 + 当前路径链自动高亮（祖先 / 当前）
+        const cur = this.normalizedCurrentPath;
+        const out = [{ path: '', label: this.$t('dashboard.rootDirectory'), depth: 0, isAncestor: !!cur, isCurrent: !cur }];
+        list.forEach((raw) => {
+            const path = String(raw).replace(/^\/+|\/+$/g, '');
+            if (!path) return;
+            const parts = path.split('/').filter(Boolean);
+            const isCurrent = path === cur;
+            const isAncestor = !isCurrent && cur.startsWith(`${path}/`);
+            out.push({ path, label: this.displayFolderName(path), depth: parts.length, isAncestor, isCurrent });
+        });
+        return out;
+    },
+    /** v3.0.0（R12）：目录显示名（目录属性里改过名就用自定义名称，否则用路径末段） */
+    folderNameOf() {
+        return { ...(this.allFolderNames || {}), ...(this.folderNameMap || {}) };
+    },
+    /** v3.0.0：全局模式下没有可跳转目录（根目录那条不算）时的空态 */
+    globalDirEmpty() {
+        if (this.dirScope !== 'global' || this.allFoldersLoading) return false;
+        return !this.allFolders.length;
+    },
+    /** 当前目录（去掉首尾斜杠），用于目录下拉的选中态 */
+    normalizedCurrentPath() {
+        return String(this.currentPath || '').replace(/^\/+|\/+$/g, '');
+    },
+    currentDirLabel() {
+        return this.displayFolderName(this.normalizedCurrentPath);
+    },
+    /** v3.0.0（R9）：完整路径展示（并入目录导航按钮）—— 根目录 / 一级 / 二级 */
+    currentDirFullPath() {
+        const parts = this.normalizedCurrentPath.split('/').filter(Boolean);
+        if (!parts.length) return this.$t('dashboard.rootDirectory');
+        // v3.0.0（R12）：每一级都优先用目录属性里的自定义名称
+        let acc = '';
+        return parts
+            .map((part) => {
+                acc = acc ? `${acc}/${part}` : part;
+                return this.displayFolderName(acc);
+            })
+            .join(' / ');
+    },
+    /**
+     * v3.0.0：目录导航下拉的候选项 —— 根目录 + 当前路径的每一级（面包屑层级）
+     * + 当前目录的直接子目录，深度决定缩进。
+     */
+    directoryNavOptions() {
+        const out = [{ path: '', label: this.$t('dashboard.rootDirectory'), depth: 0 }];
+        const parts = this.normalizedCurrentPath.split('/').filter(Boolean);
+        let acc = '';
+        parts.forEach((part, index) => {
+            acc = acc ? `${acc}/${part}` : part;
+            out.push({ path: acc, label: this.displayFolderName(acc), depth: index + 1 });
+        });
+        (this.directories || []).forEach((dir) => {
+            const path = String(dir).replace(/^\/+|\/+$/g, '');
+            out.push({ path, label: this.displayFolderName(path), depth: parts.length + 1 });
+        });
+        return out;
     },
     // 计算当前激活的筛选条件数量（数组形式）
     activeFilterCount() {
@@ -922,6 +1488,8 @@ computed: {
         let count = Object.values(this.filters).reduce((acc, v) => acc + (Array.isArray(v) ? v.length : 0), 0);
         if (this.filters.dateFrom || this.filters.dateTo) count += 1;
         if ((Number(this.filters.sizeMin) || 0) > 0 || (Number(this.filters.sizeMax) || 0) > 0) count += 1;
+        // v3.0.0：用户共享（单选字符串）同样计入角标
+        if (this.filters.shareScope) count += 1;
         // v2.8.9：原始大小口径、尺寸条件同样计入角标
         if (this.filters.sizeMode === 'original') count += 1;
         if (
@@ -929,11 +1497,29 @@ computed: {
             (Number(this.filters.widthMin) || 0) > 0 || (Number(this.filters.widthMax) || 0) > 0 ||
             (Number(this.filters.heightMin) || 0) > 0 || (Number(this.filters.heightMax) || 0) > 0
         ) count += 1;
+        // v3.0.0（R8）：评级条件（任一侧非 null）同样计入角标
+        const hasRatingFilter = ['ratingMin', 'ratingMax', 'levelMin', 'levelMax']
+            .some((k) => this.filters[k] !== null && this.filters[k] !== undefined);
+        if (hasRatingFilter) count += 1;
         return count;
     },
     // 判断是否处于搜索或筛选模式
     hasSearchOrFilter() {
         return this.isSearchMode || this.activeFilterCount > 0;
+    },
+    /**
+     * v3.0.0（R7）：当前是否存在任何「搜索 / 筛选」条件 ——
+     * 数量统计徽章据此切换「一键复位」提示与高亮态。
+     */
+    hasActiveQuery() {
+        return !!(
+            this.activeFilterCount > 0 ||
+            String(this.searchKeywords || '').trim() ||
+            String(this.searchIncludeTags || '').trim() ||
+            String(this.searchExcludeTags || '').trim() ||
+            (this.searchType && this.searchType !== 'all') ||
+            (this.isAdminRole && this.userFilter && this.userFilter !== 'all')
+        );
     },
     /** 是否管理员（普通用户看不到用户筛选等管理项） */
     isAdminRole() {
@@ -951,8 +1537,12 @@ computed: {
             { value: 'other', label: this.$t('dashboard.searchTypeOther') },
         ];
     },
+    /**
+     * v3.0.0：「直接展开文件」对全部内容生效（不再只在搜索/筛选时递归）——
+     * 它决定列表请求是否带 flat=true（递归平铺当前目录、不返回文件夹）。
+     */
     recursiveSearchResults() {
-        return this.hasSearchOrFilter && this.searchResultDisplay === 'expanded';
+        return this.searchResultDisplay === 'expanded';
     },
     /**
      * v2.9.0：当前页「可预览媒体」平铺列表（按当前视图顺序，不含文件夹）
@@ -979,10 +1569,12 @@ computed: {
         return out;
     },
     paginatedTableData() {
+        /*
+         * v3.0.0：不再做本地切片 —— 列表里出现的就是「已加载窗口」的全部行
+         * （翻页 = 服务端整页替换；加载更多 = 向窗口尾部追加；上滚 = 向头部补载）。
+         */
         const sortedData = this.sortData(this.filteredTableData);
-        const start = (this.currentPage - 1) * this.pageSize;
-        const end = start + this.pageSize;
-        let data = sortedData.slice(start, end);
+        let data = sortedData;
         // 增加previewSrcList属性，用于预览图片
         const fullList = data.filter(file => this.isImage(file)).map(file => this.getFileLink(file.name));
         data.forEach(file => {
@@ -1057,7 +1649,9 @@ computed: {
     },
     selectPage() {
         // 如果当前页所有文件都被选中，则返回 true，否则返回 false
-        return this.paginatedTableData.every(file => file.selected);
+        // v3.0.0（R8）：只读共享条目不可选中，不参与「全选完成」判定
+        const selectable = this.paginatedTableData.filter(file => !this.isSharedReadonly(file));
+        return selectable.length > 0 && selectable.every(file => file.selected);
     },
     selectedPageFiles() {
         // 如果当前页有文件被选中，则返回 true，否则返回 false
@@ -1128,6 +1722,17 @@ watch: {
     defaultUrlFormat(newFormat) {
         localStorage.setItem('defaultUrlFormat', newFormat);
     },
+    // v3.0.0：标签管理模式会移除列表哨兵节点，切回来时重新挂载观察者
+    tagModeActive(v) {
+        this.$nextTick(() => {
+            if (!v) this.setupListObservers();
+            else this.teardownListObservers();
+        });
+    },
+    // v3.0.0：「直接展开文件 / 展示文件夹」切换后列表结构变化，重挂哨兵
+    searchResultDisplay() {
+        this.$nextTick(() => this.setupListObservers());
+    },
     showdetailDialog(newVal) {
         if (newVal) {
             this.activeUrlTab = this.defaultUrlFormat || 'originUrl';
@@ -1142,14 +1747,25 @@ watch: {
     currentPath(val) {
         // 页面切换时，取消选择的内容
         this.tableData.forEach(file => file.selected = false);
+        // v3.0.0（R16）：换目录重置 Shift 区间锚点
+        this.lastSelectedIndex = -1;
         // v2.7.0：目录记忆 —— 每次切换目录都持久化，重新进入文件管理页时恢复
         try { sessionStorage.setItem('dashboardCurrentPath', val || ''); } catch (e) { /* 忽略 */ }
+    },
+    currentPage() {
+        // v3.0.0（R16）：翻页后行号对应的数据变了，重置 Shift 区间锚点
+        this.lastSelectedIndex = -1;
     }
 },
 methods: {
-    // 页面重新激活（长时间未操作 / 从浏览器后台切回）时刷新数据，避免白屏或数据过期
+    /*
+     * v3.0.0（R16）：不再「自动刷新」文件列表。
+     * 此前页面重新激活（切标签页回来 / 窗口聚焦，且距上次加载超过 5 分钟）会静默重拉，
+     * 用户要求：只有点击「刷新」按钮（或执行上传/删除等主动操作）才刷新内容。
+     * 钩子保留（mixin 契约），但不再发任何请求。
+     */
     onPageActivate() {
-        this.fetchFileList({ preserveSelection: true });
+        // v3.0.0（R16）：禁止自动刷新 —— 内容仅在点击刷新按钮 / 主动操作后更新
     },
     // 切换视图模式
     setViewMode(mode) {
@@ -1162,6 +1778,37 @@ methods: {
     // 列表视图全选当前页
     handleSelectAllPage(val) {
         this.paginatedTableData.forEach(file => file.selected = val);
+    },
+    /*
+     * v3.0.0（R16）：Shift + 点击复选框 → 批量选中区间（PC 端）。
+     * 在 capture 阶段拦截：按住 Shift 点击时阻止 el-checkbox 自己的单选切换，
+     * 改为把 [锚点行, 当前行] 之间所有条目一键勾选；普通点击则记录锚点。
+     * 锚点在翻页 / 切目录 / 清空选择时重置。
+     */
+    handleShiftClickCapture(e, index) {
+        const t = e.target;
+        if (!t || typeof t.closest !== 'function') return;
+        const box = t.closest('.card-select, .list-col-checkbox');
+        if (!box) return;
+        if (e.shiftKey) {
+            if (this.lastSelectedIndex < 0) {
+                // 没有锚点：退化为单选本次点击行
+                e.preventDefault();
+                e.stopPropagation();
+                this.paginatedTableData[index].selected = true;
+                this.lastSelectedIndex = index;
+                return;
+            }
+            e.preventDefault();
+            e.stopPropagation();
+            const a = Math.min(this.lastSelectedIndex, index);
+            const b = Math.max(this.lastSelectedIndex, index);
+            this.paginatedTableData.forEach((it, i) => { if (i >= a && i <= b) it.selected = true; });
+            this.$message && this.$message.success(this.$t('dashboard.shiftRangeSelected', { count: b - a + 1 }));
+            return;
+        }
+        // 普通点击：记录锚点（勾选/取消交给 el-checkbox 自己）
+        this.lastSelectedIndex = index;
     },
     // 移动端长按开始
     handleTouchStart(item, index) {
@@ -1213,22 +1860,33 @@ methods: {
                 this.handleMove(index, file.name);
                 break;
             case 'delete':
+                // v3.0.0（R8）：别人共享给我的（无论只读/编辑）一律不可删除 —— 前端拦截 + 后端同样守卫
+                if (this.isSharedToMe(file)) {
+                    this.$message.warning(this.$t('fileManager.sharedNoDeleteHint'));
+                    break;
+                }
                 this.handleDelete(index, file.name);
                 break;
             case 'tag':
                 this.handleTagManagement(file.name);
                 break;
+            case 'select':
+                // v3.0.0：进入多选并选中该文件
+                this.selectSingleItem(file);
+                break;
         }
     },
-    // 返回上一级目录
-    handleGoBack() {
-        const pathParts = this.currentPath.split('/').filter(Boolean);
-        if (pathParts.length > 0) {
-            pathParts.pop();
-            const parentPath = pathParts.join('/');
-            this.navigateToFolder(parentPath);
+
+    /** v3.0.0：把某个文件/文件夹加入多选（移动端长按菜单「选择文件」） */
+    selectSingleItem(file) {
+        if (!file) return;
+        // v3.0.0（R8）：只读共享条目不可选中
+        if (this.isSharedReadonly(file)) {
+            this.$message.warning(this.$t('fileManager.sharedReadonlyHint'));
+            return;
         }
-        this.showMobileDirectoryDrawer = false;
+        file.selected = true;
+        if (!this.selectedFiles.includes(file)) this.selectedFiles = [...this.selectedFiles, file];
     },
     // 获取标签颜色
     getTagColor(index) {
@@ -1278,22 +1936,40 @@ methods: {
         return this.handleSearch();
     },
     selectSearchResultDisplay(mode) {
-        // v2.9.0：入口从搜索框下拉迁到视图切换旁的图标按钮，不再有弹层需要收起
-        this.$refs.searchInput?.focus?.();
+        /*
+         * v3.0.0（第三轮）：记住用户的「手动」选择 ——
+         * 手动点回「展示文件夹」后，提交搜索/筛选时不再自动切走（除非他又手动选了「直接展开」）。
+         */
+        // v3.0.0：点切换按钮不再把焦点抢到搜索框（旧实现里有 searchInput.focus()）
         return this.setSearchResultDisplay(mode);
+    },
+    /**
+     * v3.0.0（第三轮）：提交搜索 / 筛选时，若还停在「展示文件夹」模式，
+     * 自动切到「直接展开文件」—— 搜索结果被折叠进文件夹里等于没搜到，用户还得再点一次。
+     * v3.0.0：每次提交搜索/筛选都要执行一次切换（此前用户手动选回「展示文件夹」后
+     * 会被 keepFoldersDisplay 兜住、只在第一次切换 —— 按需求移除该兜底）。
+     * 这里只改值、不刷新：调用方紧接着就会 refreshFileList()。
+     */
+    autoExpandOnSubmit() {
+        if (this.searchResultDisplay !== 'folders') return;
+        this.searchResultDisplay = 'expanded';
     },
     setSearchResultDisplay(mode) {
         if (!SEARCH_RESULT_DISPLAYS.includes(mode) || mode === this.searchResultDisplay) return;
         this.searchResultDisplay = mode;
+        /*
+         * v3.0.0：不持久化 —— 刷新页面恒回到「展示文件夹」（默认值）；
+         * 顺手清掉历史版本写入的同一个键，避免旧偏好残留。
+         */
         try {
-            localStorage.setItem('searchResultDisplay', mode);
+            localStorage.removeItem('searchResultDisplay');
         } catch (error) {
-            console.warn('Could not save search result display preference:', error);
+            /* 忽略存储异常 */
         }
-        if (this.hasSearchOrFilter) {
-            this.currentPage = 1;
-            return this.refreshFileList();
-        }
+        // 对「全部内容」生效：切换即重新加载（flat 参数由 recursiveSearchResults 带出）
+        this.currentPage = 1;
+        this.clearSelection();
+        return this.refreshFileList();
     },
     /** 一键清空搜索框（按钮仅在搜索框有内容时显示） */
     handleClearSearch() {
@@ -1368,10 +2044,36 @@ methods: {
             this.$message.error(e?.response?.data?.message || this.$t('common.failed'));
         }
     },
+    /**
+     * v3.0.0：回车提交搜索 —— 立即执行一次查询，不等输入防抖 / 不依赖失焦。
+     * 中文输入法组词中的回车（确认候选词）不触发搜索。
+     */
+    handleSearchEnter(e) {
+        /*
+         * v3.0.0（第三轮）修「移动端回车提交不生效」：
+         *   ① 移动端部分输入法只发 keydown、不发 keyup（或反之）→ 模板里 keydown / keyup 都挂上；
+         *   ② searchComposing 是 compositionstart 打的标记，移动端输入法常漏发 compositionend，
+         *      标记会一直为 true，回车被永久吞掉 → 改看原生事件自带的 isComposing（及 keyCode 229），
+         *      组词中才略过，并顺手把标记复位；
+         *   ③ keydown + keyup 会各触发一次 → 同一内容极短时间内只提交一次。
+         */
+        const composing =
+            (e && (e.isComposing === true || e.keyCode === 229)) || (this.searchComposing && !e);
+        if (composing) return;
+        this.searchComposing = false;
+        const now = Date.now();
+        if (this.lastSearchSubmitAt && now - this.lastSearchSubmitAt < 250) return;
+        this.lastSearchSubmitAt = now;
+        clearTimeout(this.searchDebounceTimer);
+        this.searchDebounceTimer = null;
+        this.handleSearch();
+    },
     handleSearch() {
         this.search = this.tempSearch;
         this.isSearchMode = this.search.trim() !== '';
         this.currentPage = 1; // 重置到第一页
+        // v3.0.0（第三轮）：提交搜索时若还在「展示文件夹」，自动改「直接展开文件」
+        this.autoExpandOnSubmit();
 
         // 解析搜索字符串，提取标签和关键字
         // 支持 #tag 表示包含标签，-#tag 表示排除标签
@@ -1429,64 +2131,75 @@ methods: {
             await this.enterTrashMode(this.trashMode);
             return;
         }
+        // v3.0.0（第三轮）：提交筛选时若还在「展示文件夹」，自动改「直接展开文件」
+        // （回收站分支不走这里：回收站保持原有展示方式，不被顺手改掉）
+        this.autoExpandOnSubmit();
         if (this.trashMode) {
             this.trashMode = false;
             this.tableData = this.normalTableData;
         }
         this.refreshFileList();
     },
-    // 清除所有筛选条件
+    // 清除所有筛选条件（v3.0.0：统一走 createEmptyFilters，tagMode/matchMode 默认 and）
     clearFilters() {
-        this.filters = {
-            accessStatus: [],
-            listType: [],
-            label: [],
-            fileType: [],
-            channel: [],
-            channelName: [],
-            uploadSource: [],
-            backup: [],
-            redirect: [],
-            tags: [],
-            tagNames: [],
-            tagMode: 'or',
-            // v2.8.7：清空日期 / 大小筛选
-            datePreset: '',
-            dateFrom: '',
-            dateTo: '',
-            sizePreset: '',
-            sizeMin: 0,
-            sizeMax: 0,
-            sizeUnit: 'MB',
-            // v2.8.9
-            sizeMode: 'actual',
-            validity: [],
-            nameChanged: [],
-            // v2.9.0
-            userNames: [],
-            matchMode: 'all',
-            dimPreset: '',
-            widthMin: 0,
-            widthMax: 0,
-            heightMin: 0,
-            heightMax: 0
-        };
+        this.filters = createEmptyFilters();
+        this.tagDraft = [];
+        this.tagModeDraft = 'and';
         this.currentPage = 1;
         this.refreshFileList();
+    },
+    /**
+     * v3.0.0（R7）：数量统计徽章 = 一键复位。
+     * 清空「搜索关键词 / 标签搜索（含 #标签、-标签）/ 搜索类型 / 用户筛选 / 筛选弹窗全部条件」
+     * 并回到第一页重新加载；当前目录、视图模式、排序不属于「筛选条件」，保持不变。
+     */
+    async resetAllQueryConditions() {
+        this.tempSearch = '';
+        this.search = '';
+        this.searchKeywords = '';
+        this.searchIncludeTags = '';
+        this.searchExcludeTags = '';
+        this.searchType = 'all';
+        this.isSearchMode = false;
+        this.mobileSearchOpen = false;
+        this.userFilter = 'all';
+        this.filters = createEmptyFilters();
+        this.tagDraft = [];
+        this.tagModeDraft = 'and';
+        this.currentPage = 1;
+        if (this.trashMode) {
+            // 回收站视图下同样复位条件并重载回收站列表
+            await this.enterTrashMode(true);
+            return;
+        }
+        await this.refreshFileList();
+        this.$message?.success(this.$t('dashboard.statsBadgeResetDone'));
     },
     /* ---------------- 标签筛选弹窗 ---------------- */
     openTagFilterDialog() {
         this.tagDraft = [...(this.filters.tagNames || [])];
-        this.tagModeDraft = this.filters.tagMode === 'and' ? 'and' : 'or';
+        this.tagModeDraft = this.filters.tagMode === 'or' ? 'or' : 'and';
         this.showTagFilterDialog = true;
         this.loadAllTags();
     },
     async loadAllTags() {
         this.tagFilterLoading = true;
         try {
-            const res = await fetchWithAuth('/api/manage/tags/all');
+            /*
+             * v3.0.0：标签候选按实例取（/api/tags/manage 带 instanceId）——
+             * 返回 { success, data:[{ id, name, count, encrypted, createdAt }] }；
+             * 旧接口 /api/manage/tags/all 不分实例，仅作为兜底。
+             */
+            let list = [];
+            const res = await fetchWithAuth(`/api/tags/manage?instanceId=${encodeURIComponent(this.instanceId || '')}&sort=createdAt&order=desc`);
             const json = await res.json().catch(() => ({}));
-            const list = Array.isArray(json?.tags) ? json.tags : [];
+            if (Array.isArray(json?.data)) {
+                list = json.data.map((t) => ({ name: t.name, count: Number(t.count) || 0, createdAt: t.createdAt }));
+            } else {
+                const fallback = await fetchWithAuth('/api/manage/tags/all');
+                const fj = await fallback.json().catch(() => ({}));
+                list = Array.isArray(fj?.tags) ? fj.tags : [];
+            }
             /*
              * v2.9.0：筛选弹窗「标签」页默认展示「最近创建的前 30 个」（倒序），
              * 所以这里按 createdAt 倒序；没有 createdAt 的老数据排在后面按名称排。
@@ -1539,6 +2252,8 @@ methods: {
 
                 // 按类型提取渠道名称，channel.type是类型内部存储名称，value 为类型标识
                 Object.entries(channels).forEach(([type, channelList]) => {
+                    // v3.0.0（R9）：「本地文件」渠道不参与上传，渠道名称筛选里同样不出现
+                    if (type === 'localfiles') return;
                     if (Array.isArray(channelList) && channelList.length > 0) {
                         channelList.forEach(channel => {
                             if (channel.name) {
@@ -1573,7 +2288,10 @@ methods: {
         const meta = metadata || this.tableData.find(file => file.name === key)?.metadata;
         const link = document.createElement('a');
         link.href = this.getFileLink(key, meta);
-        link.download = key;
+        // v3.0.0（R16）：下载文件名用「文件原名」（metadata.FileName = originalName），
+        // 没有原名时回退显示名；同源下载浏览器会采纳该名称。
+        const originalName = String(meta?.FileName || '').trim();
+        link.download = originalName || key;
         link.click();
     },
     /** 取文件扩展名（优先 metadata.FileExt，其次从显示文件名推断）—— 统一走 utils/fileDetail */
@@ -1588,8 +2306,10 @@ methods: {
         return withExtUtil(url, ext);
     },
     openDetailDialog(index, key) {
-        this.closeHoverPreview(); // v2.8.5：打开详情时收起悬停预览浮层
-        this.detailFile = this.paginatedTableData[index];
+        const target = this.paginatedTableData[index];
+        // v3.0.0（R14）：回收站里的「文件夹条目」没有文件详情，点击不打开详情弹窗
+        if (target && target.isFolder) return;
+        this.detailFile = target;
         this.showdetailDialog = true;
     },
     handleTabClick(tab) {
@@ -1617,6 +2337,8 @@ methods: {
                 const fileIndex = this.tableData.findIndex(file => file.name === key);
                 if (fileIndex !== -1) {
                 this.tableData.splice(fileIndex, 1);
+                // v3.0.0：窗口内少了一条，同步计数（「加载更多」剩余量据此计算）
+                this.fileWindowCount = Math.max(0, this.fileWindowCount - 1);
                 }
             } else {
                 return Promise.reject('Request failed');
@@ -1753,6 +2475,18 @@ methods: {
             this.tableData = this.normalTableData;
             this.showdetailDialog = false;
             this.trashMode = false;
+            /*
+             * v3.0.0（R12）：回收站改服务端分页（每页 48）后会改写 listTotal / 窗口状态，
+             * 退出时必须把普通列表的分页状态还原，否则页码/总数会沿用回收站的数字。
+             */
+            const st = this.normalListState;
+            if (st) {
+                this.listTotal = st.listTotal;
+                this.fileWindowStart = st.fileWindowStart;
+                this.fileWindowCount = st.fileWindowCount;
+                this.currentPage = st.currentPage;
+                this.normalListState = null;
+            }
             // v2.9.0：手动退出回收站时同步取消筛选里的「已删除」，否则角标与实际视图不一致
             if (Array.isArray(this.filters?.accessStatus) && this.filters.accessStatus.includes('deleted')) {
                 this.filters = {
@@ -1764,25 +2498,55 @@ methods: {
         }
         await this.enterTrashMode();
     },
-    async enterTrashMode(preserveNormal = false) {
+    async enterTrashMode(preserveNormal = false, page = 1, append = false) {
         this.trashLoading = true;
         try {
             // v2.8.7：回收站同样带上搜索 / 筛选 / 日期 / 大小等条件（后端联合过滤）
             const fm = (await import('@/utils/fileManager')).fileManager;
             const filterParams = fm.buildFilterParams(this.filters) + fm.buildExtraParams(this.searchType, this.userFilter);
             const searchQ = this.searchKeywords ? `&search=${encodeURIComponent(this.searchKeywords)}` : '';
-            const resp = await fetchWithAuth(`/api/manage/trash?1=1${filterParams}${searchQ}`);
+            // v3.0.0：回收站同样按当前实例隔离
+            const instanceQ = `&instanceId=${encodeURIComponent(this.instanceId || '')}`;
+            /*
+             * v3.0.0（R12）：回收站改「服务端分页 + 每页 48 条」（需求 42）。
+             * 以前是整表返回，条目多时首屏明显卡；现在 page/pageSize 交给后端切片。
+             */
+            const pageQ = `&page=${Math.max(1, Number(page) || 1)}&pageSize=${TRASH_PAGE_SIZE}`;
+            const resp = await fetchWithAuth(
+                `/api/manage/trash?1=1${filterParams}${searchQ}${instanceQ}${pageQ}`
+            );
             if (!resp.ok) throw new Error('Request failed');
             const data = await resp.json();
             // 备份普通列表，切换渲染数据（v2.9.0：回收站内刷新时不要覆盖这份备份）
-            if (!preserveNormal) this.normalTableData = this.tableData;
-            this.clearSelection();
+            if (!preserveNormal) {
+                this.normalTableData = this.tableData;
+                // v3.0.0（R12）：连分页状态一起备份，退出回收站时还原
+                this.normalListState = {
+                    listTotal: this.listTotal,
+                    fileWindowStart: this.fileWindowStart,
+                    fileWindowCount: this.fileWindowCount,
+                    currentPage: this.currentPage
+                };
+            }
+            if (!append) this.clearSelection();
             const items = Array.isArray(data.items) ? data.items : [];
-            this.tableData = items.map(it => this.convertTrashItem(it));
-            this.updateStats(items.length, true);
-            this.currentPage = 1;
+            const rows = items.map((it) => this.convertTrashItem(it));
+            const total = Number(data.total ?? rows.length) || 0;
+            const start = (Math.max(1, Number(page) || 1) - 1) * TRASH_PAGE_SIZE;
+            if (append) {
+                this.tableData = [...this.tableData, ...rows];
+                this.fileWindowCount += rows.length;
+            } else {
+                this.tableData = rows;
+                this.fileWindowStart = start;
+                this.fileWindowCount = rows.length;
+                this.currentPage = Math.max(1, Number(page) || 1);
+            }
+            this.trashTotal = total;
+            this.listTotal = total;
+            this.updateStats(total, true);
             this.trashMode = true;
-            if (items.length === 0) {
+            if (total === 0) {
                 this.$message.info(this.$t('dashboard.trashEmpty'));
             }
         } catch (e) {
@@ -1797,7 +2561,8 @@ methods: {
         const deletedAtText = it.deletedAt ? new Date(it.deletedAt).toLocaleString() : '';
         return {
             name: it.name,
-            isFolder: false,
+            // v3.0.0（R14）：后端会把「已删除的文件夹」作为 isFolder 条目混排进回收站，这里原样透传
+            isFolder: !!it.isFolder,
             selected: false,
             trashId: it.id,
             // 详情页「文件状态」据此显示「已删除」
@@ -1806,7 +2571,7 @@ methods: {
                 FileName: it.originalName || it.name,
                 RawName: it.name,
                 // 卡片/列表视图判断视频/图片靠 FileType（回收站条目没有扩展名后缀）
-                FileType: it.mime || '',
+                FileType: it.isFolder ? 'folder' : (it.mime || ''),
                 FileExt: (String(it.originalName || '').split('.').pop() || '').toLowerCase(),
                 FileSizeBytes: Number(it.size) || 0,
                 TimeStamp: it.deletedAt || '',
@@ -1822,18 +2587,40 @@ methods: {
             }
         };
     },
-    /** 批量恢复 / 批量彻底删除（回收站模式） */
-    async trashBatchRequest(items, action) {
+    /**
+     * 批量恢复 / 批量彻底删除（回收站模式）。
+     * v3.0.0（R14）：返回完整 data —— 开启 2FA 时后端回 `{ success:false, needTotp:true }`，
+     * 需要带着 totpCode 再请求一次（此前只取 results，2FA 拦截会被当成「成功 0 条」）。
+     */
+    async trashBatchRequest(items, action, totpCode = '') {
         const ids = items.map(it => it.trashId).filter(Boolean);
-        if (ids.length === 0) return [];
+        if (ids.length === 0) return { results: [] };
         const resp = await fetchWithAuth('/api/manage/trash/batch', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ids, action })
+            body: JSON.stringify({ ids, action, totpCode })
         });
         if (!resp.ok) throw new Error('Request failed');
         const data = await resp.json();
-        return Array.isArray(data.results) ? data.results : [];
+        return {
+            results: Array.isArray(data.results) ? data.results : [],
+            needTotp: !!data.needTotp,
+            message: data.message || '',
+        };
+    },
+    /**
+     * v3.0.0（R14）：两步验证动态码输入框（回收站彻底删除专用）。
+     * 未开启 2FA 的账户不会走到这里（后端直接放行），交互与「输入确认删除」保持一致。
+     */
+    askTrashTotp(message) {
+        return this.$prompt(message || this.$t('dashboard.trashTotpPrompt'), this.$t('dashboard.trashTotpTitle'), {
+            confirmButtonText: this.$t('dashboard.deleteConfirmOk'),
+            cancelButtonText: this.$t('dashboard.deleteConfirmCancel'),
+            inputPattern: /^\s*\d{6,8}\s*$/,
+            inputErrorMessage: this.$t('dashboard.trashTotpInvalid'),
+            inputPlaceholder: this.$t('dashboard.trashTotpPlaceholder'),
+            type: 'warning'
+        });
     },
     /** 恢复（撤销软删除标记，文件回到普通列表） */
     trashRestoreItems(items) {
@@ -1843,38 +2630,91 @@ methods: {
             this.$t('dashboard.trashTitle'),
             { confirmButtonText: this.$t('dashboard.trashRestore'), cancelButtonText: this.$t('dashboard.deleteConfirmCancel'), type: 'info' }
         ).then(async () => {
+            // v3.0.0（R12，需求 43）：恢复期间同样显示转圈（回收站条目用 trashId 作 key）
+            const keys = items.map((it) => it.trashId || it.name);
+            this.setDeleting(keys, true);
             try {
                 await this.trashBatchRequest(items, 'restore');
                 this.removeTrashItems(items);
                 this.$message.success(this.$t('dashboard.trashRestoreSuccess'));
             } catch (e) {
                 this.$message.error(this.$t('dashboard.trashRestoreFailed'));
+            } finally {
+                this.setDeleting(keys, false);
             }
         }).catch(() => {});
     },
-    /** 彻底删除（连远端副本一起清理，不可恢复；需输入「确认删除」） */
+    /** 彻底删除（连远端副本一起清理，不可恢复）
+     *  v3.0.0（R16）：验证方式二选一 ——
+     *    开启两步验证 → 只输入 2FA 动态码（不再要求「确认删除」）；
+     *    未开启 2FA   → 仍然手动输入「确认删除」防误删。 */
     trashPurgeItems(items) {
         if (!items.length) return;
-        this.confirmDeleteByWord('dashboard.trashPurgeConfirm').then(async () => {
-            try {
-                await this.trashBatchRequest(items, 'purge');
-                this.removeTrashItems(items);
-                this.$message.success(this.$t('dashboard.trashPurgeSuccess'));
-            } catch (e) {
-                this.$message.error(this.$t('dashboard.trashPurgeFailed'));
+        if (this.accountTotpEnabled) {
+            this.runTrashPurge(items);
+            return;
+        }
+        this.confirmDeleteByWord('dashboard.trashPurgeConfirm')
+            .then(() => this.runTrashPurge(items))
+            .catch(() => {});
+    },
+    /**
+     * v3.0.0（R14）：彻底删除执行体 —— 开启 2FA 的账户先要求输入动态验证码，
+     * 校验通过后再删除；验证码错误会再次弹窗允许重试，取消则放弃（什么都不删）。
+     */
+    async runTrashPurge(items, totpCode = '') {
+        if (!items.length) return;
+        const keys = items.map((it) => it.trashId || it.name);
+        this.setDeleting(keys, true);
+        try {
+            const data = await this.trashBatchRequest(items, 'purge', totpCode);
+            if (data.needTotp) {
+                this.setDeleting(keys, false);
+                let code = '';
+                try {
+                    const r = await this.askTrashTotp(data.message);
+                    code = String(r?.value || '').trim();
+                } catch (e) {
+                    return;
+                }
+                return this.runTrashPurge(items, code);
             }
-        }).catch(() => {});
+            this.removeTrashItems(items);
+            this.$message.success(this.$t('dashboard.trashPurgeSuccess'));
+        } catch (e) {
+            this.$message.error(this.$t('dashboard.trashPurgeFailed'));
+        } finally {
+            this.setDeleting(keys, false);
+        }
     },
     /** 从回收站视图移除已处理的条目 */
     removeTrashItems(items) {
-        const names = new Set(items.map(it => it.name));
-        this.tableData = this.tableData.filter(f => !names.has(f.name));
+        const ids = new Set(items.map((it) => it.trashId).filter(Boolean));
+        const names = new Set(items.map((it) => it.name));
+        this.tableData = this.tableData.filter((f) => !(f.trashId && ids.has(f.trashId)) && !names.has(f.name));
         this.selectedFiles = [];
-        this.updateStats(-items.length, false);
+        /*
+         * v3.0.0（R12）：回收站改服务端分页后，本地删完要按剩余总数补拉当前页
+         * （否则当前页会「缺几条」，翻页时页码与后端切片对不上）。
+         * 当前页被删空且不是第一页 → 回退一页。
+         */
+        this.trashTotal = Math.max(0, this.trashTotal - items.length);
+        this.listTotal = this.trashTotal;
+        this.fileWindowCount = Math.max(0, this.fileWindowCount - items.length);
         if (this.detailFile && names.has(this.detailFile.name)) {
             this.showdetailDialog = false;
             this.detailFile = null;
         }
+        if (this.trashTotal === 0) {
+            this.tableData = [];
+            this.fileWindowStart = 0;
+            this.fileWindowCount = 0;
+            this.currentPage = 1;
+            this.updateStats(0, true);
+            return;
+        }
+        const maxPage = Math.max(1, Math.ceil(this.trashTotal / TRASH_PAGE_SIZE));
+        this.enterTrashMode(true, Math.min(this.currentPage, maxPage));
     },
     /**
      * 危险操作确认框：必须手动输入「确认删除」才能继续（防误删）。
@@ -1899,28 +2739,49 @@ methods: {
             if (item) this.trashRestoreItems([item]);
             return;
         }
+        // v3.0.0（R8）：别人共享给我的（无论只读/编辑）一律不可删除
+        const delTarget = this.tableData.find(file => file.name === key);
+        if (delTarget && this.isSharedToMe(delTarget)) {
+            this.$message.warning(this.$t('fileManager.sharedNoDeleteHint'));
+            return;
+        }
         // 判断是否为文件夹
         const isFolder = this.tableData.find(file => file.name === key).isFolder;
 
-        this.confirmDeleteByWord(isFolder ? 'dashboard.deleteFolderConfirm' : 'dashboard.deleteFileConfirm').then(() => {
-        fetchWithAuth(`/api/manage/delete/${key}?folder=${isFolder}`, { method: 'GET' })
-            .then(response => {
-                if (response.ok) {
-                    const fileIndex = this.tableData.findIndex(file => file.name === key);
-                    if (fileIndex !== -1) {
-                        this.tableData.splice(fileIndex, 1);
-                    }
-                } else {
-                    return Promise.reject('Request failed');
-                }
-            })
-            .then(() => {
-                this.updateStats(-1, false);
-                fileManager.removeFile(key);
-                this.$message.success(this.$t('dashboard.deleteSuccess'));
-            })
-            .catch(() => this.$message.error(this.$t('dashboard.deleteFailed')));
+        this.confirmDeleteByWord(isFolder ? 'dashboard.deleteFolderConfirm' : 'dashboard.deleteFileConfirm').then(async () => {
+        /*
+         * v3.0.0（R12，需求 43）：删除期间该条目显示转圈遮罩（正在删除…），
+         * 避免点了没反应又重复点击；请求结束后无论成败都撤掉遮罩。
+         */
+        this.setDeleting([key], true);
+        try {
+            const response = await fetchWithAuth(`/api/manage/delete/${key}?folder=${isFolder}`, { method: 'GET' });
+            const body = await response.json().catch(() => ({}));
+            // 目录删除返回 { success:true, deleted:0 }（空目录）也算成功
+            if (!response.ok || body?.success === false) throw new Error(body?.message || 'failed');
+            const fileIndex = this.tableData.findIndex(file => file.name === key);
+            if (fileIndex !== -1) this.tableData.splice(fileIndex, 1);
+            this.updateStats(-1, false);
+            fileManager.removeFile(key);
+            this.$message.success(this.$t('dashboard.deleteSuccess'));
+        } catch (err) {
+            this.$message.error(err?.message && err.message !== 'failed' ? err.message : this.$t('dashboard.deleteFailed'));
+        } finally {
+            this.setDeleting([key], false);
+        }
         }).catch(() => console.log('Delete cancelled'));
+    },
+    /** v3.0.0（R12）：标记 / 取消「正在删除」的条目（卡片与列表行据此显示转圈） */
+    setDeleting(keys, on) {
+        const list = Array.isArray(keys) ? keys.filter(Boolean) : [keys].filter(Boolean);
+        if (!list.length) return;
+        const set = new Set(this.deletingKeys);
+        list.forEach((k) => (on ? set.add(k) : set.delete(k)));
+        this.deletingKeys = Array.from(set);
+    },
+    isDeleting(item) {
+        if (!item) return false;
+        return this.deletingKeys.includes(item.trashId || item.name);
     },
     handleBatchDelete() {
         // 回收站模式：批量操作走「彻底删除」（需输入确认删除）
@@ -1928,30 +2789,67 @@ methods: {
             this.trashPurgeItems(this.selectedFiles);
             return;
         }
-        this.confirmDeleteByWord('dashboard.batchDeleteConfirm').then(() => {
-        const promises = this.selectedFiles.map(file => {
-            const isFolder = file.isFolder;
-            return fetchWithAuth(`/api/manage/delete/${file.name}?folder=${isFolder}`, { method: 'GET' });
-        });
-
-        Promise.all(promises)
-            .then(results => {
-                let successNum = 0;
-                results.forEach((response, index) => {
-                    if (response.ok) {
-                        successNum++;
-                        const fileIndex = this.tableData.findIndex(file => file.name === this.selectedFiles[index].name);
-                        if (fileIndex !== -1) {
-                            this.tableData.splice(fileIndex, 1);
-                        }
-                        fileManager.removeFile(this.selectedFiles[index].name);
-                    }
-                });
-                this.selectedFiles = [];
-                this.updateStats(-successNum, false);
-                this.$message.success(this.$t('dashboard.batchDeleteSuccess'));
-            })
-            .catch(() => this.$message.error(this.$t('dashboard.batchDeleteFailed')));
+        /*
+         * v3.0.0（R9）：别人共享给我的目录（只读或编辑）→ 批量禁止删除
+         * （只读条目本就不可选中，这里兜底拦截编辑权限共享 + 与详情页口径一致）。
+         */
+        if (!this.isAdminRole && this.selectedFiles.some(file => this.isSharedToMe(file))) {
+            this.$message.warning(this.$t('fileManager.sharedNoDeleteHint'));
+            return;
+        }
+        this.confirmDeleteByWord('dashboard.batchDeleteConfirm').then(async () => {
+        /*
+         * v3.0.0（R12）：批量删除改成「逐条解析响应」——
+         * 原来只要 HTTP 200 就算成功，后端返回 {success:false} 或 deleted=0 时
+         * （典型：目录里全是别人上传的文件 / 共享目录）前端仍把条目从列表里删掉，
+         * 刷新后目录又冒出来，看起来就是「选中文件夹删除不成功」。
+         */
+        const targets = [...this.selectedFiles];
+        let successNum = 0;
+        const errors = [];
+        // v3.0.0（R12，需求 43）：批量删除期间逐条显示转圈遮罩
+        this.setDeleting(targets.map((f) => f.name), true);
+        try {
+        for (const file of targets) {
+            try {
+                const resp = await fetchWithAuth(
+                    `/api/manage/delete/${file.name}?folder=${file.isFolder ? 'true' : 'false'}`,
+                    { method: 'GET' }
+                );
+                const body = await resp.json().catch(() => ({}));
+                /*
+                 * v3.0.0（R12）：目录删除的成功判定不能只看 deleted ——
+                 * 「新建目录」登记的空目录一条文件记录都没有，后端返回 deleted:0，
+                 * 旧逻辑当成失败 → 选中文件夹批量删除永远提示失败（需求 45）。
+                 * 现在：目录只要 success !== false 就算删掉；文件仍要求 deleted > 0。
+                 */
+                const okByBody = resp.ok && body?.success !== false;
+                const deleted = Number(body?.deleted ?? 0);
+                const isOk = okByBody && (file.isFolder || deleted > 0);
+                if (isOk) {
+                    successNum += 1;
+                    const fileIndex = this.tableData.findIndex((f) => f.name === file.name);
+                    if (fileIndex !== -1) this.tableData.splice(fileIndex, 1);
+                    fileManager.removeFile(file.name);
+                } else {
+                    errors.push({ name: file.name, message: body?.message || '' });
+                }
+            } catch (e) {
+                errors.push({ name: file.name, message: '' });
+            }
+        }
+        } finally {
+            this.setDeleting(targets.map((f) => f.name), false);
+        }
+        this.selectedFiles = [];
+        this.fileWindowCount = Math.max(0, this.fileWindowCount - successNum);
+        this.updateStats(-successNum, false);
+        if (successNum > 0) this.$message.success(this.$t('dashboard.batchDeleteSuccess'));
+        if (errors.length) {
+            this.$message.warning(errors[0].message || this.$t('dashboard.batchDeleteFailed'));
+        }
+        // 与后端重新对齐（目录可能因权限/空目录等原因仍在）
+        await this.loadListWindow({ page: this.currentPage || 1, force: true });
         }).catch(() => console.log('Batch delete cancelled'));
     },
     async handleBatchCopy() {
@@ -1976,7 +2874,7 @@ methods: {
             for (const folder of folders) {
                 try {
                     const response = await fetchWithAuth(
-                        `/api/manage/list?dir=${encodeURIComponent(folder.name)}&recursive=true&count=-1`,
+                        `/api/manage/list?dir=${encodeURIComponent(folder.name)}&recursive=true&count=-1&instanceId=${encodeURIComponent(this.instanceId || '')}`,
                         { method: 'GET' }
                     );
                     const data = await response.json();
@@ -2073,30 +2971,6 @@ methods: {
             type: ok ? 'success' : 'error',
             message: this.$t(ok ? 'dashboard.copyFileLinkSuccess' : 'dashboard.copyFailed')
         });
-    },
-    async loadMoreData() {
-        this.loading = true;
-
-        try {
-            // 传递标签参数和筛选参数到后端
-            await fileManager.loadMoreFiles(
-                this.currentPath, 
-                this.searchKeywords,
-                this.searchIncludeTags,
-                this.searchExcludeTags,
-                60,
-                this.filters,
-                this.recursiveSearchResults,
-                this.searchType,
-                this.isAdminRole ? this.userFilter : ''
-            );
-            // 获取新的文件列表后
-            await this.fetchFileList({ preserveSelection: true });
-        } catch (error) {
-            this.$message.error(this.$t('dashboard.loadMoreFailed'));
-        } finally {
-            this.loading = false;
-        }
     },
     updateStats(num, init = false) {
         if (init) {
@@ -2199,15 +3073,32 @@ methods: {
     },
 
     handleSelectPage() {
+        /*
+         * v3.0.0（R8）：全选跳过「只读共享」条目（别人共享给我且权限为只读）——
+         * 这些条目不可选中（卡片/列表的选择框已隐藏），全选也不得绕过。
+         * 取消全选时无差别全部清掉（保持行为简单可靠）。
+         */
         if (this.selectPage) {
             this.paginatedTableData.forEach(file => file.selected = false);
         } else {
-            this.paginatedTableData.forEach(file => file.selected = true);
+            this.paginatedTableData.forEach(file => {
+                if (!this.isSharedReadonly(file)) file.selected = true;
+            });
         }
+    },
+    /** v3.0.0（R8）：该条目是否「别人共享给我且为只读」—— 不可选中、无目录属性入口 */
+    isSharedReadonly(item) {
+        return !!(item && item.shared && !item.sharedSelf && item.sharedPerm === 'readonly');
+    },
+    /** v3.0.0（R8）：该条目是否「别人共享给我的」（无论只读/编辑）—— 一律不可删除 */
+    isSharedToMe(item) {
+        return !!(item && item.shared && !item.sharedSelf);
     },
     clearSelection() {
         this.tableData.forEach(file => file.selected = false);
         this.selectedFiles = [];
+        // v3.0.0（R16）：清空选择时同步重置 Shift 区间锚点
+        this.lastSelectedIndex = -1;
     },
     handleBatchAction(command) {
         // 回收站模式：批量工具栏只有「恢复 / 彻底删除」
@@ -2229,6 +3120,12 @@ methods: {
             this.handleBatchMove();
         } else if (command === 'tagManagement') {
             this.handleBatchTagManagement();
+        } else if (command === 'originalName') {
+            // v3.0.0：批量编辑原名
+            this.openBatchNameDialog();
+        } else if (command === 'expiry' || command === 'redirect' || command === 'password') {
+            // v3.0.0：批量限时 / 重定向 / 加密 —— 同一个处理页，按按钮预设打开页签
+            this.openBatchExpiryDialog(command);
         } else if (command === 'ban') {
             this.handleBatchBlock();
         } else if (command === 'white') {
@@ -2298,14 +3195,25 @@ methods: {
         this.showMoveDialog = true;
     },
     handleBatchMove() {
-        // 打开自定义移动对话框（批量模式）
+        /*
+         * v3.0.0：批量移动改成弹窗内的两步流程（先选接收实例，再选该实例下的目录），
+         * 由 MoveFileDialog 的 showInstancePicker 承担；这里不再预先弹「选实例」对话框。
+         */
         this.isBatchMove = true;
         this.moveTargetPath = '/';
         this.showMoveDialog = true;
     },
-    // 确认移动操作
-    confirmMove(targetPath) {
-        const value = targetPath;
+    // 确认移动操作（v3.0.0：第二个参数 = 目标实例 id，由 MoveFileDialog 两步流程给出）
+    confirmMove(targetPath, targetInstanceId) {
+        let value = String(targetPath || '').trim();
+        /*
+         * v3.0.0（R12）：目录名容错 —— 校验器要求路径以 / 开头，
+         * 但用户在移动弹窗里通常直接输「漫画」这样的目录名，
+         * 旧逻辑直接报「路径必须以 / 开头」然后拒绝（提示 3 秒自动消失），
+         * 表现就是「选中文件夹点移动没反应/移动不成功」（需求 45）。
+         * 现在自动补上前导斜杠再校验，纯目录名 / 带斜杠路径都能走通。
+         */
+        if (value && !value.startsWith('/')) value = `/${value}`;
         // 使用共享验证器验证路径
         const validation = validateFolderPath(value);
         if (!validation.valid) {
@@ -2314,8 +3222,9 @@ methods: {
         }
         // 去掉开头的 /，结尾若没有 /，则加上
         const newPath = value.replace(/^\/+/, '') + (value.endsWith('/') ? '' : value === '' ? '' : '/');
-        // 判断目标文件夹是否是当前文件夹
-        if (newPath === this.currentPath) {
+        const instanceForMove = String(targetInstanceId ?? this.instanceId ?? '');
+        // 判断目标文件夹是否是当前文件夹（跨实例移动不受此限制）
+        if (newPath === this.currentPath && instanceForMove === String(this.instanceId || '')) {
             this.$message.warning(this.$t('dashboard.moveTargetSameAsCurrent'));
             return;
         }
@@ -2324,88 +3233,109 @@ methods: {
         this.showMoveDialog = false;
         
         if (this.isBatchMove) {
-            // 批量移动
-            this.executeBatchMove(newPath);
+            // 批量移动（v3.0.0：带上目标实例）
+            this.executeBatchMove(newPath, instanceForMove);
         } else {
             // 单个文件移动
             this.executeSingleMove(newPath);
         }
     },
-    // 执行单个文件移动
+    // 执行单个文件 / 目录移动
     executeSingleMove(newPath) {
         const key = this.moveFileKey;
-        const isFolder = this.tableData.find(file => file.name === key)?.isFolder;
-        
-        fetchWithAuth(`/api/manage/move/${key}?folder=${isFolder}&dist=${encodeURIComponent(newPath)}`, { method: 'GET' })
-            .then(response => {
-                if (response.ok) {
-                    const fileIndex = this.tableData.findIndex(file => file.name === key);
-                    if (fileIndex !== -1) {
-                        // 更新本地文件管理器
-                        const newKey = newPath + key.split('/').pop();
-                        fileManager.moveFile(key, newKey, isFolder, this.currentPath);
-                        // 移除文件
-                        this.tableData.splice(fileIndex, 1);
-                        // 强制重新渲染内容
+        const item = this.tableData.find(file => file.name === key);
+        const isFolder = !!item?.isFolder;
+        const targetFolder = String(newPath || '').replace(/^\/+/, '').replace(/\/+$/, '');
+        /*
+         * v3.0.0（R12）：统一走 POST /api/manage/batch/move ——
+         * 原来的 GET /api/manage/move 在 compat 控制器里、只对管理员开放，
+         * 普通用户移动自己的文件/目录一律 403（表现为「移动不成功」）。
+         * 新接口同时支持文件 ids 与目录 folders，权限与批量移动一致。
+         */
+        const body = isFolder
+            ? { folders: [key], folder: targetFolder, instanceId: String(this.instanceId || '') }
+            : { ids: [key], folder: targetFolder, instanceId: String(this.instanceId || '') };
+        fetchWithAuth('/api/manage/batch/move', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        })
+            .then(async (response) => {
+                const result = await response.json().catch(() => ({}));
+                if (!response.ok || result?.success === false) throw new Error(result?.message || 'failed');
+                const fileIndex = this.tableData.findIndex(file => file.name === key);
+                if (fileIndex !== -1) {
+                    // 更新本地文件管理器
+                    const newKey = newPath + key.split('/').pop();
+                    fileManager.moveFile(key, newKey, isFolder, this.currentPath);
+                    // 移除文件
+                    this.tableData.splice(fileIndex, 1);
+                    // 强制重新渲染内容
+                    this.$nextTick(() => {
+                        const tempData = [...this.tableData];
+                        this.tableData = [];
                         this.$nextTick(() => {
-                            const tempData = [...this.tableData];
-                            this.tableData = [];
-                            this.$nextTick(() => {
-                                this.tableData = tempData;
-                            });
+                            this.tableData = tempData;
                         });
-                    }
-                    this.updateStats(-1, false);
-                    this.$message.success(this.$t('dashboard.moveSuccess'));
-                } else {
-                    return Promise.reject('Request failed');
+                    });
                 }
-            })
-            .then(() => {
+                this.updateStats(-1, false);
+                this.$message.success(this.$t('dashboard.moveSuccess'));
+                await this.loadListWindow({ page: this.currentPage || 1 });
                 this.refreshLocalFileList();
             })
             .catch(() => this.$message.error(this.$t('dashboard.moveFailed')));
     },
-    // 执行批量移动
-    executeBatchMove(newPath) {
-        const promises = this.selectedFiles.map(file => {
-            const isFolder = file.isFolder;
-            return fetchWithAuth(`/api/manage/move/${file.name}?folder=${isFolder}&dist=${encodeURIComponent(newPath)}`, { method: 'GET' });
-        });
-
-        Promise.all(promises)
-            .then(results => {
-                let successNum = 0;
-                results.forEach((response, index) => {
-                    if (response.ok) {
-                        successNum++;
-                        const file = this.selectedFiles[index];
-                        file.selected = false;
-                        const fileIndex = this.tableData.findIndex(f => f.name === file.name);
-                        if (fileIndex !== -1) {
-                            // 更新本地文件管理器
-                            const newKey = newPath + file.name.split('/').pop();
-                            fileManager.moveFile(file.name, newKey, file.isFolder, this.currentPath);
-                            // 移除文件
-                            this.tableData.splice(fileIndex, 1);
-                        }
-                    }
-                });
-                // 强制重新渲染内容
-                this.$nextTick(() => {
-                    const tempData = [...this.tableData];
-                    this.tableData = [];
-                    this.$nextTick(() => {
-                        this.tableData = tempData;
-                    });
-                });
-                this.updateStats(-successNum, false);
-                this.$message.success(this.$t('dashboard.moveSuccess'));
-            })
-            .then(() => {
-                this.refreshLocalFileList();
-            })
-            .catch(() => this.$message.error(this.$t('dashboard.moveFailed')));
+    /**
+     * 执行批量移动（v3.0.0）
+     * 文件与目录合并成一次 POST /api/manage/batch/move（后端同时支持 ids / folders）。
+     */
+    async executeBatchMove(newPath, targetInstanceId = this.instanceId) {
+        const files = this.selectedFiles.filter((f) => !f.isFolder);
+        const folders = this.selectedFiles.filter((f) => f.isFolder);
+        const targetFolder = String(newPath || '').replace(/^\/+/, '').replace(/\/+$/, '');
+        try {
+            /*
+             * v3.0.0（R12）：文件与目录合并成一次请求（后端 batch/move 同时支持 folders）。
+             * 目录移动会保留目录名与内部层级，并把目录属性（加密 / 共享 / 名称）一起搬走；
+             * 跨实例移动现在也支持目录（原实现只给一句「不支持」提示）。
+             */
+            const resp = await fetchWithAuth('/api/manage/batch/move', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    ids: files.map((f) => f.name),
+                    folders: folders.map((f) => f.name),
+                    folder: targetFolder,
+                    instanceId: String(targetInstanceId || '')
+                })
+            });
+            const body = await resp.json().catch(() => ({}));
+            if (!resp.ok || body?.success === false) throw new Error(body?.message || 'failed');
+            /*
+             * v3.0.0（R12）：成功条数 = 文件条数（updated）+ 目录个数（movedFolders）。
+             * 旧实现只算 updated（文件行数），移动空目录时恒为 0 → 提示成功但计数为 0，
+             * 看起来像「移动没生效」（需求 45）。
+             */
+            const movedFiles = Number(body?.updated || 0);
+            const movedFolders = Number(body?.movedFolders || 0);
+            if (!movedFiles && !movedFolders) {
+                this.$message.warning(this.$t('dashboard.moveFailed'));
+                return;
+            }
+            if (body?.failed?.length) {
+                const first = body.failed[0]?.error || '';
+                this.$message.warning(first || this.$t('dashboard.moveFailed'));
+            }
+            this.clearSelection();
+            this.updateStats(-movedFiles, false);
+            this.$message.success(this.$t('dashboard.moveSuccess'));
+            await this.loadListWindow({ page: 1 });
+            // 目录结构变了 → 目录导航候选与目录显示名同步刷新
+            this.loadAllFolders().catch(() => undefined);
+        } catch (e) {
+            this.$message.error(this.$t('dashboard.moveFailed'));
+        }
     },
     handleBatchBlock(){
         this.$confirm(this.$t('dashboard.batchBlockConfirm'), this.$t('dashboard.deleteConfirmTitle'), {
@@ -2528,7 +3458,7 @@ methods: {
     },
     /**
      * v2.9.0：判断一行数据属于哪种媒体，供预览浮层决定形态。
-     * image / video / audio / other（其它一律走通用弹窗）。
+     * v3.0.0：新增 pdf / text —— 常用文档格式直接在灯箱里预览。
      */
     mediaKindOf(file) {
         const type = String(file?.metadata?.FileType || '').toLowerCase();
@@ -2539,6 +3469,32 @@ methods: {
         if (['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg', 'avif', 'ico', 'tiff', 'tif'].includes(ext)) return 'image';
         if (['mp4', 'webm', 'mov', 'm4v', 'avi', 'mkv', 'flv', 'wmv', 'ts', 'm3u8'].includes(ext)) return 'video';
         if (['mp3', 'wav', 'flac', 'aac', 'm4a', 'ogg', 'oga', 'opus', 'wma'].includes(ext)) return 'audio';
+        // v3.0.0：PDF 用内嵌查看器直接打开
+        if (ext === 'pdf') return 'pdf';
+        /*
+         * v3.0.0（R7）：CSV / TSV 走表格预览（首行表头 + 可滚动表格），
+         * 比纯文本对齐好读得多；解析在预览组件内部完成，不额外请求。
+         */
+        if (ext === 'csv' || ext === 'tsv') return 'table';
+        // v3.0.0：纯文本类（txt / md / json / 日志 / 配置 / 代码）直接读出来渲染
+        /*
+         * v3.0.0（R15）：凡是「能用文本方式打开」的都进 TXT 灯箱 ——
+         * 补齐服务端脚本 / 前端框架文件 / 各类配置与源代码扩展名
+         * （此前只有 html / js / yaml 等少数几种，php、vue、toml 等会被当成「其他」）。
+         */
+        if ([
+            'txt', 'text', 'md', 'markdown', 'json', 'jsonl', 'ndjson', 'json5', 'log', 'csv', 'tsv',
+            'ini', 'conf', 'cfg', 'properties', 'yml', 'yaml', 'toml', 'xml', 'plist', 'xaml',
+            'html', 'htm', 'xhtml', 'css', 'scss', 'sass', 'less', 'styl',
+            'js', 'mjs', 'cjs', 'ts', 'jsx', 'tsx', 'vue', 'svelte',
+            'sh', 'bash', 'zsh', 'fish', 'bat', 'cmd', 'ps1', 'psm1',
+            'py', 'go', 'java', 'kt', 'kts', 'scala', 'groovy', 'gradle',
+            'c', 'h', 'cc', 'cpp', 'cxx', 'hpp', 'cs', 'm', 'mm', 'swift', 'rs', 'dart',
+            'rb', 'php', 'phtml', 'pl', 'pm', 'lua', 'r', 'jl', 'tex', 'rst', 'proto',
+            'sql', 'graphql', 'gql', 'env', 'lock', 'map', 'diff', 'patch', 'srt', 'vtt',
+            'htaccess', 'dockerfile', 'makefile', 'gitignore', 'editorconfig',
+            'service', 'nginx', 'asm', 's'
+        ].includes(ext)) return 'text';
         return 'other';
     },
     /** v2.9.0：预览浮层顶栏显示的文件大小文案 */
@@ -2559,7 +3515,6 @@ methods: {
      * 索引在当前页可预览媒体列表里查找，保证左右切换从被点的那一个开始。
      */
     openMediaPreview(item) {
-        this.closeHoverPreview();
         const key = item && (item.name || item.key);
         const list = this.mediaPreviewItems || [];
         const at = list.findIndex(it => it.key === key);
@@ -2572,6 +3527,34 @@ methods: {
         if (!key) return;
         const index = (this.paginatedTableData || []).findIndex(row => row.name === key);
         if (index >= 0) this.openDetailDialog(index, key);
+    },
+    /**
+     * v3.0.0（R17）：视频灯箱里「抓拍 → 上传 → 查看」。
+     * 刚上传的抓拍图不在当前页列表里（列表没刷新，也不该因为抓拍被刷新），
+     * 因此这里按上传返回的 File_ID + 抓拍文件名直接构造详情数据对象，
+     * 交给同一个 FileDetailDialog 渲染（字段与正常记录一致：name + metadata）。
+     * 灯箱保持打开，关掉详情页还回到原来的视频帧。
+     */
+    handleViewUploadedSnapshot(payload) {
+        const id = payload && payload.id;
+        if (!id) {
+            this.$message.error(this.$t('mediaViewer.snapshotFailed'));
+            return;
+        }
+        const fileName = String(payload.fileName || payload.name || '').trim() || `${id}.png`;
+        this.detailFile = {
+            name: id,
+            metadata: {
+                FileName: fileName,
+                FileFirstName: fileName,
+                FileType: 'image/png',
+                Directory: this.currentPath || '',
+                TimeStamp: Date.now(),
+                // 抓拍图由上传接口自动打「视频抓拍」标签，这里同步给详情页展示
+                Tags: ['视频抓拍'],
+            },
+        };
+        this.showdetailDialog = true;
     },
     isImage(file) {
         let flag = file.metadata?.FileType?.includes('image');
@@ -2601,52 +3584,7 @@ methods: {
         const path = this.withExt(`/file/${filename}`, this.fileExt(meta || filename));
         return `${path}?from=admin`;
     },
-    /**
-     * v2.8.5：悬停预览大图（PC）。
-     * 触发点：卡片封面「小眼睛」、列表缩略图 —— 鼠标悬停即弹出，
-     * 视频自动播放；浮层定位与比例逻辑在 HoverPreview 组件内。
-     * 触屏设备（hover: none / 粗指针）不启用，避免与长按、滚动冲突。
-     */
-    canHoverPreview() {
-        return window.matchMedia
-            ? window.matchMedia('(hover: hover) and (pointer: fine)').matches
-            : true;
-    },
-    openHoverPreview(item, evt, opts) {
-        if (!item || item.isFolder) return;
-        // v2.8.6：触屏长按调用时显式传 { touch: true }，跳过「只允许 PC 悬停」的判断
-        const touch = !!(opts && opts.touch);
-        if (!touch && !this.canHoverPreview()) return;
-        if (!this.isImage(item) && !this.isVideo(item)) return;
-        // 触摸事件坐标在 touches[0] 上（长按回调里已归一为 clientX/clientY）
-        const point = (evt && evt.touches && evt.touches[0]) || evt || {};
-        this.hoverPreview = {
-            visible: true,
-            x: point.clientX || 0,
-            y: point.clientY || 0,
-            src: this.getFileLink(item.name),
-            type: this.isVideo(item) ? 'video' : 'image',
-            touch,
-            // v2.8.6b：眼睛按钮矩形 —— 浮层贴眼四向择大弹出（不覆盖眼睛）
-            anchor: (opts && opts.rect) || null,
-        };
-    },
-    moveHoverPreview(evt) {
-        if (!this.hoverPreview.visible || !evt) return;
-        this.hoverPreview.x = evt.clientX;
-        this.hoverPreview.y = evt.clientY;
-    },
-    closeHoverPreview() {
-        if (!this.hoverPreview.visible) return;
-        this.hoverPreview.visible = false;
-    },
-    handlePageChange(page) {
-        this.currentPage = page;
-        // 到最后一页时，加载更多数据
-        if (this.currentPage === Math.ceil(this.tableData.length / this.pageSize)) {
-            this.loadMoreData();
-        }
-    },
+    /* v3.0.0（R9）：悬停预览（HoverPreview / 小眼睛）已整体移除，相关方法一并删除 */
     isMobileViewport() {
         // v20261027：阈值 768 → 1024 —— 平板也按触屏处理（悬浮提示改点击、启用触屏手势）
         return window.innerWidth <= 1024;
@@ -2654,7 +3592,23 @@ methods: {
     /** v2.8.9：移动端展开 / 收起搜索框（展开后自动聚焦输入框） */
     toggleMobileSearch() {
         this.mobileSearchOpen = !this.mobileSearchOpen;
-        if (!this.mobileSearchOpen) return;
+        /*
+         * v3.0.0：收起的同时清空搜索框 —— 移动端搜索框默认收起，
+         * 若收起时残留旧关键字，下次展开会误以为没生效；这里一并清掉
+         * 未提交的输入（tempSearch）与已提交的搜索（search）并回到普通列表。
+         */
+        if (!this.mobileSearchOpen) {
+            if (this.tempSearch || this.search) {
+                this.tempSearch = '';
+                if (this.search) {
+                    this.search = '';
+                    this.isSearchMode = false;
+                    this.currentPage = 1;
+                    this.refreshFileList();
+                }
+            }
+            return;
+        }
         this.$nextTick(() => {
             const input = this.$refs.searchInput;
             if (input && typeof input.focus === 'function') input.focus();
@@ -2663,6 +3617,8 @@ methods: {
     updateResponsivePageSize() {
         // v2.8.2：全终端统一每页 24（含文件夹一起计数），不再按视口降为 18/16
         const nextPageSize = 24;
+        // v3.0.0（R4）：窗口尺寸变化时重算第二行工具栏的吸顶态
+        this.updateBreadcrumbStuck();
         if (this.pageSize === nextPageSize) return;
         const firstVisibleIndex = (this.currentPage - 1) * this.pageSize;
         this.pageSize = nextPageSize;
@@ -2674,8 +3630,139 @@ methods: {
     isSwipeIgnoredTarget(target) {
         return Boolean(target?.closest?.('button, a, input, textarea, select, .el-checkbox, .action-btn, .list-action-btn'));
     },
+    /**
+     * v3.0.0（R4）：移动端「全选 / 视图切换」工具栏吸顶（桌面端完全不启用）。
+     * 本站由 OverlayScrollbars 接管 body 滚动（body 自身带 overflow: hidden auto），
+     * 原生 position: sticky 不生效 —— 所以用「越过阈值 → 切 fixed + 外层占位」实现：
+     *   · 顶栏可见时贴在顶栏下方；滚回它原本的位置（阈值以下）立即复位，回到普通文档流。
+     * v3.0.0（R5）：改为与顶栏同进同出 —— 向下滚动顶栏上滑隐藏时，第二行也一并上滑收起
+     * （.is-header-hidden 的 transform），只有向上滚动、顶栏显示时才吸附在顶栏下方。
+     */
+    handleBreadcrumbScroll() {
+        if (this.breadcrumbStuckFrame) return;
+        this.breadcrumbStuckFrame = requestAnimationFrame(() => {
+            this.breadcrumbStuckFrame = null;
+            this.updateBreadcrumbStuck();
+        });
+    },
+    /** 顶栏显隐变化（自定义事件）—— 不是高频事件，直接同步重算，避免跟随滞后一帧 */
+    handleHeaderToggle(event) {
+        this.breadcrumbHeaderHidden = Boolean(event && event.detail && event.detail.hidden);
+        this.updateBreadcrumbStuck();
+    },
+    /**
+     * 吸顶时工具栏应有的 top：顶栏静止位置底部 + 8px（v3.0.0 R11c：常态与吸附态统一 8px）。
+     * 用 offsetTop/offsetHeight 而不是 getBoundingClientRect —— 顶栏显隐靠 transform 位移，
+     * rect 会随动画/隐藏状态变化；offset 只反映布局位置，任何时刻都是「顶栏展开时」的底部。
+     */
+    breadcrumbStickyTop() {
+        const header = document.querySelector('.admin-header-content');
+        if (!header) return 68;
+        return Math.round(header.offsetTop + header.offsetHeight + 8);
+    },
+    /** 吸顶中：按顶栏显隐状态同步 fixed 的 top（顶栏隐藏时贴 0，让 -100% 位移能整行滑出屏幕） */
+    syncBreadcrumbStuckTop() {
+        const bar = this.$refs.breadcrumbBar;
+        if (!bar || !this.breadcrumbStuck) return;
+        bar.style.top = (this.breadcrumbHeaderHidden ? 0 : this.breadcrumbStickyTop()) + 'px';
+    },
+    /**
+     * v3.0.0（R11）：当前滚动位置 —— 兼容三种滚动容器：
+     *   · 原生滚动（触屏，html/body）：document.scrollingElement.scrollTop / window.scrollY；
+     *   · OverlayScrollbars 接管 body（桌面窄窗 <768px 时吸顶逻辑也会走到）：viewport 元素 scrollTop；
+     *   · 兜底 body.scrollTop。
+     */
+    currentScrollY() {
+        const doc = document.scrollingElement || document.documentElement;
+        let y = doc.scrollTop || window.scrollY || 0;
+        if (!y) {
+            const osViewport = document.querySelector('[data-overlayscrollbars-viewport]');
+            if (osViewport) y = osViewport.scrollTop || 0;
+        }
+        if (!y) y = document.body.scrollTop || 0;
+        return y;
+    },
+    updateBreadcrumbStuck() {
+        /*
+         * v3.0.0（R8）：移动端（≤768px）第二行恢复「顶栏下方吸附」——
+         * 越过原始位置后切 fixed 贴在顶栏下（与顶栏同进同出），滚回原位立即复位；
+         * 桌面 / 平板（>768px）维持静态背框，并把历史 fixed 内联样式复位
+         * （窗口尺寸变化 / 热更新时也安全）。
+         */
+        if (window.innerWidth > 768 || this.tagModeActive) {
+            if (this.breadcrumbStuck) this.applyBreadcrumbStuck(false);
+            return;
+        }
+        const wrap = this.$refs.breadcrumbStickyWrap;
+        const bar = this.$refs.breadcrumbBar;
+        if (!wrap || !bar) return;
+        const scrollY = this.currentScrollY();
+        /*
+         * v3.0.0（R14）：复位阈值只在「未吸附」时测量并缓存 ——
+         * 吸附期间 bar 是 fixed、回收站提示条 / 顶栏显隐都会改动文档流，
+         * 每帧实时测量会把阈值算大，导致「还没滚回原位就提前复位」。
+         * 判定一律用缓存值；复位后（未吸附）下一帧重新测量，保证布局变化能生效。
+         */
+        if (!this.breadcrumbStuck || this.breadcrumbThreshold === null) {
+            // 原始位置 = 占位容器在文档流里的顶部（占位高度在 fixed 化过程中不变，结果稳定）
+            this.breadcrumbThreshold = wrap.getBoundingClientRect().top + scrollY;
+        }
+        const threshold = this.breadcrumbThreshold;
+        const shouldStick = scrollY > threshold + 1;
+        if (shouldStick !== this.breadcrumbStuck) {
+            this.applyBreadcrumbStuck(shouldStick);
+        } else if (this.breadcrumbStuck) {
+            this.syncBreadcrumbStuckTop();
+        }
+    },
+    applyBreadcrumbStuck(on) {
+        const wrap = this.$refs.breadcrumbStickyWrap;
+        const bar = this.$refs.breadcrumbBar;
+        if (!wrap || !bar) {
+            this.breadcrumbStuck = false;
+            return;
+        }
+        if (!on) {
+            if (!this.breadcrumbStuck) return;
+            // v3.0.0（R14）：复位后清掉缓存阈值 —— 下一帧按当前布局重新测量
+            this.breadcrumbThreshold = null;
+            wrap.style.height = '';
+            bar.style.position = '';
+            bar.style.top = '';
+            bar.style.left = '';
+            bar.style.width = '';
+            bar.style.zIndex = '';
+            // v3.0.0（R11）：fixed 化时清掉的上下外边距要还原（文档流里仍靠它们撑 10px 间距）
+            bar.style.marginTop = '';
+            bar.style.marginBottom = '';
+            bar.style.removeProperty('--breadcrumb-hide-y');
+            this.breadcrumbStuck = false;
+            return;
+        }
+        /*
+         * v3.0.0（R8）：吸附分支（仅 ≤768px 被调用）——
+         *   · 先把占位容器高度钉住（flow-root 含内 margin，翻页 / 加载不跳动）；
+         *   · 背框切 fixed：左右各留 4px，与移动端顶栏背框完全同宽（100% - 8px）。
+         */
+        wrap.style.height = wrap.offsetHeight + 'px';
+        bar.style.position = 'fixed';
+        bar.style.top = (this.breadcrumbHeaderHidden ? 0 : this.breadcrumbStickyTop()) + 'px';
+        // v3.0.0（R11）：fixed 元素的 margin 依然生效（margin-top 10px 会把工具栏再往下推 10px，
+        // 导致与顶栏的间距变成 15px 而不是 5px）—— 吸附期间上下外边距清零，复位时还原
+        bar.style.marginTop = '0';
+        bar.style.marginBottom = '0';
+        /*
+         * v3.0.0（R11c）：吸附态的背框宽度与常态完全一致 ——
+         * 常态是主内容区宽度（左右各 10px 内边距，即 100% - 20px，left 10px）；
+         * 之前固定成「顶栏同宽」（left 4px / 100% - 8px），吸附瞬间会变宽，视觉上跳一下。
+         */
+        bar.style.left = '10px';
+        bar.style.width = 'calc(100% - 20px)';
+        bar.style.zIndex = '35';
+        this.breadcrumbStuck = true;
+    },
     handlePageSwipeStart(event) {
-        if (!this.isMobileViewport() || this.isDragging || this.loading || this.showMobileActionModal || this.showMobileDirectoryDrawer || this.isSwipeIgnoredTarget(event.target)) {
+        if (!this.isMobileViewport() || this.isDragging || this.loading || this.showMobileActionModal || this.tagModeActive || this.isSwipeIgnoredTarget(event.target)) {
             this.resetPageSwipe();
             return;
         }
@@ -2685,6 +3772,13 @@ methods: {
         this.pageSwipeStartY = touch.clientY;
         this.pageSwipeStartTime = Date.now();
     },
+    /**
+     * v3.0.0（R12）：移动端左右滑动 = 切换「内容展示方式」。
+     * v3.0.0（R14）：改为轮回切换 —— 不再「左滑/右滑各对应一个模式」，
+     * 只要横向滑动达标就切到另一个模式（连续同方向滑动会来回轮回），
+     * 与滑动方向无关；这样空白区域随便左右滑都能切换。
+     * 原先这里是「左右滑动翻页」，用户要求改成切换展示模式（翻页用底部页码）。
+     */
     async handlePageSwipeEnd(event) {
         if (this.pageSwipeStartX === null || this.pageSwipeStartY === null) return;
         const touch = event.changedTouches?.[0];
@@ -2700,9 +3794,11 @@ methods: {
         if (elapsed > 700 || Math.abs(deltaX) < 64 || Math.abs(deltaX) < Math.abs(deltaY) * 1.35) {
             return;
         }
-
-        const targetPage = deltaX < 0 ? this.currentPage + 1 : this.currentPage - 1;
-        await this.goToSwipePage(targetPage);
+        const next = this.searchResultDisplay === 'folders' ? 'expanded' : 'folders';
+        this.selectSearchResultDisplay(next);
+        this.$message.info(
+            next === 'folders' ? this.$t('fileManager.showFolders') : this.$t('fileManager.expandFiles')
+        );
     },
     resetPageSwipe() {
         this.pageSwipeStartX = null;
@@ -2710,11 +3806,8 @@ methods: {
         this.pageSwipeStartTime = 0;
     },
     async goToSwipePage(page) {
+        // v3.0.0：翻页一律走服务端整页替换（不再「按需补载到第 N 页」）
         if (page < 1 || page > this.realTotalPages || page === this.currentPage) return;
-        if (page > this.totalPages) {
-            await this.loadMoreDataUntilPage(page);
-            return;
-        }
         this.handlePageChange(page);
     },
     // 跳转到指定页码
@@ -2728,50 +3821,23 @@ methods: {
             this.$message.warning(this.$t('dashboard.pageExceedsMax', { max: this.realTotalPages }));
             return;
         }
-        // 如果目标页超过当前已加载的页数，需要先加载更多数据
-        if (page > this.totalPages) {
-            this.$message.info(this.$t('dashboard.loadingData'));
-            this.loadMoreDataUntilPage(page);
-        } else {
-            this.currentPage = page;
-        }
+        // v3.0.0：直接请求该页并整页替换列表
+        this.handlePageChange(page);
         this.jumpPage = '';
     },
-    // 加载数据直到指定页
-    async loadMoreDataUntilPage(targetPage) {
-        this.loading = true;
-        try {
-            // 计算目标页需要的文件数量（不包含文件夹）
-            // 目标页最后一个项目的索引 = targetPage * pageSize
-            // 需要的文件数 = 目标索引 - 已有文件夹数量
-            const targetIndex = targetPage * this.pageSize;
-            const currentFolderCount = this.filteredTableData.filter(item => item.isFolder).length;
-            const currentFileCount = this.filteredTableData.filter(item => !item.isFolder).length;
-            
-            // 需要加载的文件数量 = 目标位置需要的文件数 - 当前已加载的文件数
-            const neededFileCount = Math.max(0, targetIndex - currentFolderCount - currentFileCount);
-            
-            if (neededFileCount > 0) {
-                await fileManager.loadMoreFiles(
-                    this.currentPath,
-                    this.searchKeywords,
-                    this.searchIncludeTags,
-                    this.searchExcludeTags,
-                    neededFileCount,
-                    this.filters,
-                    this.recursiveSearchResults,
-                    this.searchType,
-                    this.isAdminRole ? this.userFilter : ''
-                );
-                await this.fetchFileList({ preserveSelection: true });
-            }
-
-            this.currentPage = Math.min(targetPage, this.totalPages);
-        } catch (error) {
-            this.$message.error(this.$t('dashboard.loadDataFailed'));
-        } finally {
-            this.loading = false;
-        }
+    /**
+     * v3.0.0（R12，需求 44）：目录显示名。
+     * 目录属性里的「目录名称」只改展示、不改真实路径（文件夹仍按原路径存取），
+     * 因此所有展示目录名的地方都必须过一层本函数，否则就会出现「改了名还是旧名」。
+     */
+    displayFolderName(path) {
+        const p = String(path || '').replace(/^\/+|\/+$/g, '');
+        if (!p) return this.$t('dashboard.rootDirectory');
+        const map = this.folderNameOf || {};
+        const custom = map[p];
+        if (custom) return custom;
+        const parts = p.split('/').filter(Boolean);
+        return parts[parts.length - 1] || p;
     },
     // 判断是否为文件夹
     isFolder(item) {
@@ -2885,6 +3951,8 @@ methods: {
         this.currentPage = 1;
         // 确保路径末尾有 '/'
         this.currentPath = folderPath + (folderPath.endsWith('/') ? '' : '/');
+        // v3.0.0：移动端进入子目录时压一条历史，返回键先回上一级而不是离开页面
+        this.pushFolderHistory();
         // 刷新文件列表，到指定currentPath下
         this.refreshFileList();
     },
@@ -2894,8 +3962,118 @@ methods: {
         this.currentPage = 1;
         // 确保空路径时不添加 '/'
         this.currentPath = path ? (path + (path.endsWith('/') ? '' : '/')) : '';
+        // v3.0.0（R7）：悬停展开的目录下拉在跳转后收起，避免浮层一直挂着
+        if (this.dirHoverOpened) {
+            this.dirHoverOpened = false;
+            const dd = this.$refs.dirDropdown;
+            if (dd && typeof dd.handleClose === 'function') dd.handleClose();
+        }
+        // v3.0.0：移动端目录跳转同样压一条历史
+        this.pushFolderHistory();
         // 刷新文件列表，到指定currentPath下
         this.refreshFileList();
+    },
+
+    /* ==========================================================================
+     * v3.0.0 移动端返回键：回到上一级目录
+     * --------------------------------------------------------------------------
+     * 进入子目录时 pushState 一条 {folder} 历史；按返回键（popstate）时
+     *   · 不在根目录 → 回上一级目录，并补压一条占位历史（返回键只回目录、不离开页面）；
+     *   · 已在根目录 → 不拦截，交给浏览器真正返回。
+     * 桌面端不启用（matchMedia('(hover:none)') 判断）。
+     * 浮层（弹窗 / 灯箱）打开时 popstate 由浮层自己消费，本页不处理。
+     * ========================================================================== */
+
+    /** 是否触屏设备（hover:none）—— 只有触屏才接管返回键 */
+    isTouchViewport() {
+        try {
+            return window.matchMedia('(hover: none)').matches;
+        } catch (e) {
+            return false;
+        }
+    },
+    /** 是否有「可见的」Element Plus 浮层（.el-overlay 关闭后仍留在 DOM 里，必须看渲染盒子） */
+    hasVisibleOverlay() {
+        const list = Array.from(document.querySelectorAll('.el-overlay'));
+        return list.some((el) => {
+            if (!el || !el.isConnected) return false;
+            const style = window.getComputedStyle(el);
+            if (style.display === 'none' || style.visibility === 'hidden') return false;
+            return el.getClientRects().length > 0;
+        });
+    },
+    /** 当前是否有浮层打开（有则把返回键让给浮层：backGuard 关弹窗 / 灯箱自己消费） */
+    hasOpenFloatingLayer() {
+        // v3.0.0（R18）修复：hoverPreview 字段从未在 data 里定义过，
+        // 旧代码在这里直接读 .visible 抛 TypeError，导致整条移动端 popstate
+        // 处理（回上一级目录 / 根目录屏蔽返回）实际上一直在报错中断。
+        if (this.hoverPreview && this.hoverPreview.visible) return true;
+        if (this.showMediaPreview) return true;
+        if (this.showdetailDialog || this.showFilterDialog || this.showTagFilterDialog) return true;
+        if (this.showUrlDialog || this.showMoveDialog || this.showMobileActionModal) return true;
+        if (this.showTagDialog || this.showBatchTagDialog || this.showBatchNameDialog) return true;
+        if (this.showBatchExpiryDialog || this.showFolderProps || this.showRecordDialog) return true;
+        if (this.showInstanceDialog) return true;
+        // Element Plus 的弹窗 / MessageBox 浮层 + 灯箱（自定义浮层，不是 .el-overlay）
+        if (this.hasVisibleOverlay()) return true;
+        if (document.querySelector('.media-viewer')) return true;
+        return false;
+    },
+    /** 进入子目录时压一条历史（根目录不需要压） */
+    pushFolderHistory() {
+        if (!this.isTouchNav) return;
+        try {
+            window.history.pushState({ folder: this.currentPath || '' }, '', window.location.href);
+        } catch (e) { /* 隐私模式等环境忽略 */ }
+    },
+    /**
+     * v3.0.0：记录 body 直接子节点变化的时间。
+     *
+     * utils/backGuard 在「浮层元素的增删」时会把 history.back() 用来退掉自己的哨兵条目，
+     * 这会触发一次 popstate —— 必须和「用户按了返回键」区分开，否则会莫名其妙回上一级目录。
+     * 程序触发的 popstate 总是紧跟在一次 body 子节点变化之后，这里用 300ms 时间窗过滤；
+     * 真正的返回键操作不会伴随这种变化。
+     * （只观察 body 直接子节点：弹窗 / 消息框都挂在这里，列表重渲染不会触发）
+     */
+    setupBodyMutationWatch() {
+        if (typeof MutationObserver === 'undefined') return;
+        this.__lastBodyMutationAt = 0;
+        this.__bodyObserver = new MutationObserver(() => {
+            this.__lastBodyMutationAt = Date.now();
+        });
+        this.__bodyObserver.observe(document.body, { childList: true });
+    },
+    /** popstate：不在根目录就回上一级，并补一条占位历史 */
+    handleMobilePopState() {
+        if (!this.isTouchNav) return;
+        // 浮层打开时由浮层自己消费（弹窗 → backGuard 关弹窗；灯箱 → 灯箱自己处理）
+        if (this.hasOpenFloatingLayer()) return;
+        // 程序触发的 popstate（backGuard 退哨兵）紧跟在 body 子树变化之后 → 忽略
+        if (Date.now() - (this.__lastBodyMutationAt || 0) < 300) return;
+        // v3.0.0（R18）：这次 popstate 已被浮层消费（backGuard 先补压哨兵再关一层）
+        // —— 浮层可能就是灯箱，关掉后 hasOpenFloatingLayer() 立刻变 false，
+        // 不拦的话会被当成本页的返回键，顺手回上一级目录。
+        if (Date.now() - (window.__goimgbedBackGuardAt || 0) < 500) return;
+        // v3.0.0（R8）修复「移动端关灯箱误触返回上一级」：
+        // 灯箱主动关闭时会 history.back() 退掉自己的哨兵条目并打
+        // window.__goimgbedMediaViewerPopAt 时间戳 —— 这次 popstate 是程序触发的，
+        // 不能当成「用户按返回键」去回上一级目录。
+        if (Date.now() - (window.__goimgbedMediaViewerPopAt || 0) < 500) return;
+        const parts = this.normalizedCurrentPath.split('/').filter(Boolean);
+        if (!parts.length) {
+            /*
+             * v3.0.0（R14）：已在根目录 → 屏蔽返回（不再离开文件管理页）。
+             * 原来这里直接 return，浏览器会退到进入本页之前的历史；
+             * 回补一条同 URL 的历史，让这一次返回「无效果」。
+             */
+            try {
+                window.history.pushState({ folder: '' }, '', window.location.href);
+            } catch (e) { /* 隐私模式等环境忽略 */ }
+            return;
+        }
+        const parent = parts.slice(0, -1).join('/');
+        this.navigateToFolder(parent);
+        // navigateToFolder 已压过一条（此时 currentPath 已是父级）
     },
 
     // 顶部工具栏「刷新」：不刷新页面，重新加载当前分类下的文件
@@ -2911,108 +4089,584 @@ methods: {
         }
     },
 
-    // 获取文件列表
-    async fetchFileList({ preserveSelection = false } = {}) {
-        this.loading = true;
+    /* ==========================================================================
+     * v3.0.0 目录导航下拉：「当前 / 全局」切换
+     * ========================================================================== */
+
+    /** 下拉展开 / 收起：每次打开都回到「当前」，并清空全局搜索 */
+    handleDirDropdownVisible(visible) {
+        if (!visible) return;
+        /*
+         * v3.0.0（R12）：悬停展开与点击展开统一回到「当前」层级。
+         * 原先悬停会直接切到「全局」，鼠标只是划过就会跳成整实例的全部目录，
+         * 与「默认显示当前」的要求相反。
+         */
+        this.dirScope = 'current';
+        this.dirSearch = '';
+    },
+    /** v3.0.0（R7）：桌面端鼠标悬停「目录导航」→ 展开下拉（默认仍是「当前」层级） */
+    handleDirHoverEnter() {
+        if (this.suppressDirHover()) return;
+        this.clearDirHoverTimer();
+        this.dirHoverOpened = true;
+        this.dirScope = 'current';
+        const dd = this.$refs.dirDropdown;
+        if (dd && typeof dd.handleOpen === 'function') dd.handleOpen();
+    },
+    handleDirHoverLeave() {
+        if (this.suppressDirHover()) return;
+        this.clearDirHoverTimer();
+        this.dirHoverLeaveTimer = setTimeout(() => {
+            this.dirHoverLeaveTimer = null;
+            // 指针已经移进浮层（或在浮层里操作搜索框）时不关闭
+            if (document.querySelector('.dir-hover-popper:hover')) return;
+            const dd = this.$refs.dirDropdown;
+            if (dd && typeof dd.handleClose === 'function') dd.handleClose();
+            this.dirHoverOpened = false;
+        }, 320);
+    },
+    clearDirHoverTimer() {
+        if (this.dirHoverLeaveTimer) {
+            clearTimeout(this.dirHoverLeaveTimer);
+            this.dirHoverLeaveTimer = null;
+        }
+    },
+    /** 触屏 / 窄屏（≤1023）不做悬停展开，避免和点击 / 滚动冲突 */
+    suppressDirHover() {
+        if (typeof window === 'undefined') return true;
+        return window.innerWidth <= 1023 || window.matchMedia('(hover: none)').matches;
+    },
+    /** 切到「全局」时按当前实例拉取全部目录 */
+    handleDirScopeChange(scope) {
+        if (scope === 'global') this.loadAllFolders();
+    },
+    /** GET /api/manage/folders/all?instanceId= → { success, data: ['2026','2026/10',...] } */
+    async loadAllFolders() {
+        this.allFoldersLoading = true;
         try {
-            // 从本地存储获取数据
-            const data = fileManager.getLocalFileList();
+            const res = await fetchWithAuth(
+                `/api/manage/folders/all?instanceId=${encodeURIComponent(this.instanceId || '')}`,
+                { method: 'GET' }
+            );
+            const json = await res.json().catch(() => ({}));
+            const list = Array.isArray(json?.data) ? json.data : [];
+            // 按路径排序，父级天然排在子级之前（'2026' < '2026/10'）
+            this.allFolders = list
+                .map((p) => String(p).replace(/^\/+|\/+$/g, ''))
+                .filter(Boolean)
+                .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+            /*
+             * v3.0.0（R12）：全局目录树也吃「目录属性里的自定义名称」——
+             * 只改 meta 不改路径，以前全局导航里永远是旧名字（需求 44）。
+             */
+            this.allFolderNames = json?.displayNames && typeof json.displayNames === 'object'
+                ? json.displayNames
+                : {};
+        } catch (e) {
+            this.allFolders = [];
+        } finally {
+            this.allFoldersLoading = false;
+        }
+    },
 
-            // 追加分页数据时保留当前选择，用类型和路径区分文件与文件夹。
-            const selectedKeys = new Set(preserveSelection
-                ? this.tableData.filter(item => item.selected)
-                    .map(item => `${item.isFolder ? 'folder' : 'file'}:${item.name}`)
-                : []);
-            
-            // 解析返回的数据
-            const folders = new Set(this.recursiveSearchResults ? [] : data.directories || []);
-            const files = data.files || [];
+    /* ==========================================================================
+     * v3.0.0 列表加载 —— 服务端分页窗口
+     * --------------------------------------------------------------------------
+     * 与旧实现的差别：
+     *   · 请求一律带 instanceId（空串 = 默认实例）与 flat（直接展开文件时为 true）；
+     *   · 列表只保存「当前窗口」的数据：翻页 = 整页替换，加载更多 = 尾部追加一页，
+     *     向上滚到顶 = 头部补载一页并保持滚动位置；
+     *   · 总数（listTotal）来自后端，分页按钮按它计算，不在本地切片。
+     * ========================================================================== */
 
-            // 处理文件夹数据（v2.5.0：附带后端 directoryStats 的子文件夹/文件数量统计）
-            const folderStatsMap = data.directoryStats || {};
-            const folderItems = Array.from(folders).map(folder => ({
+    /** 组装列表请求 URL（搜索 / 标签 / 筛选 / 搜索类型 / 用户 / 实例 / flat 全带上） */
+    buildListUrl(start, count) {
+        let url = `/api/manage/list?count=${count}&start=${start}`
+            + `&dir=${encodeURIComponent(this.currentPath || '')}`
+            + `&search=${encodeURIComponent((this.searchKeywords || '').trim())}`
+            + `&instanceId=${encodeURIComponent(this.instanceId || '')}`;
+        // 直接展开文件 = 递归平铺当前目录（后端不返回文件夹聚合）
+        if (this.recursiveSearchResults) url += '&flat=true';
+        if (this.searchIncludeTags) url += `&includeTags=${encodeURIComponent(this.searchIncludeTags)}`;
+        if (this.searchExcludeTags) url += `&excludeTags=${encodeURIComponent(this.searchExcludeTags)}`;
+        /*
+         * 筛选参数沿用 utils/fileManager 的拼装（与其它页面同一口径）；
+         * 它内部只认 matchMode=any/all，这里先屏蔽，再统一按 and/or 显式传一次
+         * —— 后端两种写法都认，前端固定用 and/or 避免中文或其它值。
+         */
+        /*
+         * v3.0.0：两个「不走数组」的筛选项单独拼：
+         *   · 已加密 → encryptedOnly=1（accessStatus 里只保留 normal / blocked / deleted）
+         *   · 用户共享 → shareScope=mine|tome（单选）
+         */
+        const accessStatus = (this.filters.accessStatus || []).filter((v) => v !== 'encrypted');
+        url += fileManager.buildFilterParams({ ...this.filters, accessStatus, shareScope: '', matchMode: '' });
+        if ((this.filters.accessStatus || []).includes('encrypted')) url += '&encryptedOnly=1';
+        if (this.filters.shareScope) url += `&shareScope=${this.filters.shareScope === 'tome' ? 'tome' : 'mine'}`;
+        url += `&matchMode=${this.filters.matchMode === 'or' ? 'or' : 'and'}`;
+        url += fileManager.buildExtraParams(this.searchType, this.isAdminRole ? this.userFilter : '');
+        return url;
+    },
+
+    /** 把 /api/manage/list 的响应转成表格行（保留已有勾选状态） */
+    buildRowsFromResponse(data) {
+        const selectedKeys = new Set(
+            this.tableData.filter((item) => item.selected)
+                .map((item) => `${item.isFolder ? 'folder' : 'file'}:${item.name}`)
+        );
+        const folderStatsMap = data.directoryStats || {};
+        /*
+         * v3.0.0：「共享」标识 —— 后端 sharedFolders 给出「可查看的共享目录全集」
+         * （我共享出去的 + 共享给我的）；目录本身与其下任意层级子目录都算共享范围，
+         * 因此这里按前缀匹配给每个目录卡片打标（共享者与被共享者都能看到）。
+         */
+        const sharedFolders = Array.isArray(data.sharedFolders) ? data.sharedFolders : [];
+        // v3.0.0（R12）：目录属性里改过的「目录名称」（path → 名称）
+        const folderNames = data.folderDisplayNames && typeof data.folderDisplayNames === 'object'
+            ? data.folderDisplayNames
+            : {};
+        /*
+         * v3.0.0（R12，需求 44）：把本页拿到的自定义目录名缓存下来 ——
+         * 目录导航（当前路径链 / 全局树）与卡片共用同一份映射，
+         * 这样「文件夹属性改名」在页面上任何位置都是新名字。
+         */
+        this.folderNameMap = { ...(this.folderNameMap || {}), ...folderNames };
+        const sharedOf = (path) => sharedFolders.find(
+            (s) => s && s.path && (path === s.path || path.startsWith(`${s.path}/`))
+        );
+        const folderItems = (this.recursiveSearchResults ? [] : (data.directories || [])).map((folder) => {
+            const sharedHit = sharedOf(folder);
+            const folderPerm = sharedHit ? (sharedHit.mine ? 'edit' : (sharedHit.sharedPerm || 'edit')) : '';
+            // v3.0.0（R12）：只读共享目录不可选中 —— 防止刷新后沿用旧的勾选状态
+            const folderReadonly = !!(sharedHit && !sharedHit.mine && folderPerm === 'readonly');
+            return {
                 name: folder,
                 isFolder: true,
-                selected: selectedKeys.has(`folder:${folder}`),
-                metadata: { FileName: folder.split('/').pop(), folderStats: folderStatsMap[folder] || null }
-            }));
+                selected: !folderReadonly && selectedKeys.has(`folder:${folder}`),
+                shared: !!sharedHit,
+                sharedOwner: sharedHit?.owner || '',
+                // v3.0.0（R5）：mine = 我共享出去的（提示「你的共享文件」），否则是别人共享给我的
+                sharedSelf: !!sharedHit?.mine,
+                // v3.0.0（R12）：目录也要带共享权限 —— 否则「只读」共享目录仍可选中 / 打开属性
+                sharedPerm: folderPerm,
+                // v3.0.0（R12）：目录属性里的自定义名称（空 = 用路径末段）
+                displayName: folderNames[folder] || '',
+                metadata: { FileName: folderNames[folder] || folder.split('/').pop(), folderStats: folderStatsMap[folder] || null }
+            };
+        });
+        const fileItems = (data.files || []).map((file) => {
+            // v3.0.0（R12）：只读共享文件不可选中（刷新后同样清零，避免旧勾选残留）
+            const fileReadonly = !!(file.shared && !file.sharedSelf && file.sharedPerm === 'readonly');
+            return {
+            name: file.name,
+            isFolder: false,
+            selected: !fileReadonly && selectedKeys.has(`file:${file.name}`),
+            metadata: file.metadata,
+            /*
+             * v3.0.0（R7）：「共享」标识必须跟着文件行走。
+             * 原实现只挑 name / isFolder / selected / metadata 四个字段，
+             * 后端给文件算好的 shared / sharedOwner / sharedSelf 全被丢掉 ——
+             * 于是「共享」标识只出现在目录卡片上（发起方看得到），
+             * 接收方进到共享目录里看文件时反而没有任何标识。
+             */
+            shared: !!file.shared,
+            sharedOwner: file.sharedOwner || '',
+            sharedSelf: !!file.sharedSelf,
+            /*
+             * v3.0.0（R12）：sharedPerm 同样必须透传！
+             * 详情页「只读共享 → 顶部按钮全部隐藏」的判定依赖 f.sharedPerm，
+             * 这里漏挑字段会让判定恒为 false，只读共享文件的编辑/重命名等按钮照旧显示。
+             */
+            sharedPerm: file.sharedPerm || '',
+            instanceId: file.instanceId || '',
+            folder: file.folder || ''
+            };
+        });
+        return { folderItems, fileItems };
+    },
 
-            // 处理文件数据
-            const fileItems = files.map(file => ({
-                name: file.name,
-                isFolder: false,
-                selected: selectedKeys.has(`file:${file.name}`),
-                metadata: file.metadata
-            }));
+    /**
+     * 加载列表窗口
+     * @param {number|null} page     指定页码（整页替换）
+     * @param {boolean} append       在窗口尾部追加下一页
+     * @param {boolean} prepend      在窗口头部补载上一页（保持滚动位置）
+     */
+    async loadListWindow({ page = null, append = false, prepend = false, force = false } = {}) {
+        if (this.trashMode) {
+            /*
+             * v3.0.0（R12）：回收站走自己的服务端分页 ——
+             * 翻页 = 拉对应 page，加载更多 = 拉下一页并追加，
+             * 刷新（无参）= 重拉当前页。
+             */
+            if (append) {
+                await this.enterTrashMode(true, this.currentPage + 1, true);
+            } else if (page !== null) {
+                await this.enterTrashMode(true, page);
+            } else {
+                await this.enterTrashMode(true, this.currentPage || 1);
+            }
+            return;
+        }
+        /*
+         * v3.0.0：force = 顶栏「刷新」专用 ——
+         * 以前这里一句 `if (this.listLoading) return` 会把刷新请求静默吞掉
+         * （某次请求中断 / 组件切换后标记卡在 true），表现为「点刷新没反应、只能整页刷新」。
+         * 刷新时强制进入，且请求带 cache:'no-store' 绕过浏览器 HTTP 缓存。
+         */
+        if (this.listLoading && !force) return;
+        const size = this.pageSize;
+        let start = 0;
+        if (page !== null) start = Math.max(0, (page - 1) * size);
+        else if (append) start = this.fileWindowStart + this.fileWindowCount;
+        else if (prepend) start = Math.max(0, this.fileWindowStart - size);
 
-            // 更新表格数据
-            this.tableData = [...folderItems, ...fileItems];
+        this.listLoading = true;
+        if (!append && !prepend) this.loading = true;
+        const beforeTop = prepend ? this.currentScrollTop() : 0;
+        const beforeHeight = prepend ? this.currentScrollHeight() : 0;
+        try {
+            const res = await fetchWithAuth(this.buildListUrl(start, size), {
+                method: 'GET',
+                // v3.0.0：管理端列表一律不吃浏览器缓存，确保「刷新」拿到刚上传的文件
+                cache: 'no-store'
+            });
+            if (!res.ok) throw new Error(res.status === 401 ? 'Unauthorized' : 'Request failed');
+            const data = await res.json();
+            const { folderItems, fileItems } = this.buildRowsFromResponse(data);
 
-            // 更新统计信息
-            this.updateStats(data.totalCount, true);
-            
-            // 更新直接文件和文件夹数量
-            this.directFileCount = data.directFileCount || 0;
-            this.directFolderCount = data.directFolderCount || 0;
+            this.directories = Array.isArray(data.directories) ? data.directories : [];
+            // v3.0.0：记录本次成功加载的时间（页面重新可见时用它判断是否超过 5 分钟）
+            this.lastListLoadedAt = Date.now();
+            this.listTotal = Number(data.totalCount || 0);
+            this.directFileCount = Number(data.directFileCount || 0);
+            this.directFolderCount = Number(data.directFolderCount || 0);
+            this.updateStats(this.listTotal, true);
 
+            if (append) {
+                this.tableData = [...this.tableData, ...fileItems];
+                this.fileWindowCount += fileItems.length;
+            } else if (prepend) {
+                const next = [...this.tableData];
+                next.splice(this.folderRowCount, 0, ...fileItems);
+                this.tableData = next;
+                this.fileWindowStart = start;
+                this.fileWindowCount += fileItems.length;
+            } else {
+                this.tableData = [...folderItems, ...fileItems];
+                this.fileWindowStart = start;
+                this.fileWindowCount = fileItems.length;
+                this.currentPage = page || 1;
+            }
+
+            if (prepend) await this.restoreScrollAfterPrepend(beforeTop, beforeHeight);
         } catch (error) {
-            console.error('Error fetching file list:', error);
-            this.$message.error(this.$t('dashboard.fetchFileListFailed'));
+            if (error.message !== 'Unauthorized') {
+                console.error('Error fetching file list:', error);
+                this.$message.error(this.$t('dashboard.fetchFileListFailed'));
+            }
         } finally {
+            this.listLoading = false;
             this.loading = false;
         }
     },
-    // 刷新文件列表
+
+    /** 当前页面滚动位置 / 文档高度（补载上一页后用来还原滚动，避免列表跳一下） */
+    currentScrollTop() {
+        const scroller = document.scrollingElement || document.documentElement;
+        return Math.max(window.scrollY || 0, scroller?.scrollTop || 0, document.body?.scrollTop || 0);
+    },
+    currentScrollHeight() {
+        return Math.max(
+            document.documentElement?.scrollHeight || 0,
+            document.body?.scrollHeight || 0
+        );
+    },
+    async restoreScrollAfterPrepend(beforeTop, beforeHeight) {
+        await this.$nextTick();
+        const delta = this.currentScrollHeight() - beforeHeight;
+        if (delta <= 0) return;
+        const targets = new Set([document.scrollingElement, document.documentElement, document.body].filter(Boolean));
+        targets.forEach((el) => {
+            el.scrollTop = Math.max(0, beforeTop) + delta;
+        });
+    },
+
+    // 兼容旧调用：读取当前页数据（整页替换）
+    async fetchFileList() {
+        await this.loadListWindow({ page: this.currentPage || 1 });
+    },
+
+    // 刷新文件列表（回收站模式下走回收站接口）
     async refreshFileList() {
-        // v2.8.7：回收站模式下刷新 → 走回收站接口（同样带全部筛选 / 搜索条件联合查询）
         if (this.trashMode) {
-            await this.enterTrashMode(true);
+            // v3.0.0（R12）：回收站刷新保持当前页码（服务端分页后按页重拉）
+            await this.enterTrashMode(true, this.currentPage || 1);
             return;
         }
         this.refreshLoading = true;
-        this.loading = true;
         try {
-            // 传递标签参数和筛选参数到后端
-            const success = await fileManager.refreshFileList(
-                this.currentPath, 
-                this.searchKeywords,
-                this.searchIncludeTags,
-                this.searchExcludeTags,
-                this.filters,
-                this.recursiveSearchResults,
-                this.searchType,
-                this.isAdminRole ? this.userFilter : ''
-            );
-            if (success) {
-                await this.fetchFileList();
-            } else {
-                throw new Error('Refresh failed');
-            }
-        } catch (error) {
-            // 认证失败由 fetchWithAuth 统一处理跳转，不重复提示
-            if (!error.message?.includes('Unauthorized') && this.$store.state.adminLoggedIn) {
-                console.error('Error refreshing file list:', error);
-                this.$message.error(this.$t('dashboard.refreshFailed'));
-            }
+            /*
+             * v3.0.0 修复「刷新按钮加载不出最新文件」：
+             *   ① 先清掉可能卡住的 listLoading 标记（旧实现会在这里被静默 return）；
+             *   ② force 进入 + cache:'no-store'，强制向服务端要最新列表；
+             *   ③ 顺带刷新「目录导航」的候选目录，新目录也能立刻出现。
+             */
+            this.listLoading = false;
+            await this.loadListWindow({ page: 1, force: true });
+            this.loadAllFolders().catch(() => undefined);
         } finally {
             this.refreshLoading = false;
-            this.loading = false;
         }
     },
-    // 刷新本地文件列表
+
+    // 刷新本地文件列表（变更后重新拉当前页）
     async refreshLocalFileList() {
         this.refreshLoading = true;
-        this.loading = true;
         try {
-            await this.fetchFileList();
-        } catch (error) {
-            console.error('Error refreshing local file list:', error);
-            this.$message.error(this.$t('dashboard.refreshFailed'));
+            await this.loadListWindow({ page: this.currentPage || 1 });
         } finally {
             this.refreshLoading = false;
-            this.loading = false;
         }
     },
+
+    /**
+     * v3.0.0：加载更多 —— 把下一页追加到当前列表（不翻页、不改当前页码）。
+     * 与滚动哨兵共用这一个函数；没有更多时直接返回。
+     * @param {boolean} auto 由 IntersectionObserver 自动触发（不弹提示）
+     */
+    async loadMoreData(auto = false) {
+        if (!this.hasMoreRows || this.listLoading) return;
+        const beforeCount = this.tableData.length;
+        await this.loadListWindow({ append: true });
+        const added = Math.max(0, this.tableData.length - beforeCount);
+        if (!auto && added === 0) this.$message.info(this.$t('dashboard.loadMoreFailed'));
+    },
+
+    /** v3.0.0：向上滚到顶时补载上一页（结果 unshift 到列表头，滚动位置不跳） */
+    async loadPreviousPage() {
+        if (this.fileWindowStart <= 0 || this.listLoading) return;
+        await this.loadListWindow({ prepend: true });
+    },
+
+    /** 翻页：用该页数据整页替换列表 */
+    handlePageChange(page) {
+        if (page === this.currentPage && this.tableData.length > 0) return;
+        this.loadListWindow({ page });
+    },
+
+    /** v3.0.0：滚动哨兵（底部追加 / 顶部补载） */
+    setupListObservers() {
+        if (typeof IntersectionObserver === 'undefined') return;
+        this.teardownListObservers();
+        const options = { root: null, rootMargin: '160px 0px', threshold: 0 };
+        /*
+         * v3.0.0：底部哨兵的「滚动到底自动追加」已按需求移除 ——
+         * 拉到底部也不会自动加载，「加载更多」按钮必须手动点击，点一次加载一页，
+         * 不点击就永远不加载；翻页按钮（el-pagination）不受影响，照常整页替换。
+         * v3.0.0（R9）：顶部哨兵的「往上滚自动补载前面的页」同样移除 ——
+         * 翻到非第一页后往回滚动时不再自动加载前三页 / 上一页，加载一律只认「加载更多」按钮
+         * （loadPreviousPage 函数保留但不再有自动触发入口）。
+         */
+    },
+    teardownListObservers() {
+        if (this.bottomObserver) {
+            this.bottomObserver.disconnect();
+            this.bottomObserver = null;
+        }
+        if (this.topObserver) {
+            this.topObserver.disconnect();
+            this.topObserver = null;
+        }
+    },
+
+    /* ==========================================================================
+     * v3.0.0 多实例
+     * ========================================================================== */
+
+    /** GET /api/instances —— 当前用户相关实例（默认实例不在列表里） */
+    async fetchInstances() {
+        try {
+            const res = await fetchWithAuth('/api/instances', { method: 'GET' });
+            if (!res.ok) return;
+            const list = await res.json();
+            const items = Array.isArray(list) ? list : [];
+            // v3.0.0：按创建序号 index（1-based）升序；缺失时回落到创建时间
+            this.instances = items.slice().sort((a, b) => {
+                const ia = Number(a?.index) || 0;
+                const ib = Number(b?.index) || 0;
+                if (ia !== ib) return ia - ib;
+                const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+                const tb = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+                return ta - tb;
+            });
+            // 本地缓存的实例已被删除时回落到默认实例
+            if (this.instanceId && !this.instances.some((i) => String(i.id) === String(this.instanceId))) {
+                this.applyInstance('');
+            }
+        } catch (e) {
+            this.instances = [];
+        }
+    },
+
+    /** v3.0.0：实例序号（后端 index 为 1-based；缺省按列表顺序） */
+    instanceSeqOf(ins) {
+        const idx = Number(ins?.index);
+        if (Number.isFinite(idx) && idx > 0) return idx;
+        const pos = this.orderedInstances.findIndex((i) => String(i.id) === String(ins?.id));
+        return pos >= 0 ? pos + 1 : 0;
+    },
+
+    /**
+     * v3.0.0：打开居中的「切换实例」弹窗（入口在页面切换弹窗列表尾部）。
+     * v3.0.0（R17）：页面切换已成弹窗，收起来这件事交给 DashboardTabs 通过插槽传进来的 close ——
+     * 不再去 DOM 里模拟点击 / mouseleave（那套依赖已经删掉的下拉结构）。
+     */
+    openInstanceDialog(closeFn) {
+        this.showInstanceDialog = true;
+        if (typeof closeFn === 'function') closeFn();
+    },
+    /** v3.0.0（R17）：页面切换弹窗里的「切换实例」条目 —— 先收起页面弹窗，再开实例弹窗 */
+    openInstanceFromPageSwitch(closeFn) {
+        this.openInstanceDialog(closeFn);
+    },
+    /**
+     * v3.0.0：实例管理 —— 新标签打开「用户管理 · 该账户的实例管理」。
+     * 说明：本工程用户编辑页的真实路由是 /customerConfig/edit/:id（:id 为账户主键），
+     * 没有 /user-edit，因此这里先按当前登录名在 /api/manage/users 里定位主键再打开；
+     * 定位不到时退回用户管理列表，避免打开 404 页。
+     */
+    async openInstanceManagement() {
+        const username = this.$store.getters.sessionUser || '';
+        let url = '/customerConfig';
+        try {
+            const res = await fetchWithAuth('/api/manage/users', { method: 'GET' });
+            const list = res.ok ? await res.json() : [];
+            const hit = (Array.isArray(list) ? list : []).find((u) => u && u.username === username);
+            if (hit?.id) url = `/customerConfig/edit/${encodeURIComponent(hit.id)}?anchor=instances`;
+        } catch (e) {
+            /* 取不到主键就退回用户管理列表 */
+        }
+        window.open(url, '_blank', 'noopener');
+    },
+    /** v3.0.0：弹窗里选择某个实例（切换后整体重载：清筛选 / 搜索 / 回根目录 / 重拉列表与标签） */
+    switchInstanceTo(id) {
+        this.showInstanceDialog = false;
+        this.applyInstance(id == null ? '' : id);
+    },
+
+    /**
+     * 切换实例：写入 localStorage → 清空筛选 / 搜索 / 回到根目录 → 重新拉列表与标签
+     */
+    applyInstance(nextId) {
+        const next = String(nextId || '');
+        if (next === this.instanceId) return;
+        this.instanceId = next;
+        try {
+            localStorage.setItem(INSTANCE_STORAGE_KEY, next);
+        } catch (e) {
+            /* 忽略存储异常 */
+        }
+        // 整体重载
+        this.tempSearch = '';
+        this.search = '';
+        this.searchKeywords = '';
+        this.searchIncludeTags = '';
+        this.searchExcludeTags = '';
+        this.isSearchMode = false;
+        this.tagModeActive = false;
+        this.clearSelection();
+        this.filters = createEmptyFilters();
+        this.tagDraft = [];
+        this.tagModeDraft = 'and';
+        this.currentPath = '';
+        this.currentPage = 1;
+        this.listTotal = 0;
+        this.fileWindowStart = 0;
+        this.fileWindowCount = 0;
+        this.directories = [];
+        // v3.0.0：目录下拉的「全局」候选属于旧实例，一并清掉
+        this.allFolders = [];
+        this.dirScope = 'current';
+        this.dirSearch = '';
+        this.tableData = [];
+        this.refreshFileList();
+        this.loadAllTags();
+    },
+
+    /* ==========================================================================
+     * v3.0.0 标签管理模式
+     * ========================================================================== */
+
+    toggleTagMode() {
+        if (this.tagModeActive) {
+            this.exitTagMode();
+        } else {
+            this.enterTagMode();
+        }
+    },
+    enterTagMode() {
+        if (this.tagModeActive) return;
+        this.tagModeActive = true;
+        this.clearSelection();
+    },
+    exitTagMode() {
+        if (!this.tagModeActive) return;
+        this.tagModeActive = false;
+        // 标签改名 / 删除后筛选候选要同步
+        this.loadAllTags();
+    },
+    /** 标签管理模式里改动了标签（改名 / 合并 / 删除 / 加密）→ 同步候选并重载列表 */
+    handleTagModeChanged() {
+        this.loadAllTags();
+    },
+
+    /* ==========================================================================
+     * v3.0.0 目录属性（点文件夹名称打开）
+     * ========================================================================== */
+
+    openFolderProps(item) {
+        if (!this.hasFolderPropsDialog) {
+            this.$message.info(this.$t('fileManager.folderPropsUnavailable'));
+            return;
+        }
+        const path = String(item?.name || '').replace(/\/+$/, '');
+        this.folderPropsTarget = {
+            path,
+            name: path.split('/').filter(Boolean).pop() || path
+        };
+        this.showFolderProps = true;
+    },
+    handleFolderPropsSaved() {
+        this.showFolderProps = false;
+        // 目录名 / 属性变化后刷新当前列表
+        this.loadListWindow({ page: this.currentPage || 1 });
+    },
+
+    /* ==========================================================================
+     * v3.0.0 批量：编辑原名 / 限时 / 重定向
+     * ========================================================================== */
+
+    openBatchNameDialog() {
+        if (!this.selectedFileIds.length) {
+            this.$message.warning(this.$t('dashboard.selectFilesFirst'));
+            return;
+        }
+        this.showBatchNameDialog = true;
+    },
+    openBatchExpiryDialog(command) {
+        if (!this.selectedFileIds.length) {
+            this.$message.warning(this.$t('dashboard.selectFilesFirst'));
+            return;
+        }
+        // v3.0.0：限时 / 重定向 / 加密 三个按钮共用同一个处理页，只决定默认页签
+        this.batchExpiryMode = ['redirect', 'password'].includes(command) ? command : 'expiry';
+        this.showBatchExpiryDialog = true;
+    },
+    /** 批量接口完成后：刷新列表（原文名 / 限时 / 重定向 / 加密都会影响展示） */
+    handleBatchMutated() {
+        this.loadListWindow({ page: this.currentPage || 1 });
+    },
+
     // Tag management methods
     handleTagManagement(fileId) {
         this.currentTagFile = fileId;
@@ -3102,7 +4756,7 @@ methods: {
         try {
             // 调用 list API 递归获取文件夹内所有文件
             const response = await fetchWithAuth(
-                `/api/manage/list?dir=${encodeURIComponent(folderName)}&recursive=true&count=-1`,
+                `/api/manage/list?dir=${encodeURIComponent(folderName)}&recursive=true&count=-1&instanceId=${encodeURIComponent(this.instanceId || '')}`,
                 { method: 'GET' }
             );
             
@@ -3149,6 +4803,11 @@ mounted() {
     window.addEventListener('resize', this.updateResponsivePageSize);
     // v2.8.5：滚动（含列表内部滚动，capture 捕获）时收起悬停预览浮层
     window.addEventListener('scroll', this.closeHoverPreview, true);
+    // v3.0.0（R4）：移动端第二行工具栏吸顶状态（背景随吸顶态切换）
+    window.addEventListener('scroll', this.handleBreadcrumbScroll, { passive: true, capture: true });
+    // v3.0.0（R4/R5）：顶栏显隐切换后立即重算吸顶位置（保证第二行与顶栏同进同出、不滞后一帧）
+    window.addEventListener('goimgbed:header-toggle', this.handleHeaderToggle);
+    this.$nextTick(this.updateBreadcrumbStuck);
 
     /*
      * 其他页面通过 URL query / sessionStorage 指定进入本页时的初始视图：
@@ -3169,9 +4828,9 @@ mounted() {
         }
         this.currentPath = '';
         this.filters.tagNames = [initialTag];
-        this.filters.tagMode = 'or';
+        this.filters.tagMode = 'and';
         this.tagDraft = [initialTag];
-        this.tagModeDraft = 'or';
+        this.tagModeDraft = 'and';
     } else if (queryFolder !== undefined && queryFolder !== null) {
         // 文件详情「文件分类」新标签页跳转（?folder=…）
         const folder = String(queryFolder);
@@ -3222,11 +4881,46 @@ mounted() {
 
     // 上传用户筛选下拉（仅管理员）
     this.fetchUserOptions();
+
+    // v3.0.0：实例列表（只有默认实例时不显示下拉框）
+    this.fetchInstances();
+
+    /*
+     * v3.0.0：移动端返回键接管（进入子目录后按返回 = 回上一级目录）。
+     * 触屏判定用 matchMedia('(hover:none)')，桌面端完全不启用。
+     */
+    this.isTouchNav = this.isTouchViewport();
+    if (this.isTouchNav) {
+        this.__popStateHandler = this.handleMobilePopState.bind(this);
+        window.addEventListener('popstate', this.__popStateHandler);
+        this.setupBodyMutationWatch();
+    }
+
+    // v3.0.0：滚动哨兵（底部追加下一页 / 顶部补载上一页）
+    this.$nextTick(() => this.setupListObservers());
 },
 beforeUnmount() {
     this.cancelSearchIconPress();
+    this.clearDirHoverTimer();
+    this.teardownListObservers();
     window.removeEventListener('resize', this.updateResponsivePageSize);
     window.removeEventListener('scroll', this.closeHoverPreview, true);
+    // v3.0.0（R4）：移除第二行工具栏吸顶状态监听
+    window.removeEventListener('scroll', this.handleBreadcrumbScroll, true);
+    window.removeEventListener('goimgbed:header-toggle', this.handleHeaderToggle);
+    if (this.breadcrumbStuckFrame) {
+        cancelAnimationFrame(this.breadcrumbStuckFrame);
+        this.breadcrumbStuckFrame = null;
+    }
+    // v3.0.0：移除移动端返回键（回上一级目录）监听
+    if (this.__popStateHandler) {
+        window.removeEventListener('popstate', this.__popStateHandler);
+        this.__popStateHandler = null;
+    }
+    if (this.__bodyObserver) {
+        this.__bodyObserver.disconnect();
+        this.__bodyObserver = null;
+    }
 }
 
 };
@@ -3259,9 +4953,36 @@ beforeUnmount() {
     color: var(--primary-color-accent, var(--el-color-primary));
 }
 
-/* v2.9.0：「刷新 / 回收站 / 声音」改为与顶栏「筛选」按钮完全一致的图标按钮 ——
-   透明底、无边框、32×32、未激活为次要色、hover / 激活为主题色（PC 与移动端同一套）。 */
-.refresh-files-btn {
+/*
+ * v3.0.0：「标签管理 / 刷新 / 回收站 / 声音」与顶栏「筛选」按钮完全一致 ——
+ * 同尺寸（--admin-header-action-size）、同内边距（0）、同圆角（8px）、
+ * 同图标字号（--admin-header-action-font-size，与筛选按钮的 20px 对齐）。
+ */
+/* 刷新 / 回收站 / 声音 三个按钮的容器：桌面端同样保持 6px 组内间距（与 search-area 的 gap 一致） */
+.dashboard-header-buttons {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+/*
+ * v3.0.0：「搜索 / 筛选 / 标签管理 / 刷新 / 回收站 / 声音 / 链接格式」按钮条。
+ * 桌面端 display:contents —— 按钮直接成为 .search-area 的 flex 子项，间距与其他按钮一致（6px）；
+ * 移动端改为单行横向滚动（见下方断点：左侧页面切换、右侧更多菜单固定不滑）。
+ */
+.search-actions {
+    display: contents;
+}
+/* v3.0.0：链接格式按钮是原生 button，与工具栏其它图标按钮同尺寸、同圆角、同悬停色 */
+.link-format-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    cursor: pointer;
+}
+.refresh-files-btn,
+.tag-mode-trigger,
+.link-format-btn {
     width: var(--admin-header-action-size, 32px);
     height: var(--admin-header-action-size, 32px);
     min-width: var(--admin-header-action-size, 32px);
@@ -3271,27 +4992,77 @@ beforeUnmount() {
     border-radius: 8px;
     background: transparent !important;
     color: var(--admin-theme-toggle-color, var(--el-text-color-secondary));
-    font-size: var(--admin-header-action-font-size, 18px);
+    font-size: var(--admin-header-action-font-size, 20px);
+    line-height: 1;
     box-shadow: none !important;
     transition: color 0.2s ease;
 }
+/* 标签管理模式按钮：激活态用主题色 + 右上角圆点提示 */
+.tag-mode-trigger {
+    position: relative;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    /* v3.0.0（R7）：字号比同排图标按钮再大一点点 */
+    font-size: calc(var(--admin-header-action-font-size, 20px) + 2px) !important;
+}
+.tag-mode-trigger:hover .header-icon,
+.tag-mode-trigger.is-active .header-icon {
+    color: var(--primary-color-accent, var(--el-color-primary));
+}
+/* v3.0.0（R7）：提示点放大并改为橙红色 */
+.tag-mode-dot {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #ff5a2b;
+    box-shadow: 0 0 0 1.5px var(--glass-bg);
+    pointer-events: none;
+}
+/* v3.0.0：移动端「标签管理」已从更多菜单移到工具栏图标按钮，不再隐藏 */
 .refresh-files-btn:hover,
 .refresh-files-btn:focus,
-.refresh-files-btn:focus-visible {
+.refresh-files-btn:focus-visible,
+.tag-mode-trigger:focus,
+.tag-mode-trigger:focus-visible,
+.link-format-btn:hover,
+.link-format-btn:focus,
+.link-format-btn:focus-visible {
     border: 0 !important;
     background: transparent !important;
     color: var(--primary-color-accent, var(--el-color-primary));
     box-shadow: none !important;
+    outline: none;
 }
 .refresh-files-btn.is-active {
     color: var(--primary-color-accent, var(--el-color-primary));
 }
 .refresh-files-icon {
+    /* v3.0.0：跟随按钮字号（与「筛选」图标一致），不再单独写死 13px */
     font-size: 1em;
+    line-height: 1;
 }
 /* v2.8.9：移动端搜索按钮 —— 样式与筛选按钮一致的图标触发器；PC 端不显示 */
 .search-area .mobile-search-trigger {
     display: none;
+    /* v3.0.0：相对定位，承载「搜索框有内容」提醒角标 */
+    position: relative;
+}
+/* v3.0.0：搜索框存在内容时的小红点角标（仅移动端搜索按钮上显示） */
+.search-area .mobile-search-dot {
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--el-color-danger, #f56c6c);
+    border: 1.5px solid var(--bg-color, #fff);
+    pointer-events: none;
 }
 @media (max-width: 1023px) {
     .search-area .mobile-search-trigger {
@@ -3305,18 +5076,29 @@ beforeUnmount() {
     .search-area .search-card {
         display: none;
     }
+    /*
+     * v3.0.0（R5）：展开时不再挤进顶行（会把按钮条挤成两行），改为悬浮在顶栏正下方 ——
+     * 顶行始终是「页面切换 + 可滑动按钮条 + 更多菜单」单行。
+     */
     .search-area.mobile-search-open .search-card {
         display: flex;
-        flex: 1 1 auto;
+        position: absolute;
+        left: 6px;
+        right: 6px;
+        top: calc(100% + 4px);
+        z-index: 5;
+        flex: 0 0 auto;
         min-width: 0;
+        padding: 4px 6px;
+        border-radius: 12px;
+        background: var(--glass-bg);
+        border: 1px solid var(--glass-border);
+        box-shadow: 0 6px 24px rgba(0, 0, 0, 0.08);
+        backdrop-filter: blur(var(--glass-backdrop-blur)) saturate(1.4);
+        -webkit-backdrop-filter: blur(var(--glass-backdrop-blur)) saturate(1.4);
     }
 }
-/* v2.8.9：移动端 / 平板（≤1024）声音切换已收进「更多菜单」，顶栏按钮隐藏 */
-@media (max-width: 1024px) {
-    .mute-toggle-btn {
-        display: none;
-    }
-}
+/* v3.0.0：移动端 / 平板（≤1024）声音切换已从更多菜单移到工具栏图标按钮，不再隐藏 */
 /* 回收站模式提示条（v2.8.6：底色加深，暗色/亮色下都足够醒目） */
 .trash-banner {
     display: flex;
@@ -3337,14 +5119,37 @@ beforeUnmount() {
 .trash-banner-text {
     line-height: 1.4;
 }
-.refresh-files-icon {
-    font-size: 13px;
-}
-/* 回收站按钮：激活态高亮（与标签筛选按钮同风格） */
+/* 回收站按钮：激活态高亮（v3.0.0 R7 改版）——
+   日间模式下原来是「透明底 + 白图标」，在白底工具栏上几乎看不到；
+   现在统一用「淡红底 + 红色图标 + 红边」表示回收站态，暗色模式下同样清晰。 */
 .trash-btn.is-active {
-    color: #fff;
-    background: var(--el-color-danger);
-    border-color: var(--el-color-danger);
+    color: var(--el-color-danger) !important;
+    background: color-mix(in srgb, var(--el-color-danger) 14%, var(--glass-bg)) !important;
+    border: 1px solid color-mix(in srgb, var(--el-color-danger) 42%, transparent) !important;
+    border-radius: 8px;
+}
+html.dark .trash-btn.is-active,
+.dark .trash-btn.is-active {
+    color: #ff9a9a !important;
+    background: color-mix(in srgb, var(--el-color-danger) 26%, transparent) !important;
+    border-color: color-mix(in srgb, var(--el-color-danger) 55%, transparent) !important;
+}
+/* 回收站提示点：进入回收站模式时显示在按钮右上角（橙红） */
+/* v3.0.0（R8）：点用 absolute 定位，锚点是最近 positioned 祖先 ——
+   按钮自身必须是 relative，否则会飘到顶栏右上角 */
+.trash-btn {
+    position: relative;
+}
+.trash-mode-dot {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #ff5a2b;
+    box-shadow: 0 0 0 1.5px var(--glass-bg);
+    pointer-events: none;
 }
 
 /* v2.8.7b：声音切换按钮 —— 默认（静音）态与左侧回收站按钮默认样式完全一致；
@@ -3473,6 +5278,11 @@ beforeUnmount() {
 }
 
 
+/* v3.0.0（R4）：吸顶占位容器 —— flow-root 让内部 margin 计入自身高度，吸顶时高度可精确保留 */
+.breadcrumb-sticky-wrap {
+    display: flow-root;
+}
+
 /* 面包屑容器，包含路径和文件数量 */
 .breadcrumb-container {
     display: flex;
@@ -3480,8 +5290,22 @@ beforeUnmount() {
     justify-content: flex-start;
     gap: 12px;
     padding: 0 10px; /* 与 .content 的 padding 对齐 */
-    margin-top: 4px; /* v2.8.0：与顶行距离再调小一点（原 6px） */
-    margin-bottom: 4px; /* 与下方内容的间距 */
+    margin-top: 2px; /* v3.0.0（R9）：与顶行的间隔减半（原 4px） */
+    margin-bottom: 2px; /* v3.0.0（R9）：与下方文件区的间隔减半（原 4px） */
+}
+
+/*
+ * v3.0.0（R5）：横向滑动区 —— 除「数量统计」徽章外的整行按钮都放在这里。
+ * 桌面端 flex:1 撑满，面包屑右组用 margin-left:auto 照旧贴右，徽章作为独立兄弟贴最右侧；
+ * 移动端由本层承担横向滚动，徽章留在滚动区外，因此永远固定在最右侧。
+ */
+.breadcrumb-scroll-area {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 8px;
+    flex: 1 1 auto;
+    min-width: 0;
 }
 
 .breadcrumb-view-toggle {
@@ -3538,9 +5362,10 @@ beforeUnmount() {
     transform: translateX(30px);
 }
 
-/* v2.9.0：搜索结果展示切换（展示文件夹 / 全部展开）—— 与视图切换同款滑块 */
+/* v2.9.0：搜索结果展示切换（展示文件夹 / 全部展开）—— 与视图切换同款滑块
+   v3.0.0：去掉 6px 额外左边距（第二行间距统一交给 .breadcrumb-container 的 gap） */
 .search-scope-toggle {
-    margin-left: 6px;
+    margin-left: 0;
 }
 .search-scope-toggle.is-expanded::before {
     transform: translateX(30px);
@@ -3629,26 +5454,67 @@ beforeUnmount() {
 }
 
 @media (max-width: 768px) {
+    /*
+     * v3.0.0（R5）：移动端第二行改为「静态常显背框」——
+     * 不再随滚动吸附 / 切换 fixed，默认状态就是带玻璃背框的一行；
+     * 背框宽度与第一行顶栏背框完全一致（顶栏 gutter=4px，主内容区左右 padding=10px，
+     * 因此这里左右各外扩 6px → 100% - 8px，与顶栏同宽）。
+     */
     .breadcrumb-container {
         flex-direction: row;
         align-items: center;
         gap: 8px;
-        padding: 0 5px;
-        margin-top: 2px; /* v2.8.0：与顶行距离再调小一点（原 4px） */
-        margin-bottom: 2px;
-        /* v2.8.7：移动端一行放不下所有按钮 → 单行 + 左右滑动（隐藏滚动条，手势滑动） */
+        /* v3.0.0（R7）：上下内边距 4px、左右 3px；外层圆角收到 5px */
+        padding: 4px 3px;
+        /* v3.0.0（R11c）：与顶栏的间隔 8px，与下方文件区仍隔 10px */
+        margin-top: 8px;
+        margin-bottom: 10px;
+        margin-left: -6px;
+        margin-right: -6px;
+        border-radius: 5px;
+        background: var(--glass-bg);
+        border: 1px solid var(--glass-border);
+        box-shadow: 0 6px 24px rgba(0, 0, 0, 0.08);
+        backdrop-filter: blur(var(--glass-backdrop-blur)) saturate(1.4);
+        -webkit-backdrop-filter: blur(var(--glass-backdrop-blur)) saturate(1.4);
+        flex-wrap: nowrap;
+        overflow: visible;
+    }
+    /*
+     * v3.0.0（R8）：移动端第二行恢复吸附（JS 切 fixed，见 updateBreadcrumbStuck）——
+     *   · is-stuck：加过渡与更明显的投影（浮在内容上方）；
+     *   · is-stuck + is-header-hidden：随顶栏一起上滑滑出屏幕（top 已被 JS 同步为 0）。
+     */
+    .breadcrumb-container.is-stuck {
+        transition: transform 0.24s ease;
+        box-shadow: 0 10px 28px rgba(0, 0, 0, 0.14);
+    }
+    .breadcrumb-container.is-stuck.is-header-hidden {
+        transform: translateY(calc(-100% - 12px));
+    }
+    /* 除「数量统计」外的所有按钮：单行横向滑动（隐藏滚动条，手势滑动） */
+    .breadcrumb-scroll-area {
+        flex: 1 1 auto;
+        min-width: 0;
         flex-wrap: nowrap;
         overflow-x: auto;
         overflow-y: hidden;
         -webkit-overflow-scrolling: touch;
+        overscroll-behavior-x: contain;
         scrollbar-width: none;
     }
-    .breadcrumb-container::-webkit-scrollbar {
+    /* v3.0.0（R5）：原「滚动吸附 / 随顶栏隐藏」的一整套 fixed 样式已移除 ——
+       第二行现在恒为静态背框，跟随页面正常滚动（详见上方 .breadcrumb-container 注释）。 */
+    .breadcrumb-scroll-area::-webkit-scrollbar {
         display: none;
     }
     /* 滑动行内的按钮一律不收缩，保证横向可滑出完整内容 */
-    .breadcrumb-container > * {
+    .breadcrumb-scroll-area > * {
         flex-shrink: 0;
+    }
+    /* 数量统计：留在滚动区外，固定在最右侧 */
+    .breadcrumb-container > .stats-badge {
+        flex: 0 0 auto;
     }
     .breadcrumb-view-toggle {
         height: 28px;
@@ -3661,6 +5527,11 @@ beforeUnmount() {
         border-radius: 6px;
     }
     .breadcrumb-view-toggle.is-list::before {
+        transform: translateX(26px);
+    }
+    /* v3.0.0（R5）：移动端滑块步长与 is-list 一致（26px = 24px 按钮 + 2px 间隔），
+       此前漏了这条覆盖，仍按桌面 30px 平移 → 选中「直接展示文件」时背框整体偏右 4px */
+    .search-scope-toggle.is-expanded::before {
         transform: translateX(26px);
     }
     .breadcrumb-view-button {
@@ -3702,6 +5573,12 @@ beforeUnmount() {
 }
 
 .breadcrumb-right-group .stats-badge {
+    margin-left: 0;
+}
+
+/* v3.0.0（R5）：数量统计徽章已移出右侧按钮组，作为第二行容器的独立末位子项 ——
+   去掉它自带的 margin-left:auto（贴右交给 .breadcrumb-scroll-area 的 flex:1 完成） */
+.breadcrumb-container > .stats-badge {
     margin-left: 0;
 }
 
@@ -3747,18 +5624,57 @@ beforeUnmount() {
     margin-right: 5px;
 }
 
-/* v2.9.0：移动端顶行「搜索 / 筛选 / 刷新 / 回收站 / 更多」内边距与外边距统一收窄，整组靠右 */
+/* v2.9.0 / v3.0.0：移动端顶行按钮（搜索 / 筛选 / 标签管理 / 刷新 / 回收站 / 声音 / 链接格式）
+   全部收进 .search-actions 按钮条 —— 单行横向滚动、整组靠右、尺寸与间距统一 */
 @media (max-width: 1023px) {
-    .refresh-files-btn {
+    /*
+     * 按钮条：flex 收缩 + overflow-x:auto —— 宽度不够时可以在条内左右滑动查看，
+     * 左侧「页面切换」与右侧「更多菜单」是它的兄弟节点，不参与滚动，位置固定。
+     */
+    .search-actions {
+        order: 1;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        /* v3.0.0（R5）：撑满「页面切换」与「更多菜单」之间的空间并在此区间内横向滑动 */
+        flex: 1 1 auto;
+        min-width: 0;
+        overflow-x: auto;
+        overflow-y: hidden;
+        -webkit-overflow-scrolling: touch;
+        overscroll-behavior-x: contain;
+        scrollbar-width: none;
+    }
+    /* v3.0.0（R5）：按钮条内固定顺序 —— 搜索 → 筛选 → 标签管理 → 刷新/回收站/声音 → 链接格式
+       （之前依赖 order 兜底规则，链接格式会被排到「声音切换」前面） */
+    .search-actions .mobile-search-trigger { order: 1; }
+    .search-actions .filter-dialog-trigger { order: 2; }
+    .search-actions .tag-mode-trigger { order: 3; }
+    .search-actions .dashboard-header-buttons { order: 4; }
+    .search-actions .link-format-btn { order: 5; }
+    .search-actions::-webkit-scrollbar {
+        display: none;
+    }
+    .search-actions > * {
+        flex: 0 0 auto;
+        margin-left: 0 !important;
+        margin-right: 0 !important;
+    }
+    .refresh-files-btn,
+    .link-format-btn {
         margin: 0;
         padding: 0;
     }
     .search-area .mobile-search-trigger,
-    .filter-dialog-trigger {
+    .filter-dialog-trigger,
+    .tag-mode-trigger,
+    .link-format-btn,
+    .refresh-files-btn {
         padding: 0 !important;
         margin: 0 !important;
-        width: var(--admin-header-action-size, 30px) !important;
-        height: var(--admin-header-action-size, 30px) !important;
+        width: var(--admin-header-action-size, 32px) !important;
+        height: var(--admin-header-action-size, 32px) !important;
+        min-width: var(--admin-header-action-size, 32px) !important;
     }
 }
 
@@ -3778,6 +5694,13 @@ beforeUnmount() {
         margin-right: 0;
     }
 
+    /* v3.0.0（R9）：移动端「历史记录」与「数量统计」等高（28px）——
+       之前基础样式 32px 只在 .new-folder-btn 上被覆盖，历史记录仍高出一截 */
+    .history-btn {
+        height: 28px;
+        padding: 0 10px;
+    }
+
     /* v2.7.0：文件数量统计徽章圆角/高度与「新建目录」按钮一致 */
     .stats-badge {
         height: 28px;
@@ -3785,27 +5708,53 @@ beforeUnmount() {
         border-radius: var(--el-border-radius-base);
         box-sizing: border-box;
     }
+
+    /* v3.0.0（R8）：移动端「新建目录 / 登记文件」与徽章、历史记录等高（28px），
+       之前保持桌面 32px，在第二行里明显高出一截 */
+    .new-folder-btn {
+        height: 28px;
+        padding: 0 8px;
+        border-radius: var(--el-border-radius-base);
+    }
+    .new-folder-btn .new-folder-icon {
+        margin-right: 4px;
+    }
 }
 
 .stats-badge {
     display: inline-flex;
     align-items: center;
     gap: 5px;
+    font-family: inherit;
     font-size: 12px;
     font-weight: 500;
     color: var(--el-text-color-secondary);
     background: var(--glass-bg);
-    padding: 4px 12px;
+    /* v3.0.0（R5）：高度与内边距对齐「历史记录」按钮（32px / 0 12px），两者并排同高 */
+    height: 32px;
+    padding: 0 12px;
+    box-sizing: border-box;
     border-radius: 12px;
     border: 1px solid var(--glass-border);
     box-shadow: none;
-    transition: background-color 0.2s ease, border-color 0.2s ease;
+    transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
     white-space: nowrap;
     flex-shrink: 0;
     margin-left: auto;
+    /* v3.0.0（R7）：现在是「一键复位」按钮 */
+    cursor: pointer;
 }
 .stats-badge:hover {
     border-color: var(--glass-border-hover);
+}
+/* 有搜索 / 筛选条件时高亮，提示「点一下即可复位」 */
+.stats-badge.is-active {
+    color: var(--primary-color-accent, var(--el-color-primary));
+    border-color: color-mix(in srgb, var(--primary-color) 45%, transparent);
+    background: color-mix(in srgb, var(--primary-color) 10%, var(--glass-bg));
+}
+.stats-badge.is-active:hover {
+    background: color-mix(in srgb, var(--primary-color) 18%, var(--glass-bg));
 }
 
 .stats-badge-icon {
@@ -3816,13 +5765,41 @@ beforeUnmount() {
 @media (max-width: 768px) {
     .stats-badge {
         font-size: 10px;
-        padding: 2px 6px;
+        /*
+         * v3.0.0（R12）：之前这里只改了字号和内边距，高度仍被后面的基础样式
+         * （32px）盖回去，「数量统计」比旁边的「历史记录」（28px）高出一截。
+         * 这里显式定高，与移动端 .history-btn / .new-folder-btn 的 28px 对齐。
+         */
+        height: 28px;
+        padding: 0 8px;
+        box-sizing: border-box;
         border-radius: 8px;
     }
     
     .stats-badge-icon {
         font-size: 9px;
     }
+    /* v3.0.0（R7）：移动端「筛选」按钮上的条件数量角标调小（原尺寸盖住了图标） */
+    .filter-badge :deep(.el-badge__content) {
+        height: 14px;
+        min-width: 14px;
+        padding: 0 3px;
+        font-size: 9px;
+        line-height: 14px;
+        border-radius: 7px;
+    }
+}
+/* v3.0.0（R7）：移动端搜索框展开时，第二行工具栏整行下移，给悬浮的搜索框让出位置 */
+@media (max-width: 1023px) {
+    .breadcrumb-sticky-wrap.is-search-open {
+        padding-top: 46px;
+    }
+}
+/* v3.0.0（R7）：目录导航悬停展开的包裹层 —— 保持原布局（不改变第二行间距） */
+.breadcrumb-dir-wrap {
+    display: flex;
+    align-items: center;
+    flex: 0 0 auto;
 }
 
 
@@ -4262,56 +6239,7 @@ beforeUnmount() {
     margin: 0 3px;
 }
 
-.breadcrumb {
-    height: 32px;
-    box-sizing: border-box;
-    display: flex;
-    align-items: center;
-    padding: 0 12px;
-    background-color: var(--glass-bg);
-    border: 1px solid var(--glass-border);
-    border-radius: 10px;
-    font-size: 0.95em;
-    box-shadow: none;
-    cursor: pointer;
-    transition: background-color 0.2s ease, border-color 0.2s ease;
-}
-.breadcrumb:hover {
-    border-color: var(--glass-border-hover);
-}
-
-.breadcrumb-home-icon {
-    font-size: 14px;
-    color: var(--el-text-color-secondary);
-    cursor: pointer;
-    transition: color 0.2s ease;
-}
-
-.breadcrumb-home-icon:hover {
-    color: var(--primary-color-accent);
-}
-
-:deep(.el-breadcrumb__item) {
-    cursor: pointer;
-    display: inline-flex;
-    align-items: center;
-    height: 100%;
-    line-height: 32px;
-}
-:deep(.el-breadcrumb),
-:deep(.el-breadcrumb__inner),
-:deep(.el-breadcrumb__separator) {
-    display: inline-flex;
-    align-items: center;
-    height: 100%;
-    line-height: 32px;
-}
-:deep(.el-breadcrumb__inner) {
-    cursor: pointer;
-}
-:deep(.el-breadcrumb__inner:hover) {
-    color: var(--primary-color-accent);
-}
+/* v3.0.0（R9）：桌面端面包屑已删除（并入目录导航按钮），相关样式一并移除 */
 
 /* 移动端目录触发按钮 */
 .mobile-directory-trigger {
@@ -4389,7 +6317,7 @@ beforeUnmount() {
     }
     
     .breadcrumb-container {
-        padding: 0;
+        /* v3.0.0（R7）：内边距由上方 768px 块统一控制（4px 3px），此处不再覆盖 */
         margin-left: 0;
         width: 100%;
         box-sizing: border-box;
@@ -4399,9 +6327,9 @@ beforeUnmount() {
         gap: 8px;
     }
 
-    /* 右侧按钮组：跟随单行滑动，不再换行 */
+    /* 右侧按钮组：跟随单行滑动，不再换行（v3.0.0：组内间距与外层 gap 一致 = 8px） */
     .breadcrumb-right-group {
-        gap: 6px;
+        gap: 8px;
         flex-wrap: nowrap;
         justify-content: flex-start;
     }
@@ -4466,4 +6394,534 @@ beforeUnmount() {
     margin-left: 16px;
 }
 
+
+/* ============================================================================
+ * v3.0.0 工具栏 / 第二行 / 目录下拉 / 实例下拉 / 滚动哨兵
+ * ========================================================================= */
+
+/* A2/A4：第二行（全选、视图切换、展示方式、目录、排序）按钮间距统一、圆角统一（6px） */
+.breadcrumb-container {
+    gap: 8px;
+}
+.breadcrumb-view-toggle,
+.breadcrumb-sort-button,
+.breadcrumb-dir-button {
+    border-radius: 6px;
+}
+.breadcrumb-view-button {
+    border-radius: 4px;
+}
+.breadcrumb-view-toggle::before {
+    border-radius: 4px;
+}
+.mobile-directory-trigger {
+    border-radius: 6px;
+}
+/* 同一行右侧的「新建目录 / 登记文件 / 历史记录 / 面包屑 / 数量徽章」圆角一并收到 6px */
+.breadcrumb-container .breadcrumb,
+.breadcrumb-container .new-folder-btn,
+.breadcrumb-container .record-file-btn,
+.breadcrumb-container .history-btn,
+.breadcrumb-container .stats-badge {
+    border-radius: 6px !important;
+}
+
+/* A1：移动端「新建目录 / 登记文件 / 历史记录」图标水平垂直居中 */
+@media (max-width: 768px) {
+    .breadcrumb-right-group .new-folder-btn,
+    .breadcrumb-right-group .record-file-btn,
+    .breadcrumb-right-group .history-btn {
+        width: 28px;
+        min-width: 28px;
+        height: 28px;
+        padding: 0;
+        margin: 0;
+        box-sizing: border-box;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        line-height: 1;
+        border-radius: 6px;
+    }
+    .breadcrumb-right-group .new-folder-btn :deep(span),
+    .breadcrumb-right-group .record-file-btn :deep(span),
+    .breadcrumb-right-group .history-btn :deep(span) {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0;
+        margin: 0;
+        padding: 0;
+        line-height: 1;
+        width: 1em;
+        height: 1em;
+    }
+    /* 关键：盖上前面「.new-folder-btn .new-folder-icon { margin-right: 5px }」的更高优先级，
+       否则图标会被右边距挤出中心 */
+    .breadcrumb-right-group .new-folder-btn .new-folder-icon,
+    .breadcrumb-right-group .record-file-btn .new-folder-icon,
+    .breadcrumb-right-group .history-btn .history-btn-icon {
+        margin: 0;
+        padding: 0;
+        width: 1em;
+        height: 1em;
+        font-size: 13px;
+        line-height: 1;
+        display: inline-block;
+    }
+
+    /*
+     * v3.0.0（第三轮）：移动端「新建目录 / 登记文件 / 历史记录」改为纯图标按钮。
+     * 上面那条 :deep(span) 的 display:inline-flex 优先级（3 个类）高于前面的
+     * .new-folder-text / .history-btn-text（1 个类）的 display:none，
+     * 结果文字没被真正隐藏 —— 按钮内部还占着 11×11 的空白块，图标也不居中。
+     * 这里在同层级用 !important 明确关掉文字。
+     */
+    .breadcrumb-right-group .new-folder-btn .new-folder-text,
+    .breadcrumb-right-group .record-file-btn .new-folder-text,
+    .breadcrumb-right-group .history-btn .history-btn-text {
+        display: none !important;
+    }
+}
+
+/* A6：目录导航下拉（与「排序」按钮同款：玻璃底 + 1px 边框 + 6px 圆角 + 次要色）
+   v3.0.0（R8）：桌面端也显示 —— 之前只有 ≤768px 才 display:block，
+   导致「悬停展开目录树下拉」在桌面端完全不出现（遗留问题根因）。 */
+.breadcrumb-dir-dropdown {
+    display: block;
+    flex: 0 0 auto;
+}
+.breadcrumb-dir-button {
+    height: 32px;
+    max-width: 42vw;
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 10px;
+    border: 1px solid var(--glass-border);
+    color: var(--el-text-color-secondary);
+    background: var(--glass-bg);
+    box-shadow: none;
+    cursor: pointer;
+    font-size: 12px;
+    transition: color 0.16s ease, background-color 0.2s ease, border-color 0.2s ease;
+}
+.breadcrumb-dir-button:hover,
+.breadcrumb-dir-button:focus-visible {
+    border-color: var(--glass-border-hover);
+    color: var(--primary-color-accent);
+    outline: none;
+}
+.breadcrumb-dir-icon {
+    flex: 0 0 auto;
+    font-size: 12px;
+    color: var(--primary-color-accent);
+}
+.breadcrumb-dir-text {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 500;
+}
+.breadcrumb-dir-arrow {
+    flex: 0 0 auto;
+    font-size: 8px;
+}
+.dir-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+}
+.dir-item-icon {
+    width: 12px;
+    font-size: 11px;
+    opacity: 0.7;
+}
+@media (max-width: 768px) {
+    .breadcrumb-dir-button {
+        height: 28px;
+        padding: 0 8px;
+    }
+}
+
+/* A3/G：实例切换弹窗（入口已收进左上角「页面切换」下拉尾部，见文末 Teleport） */
+.instance-switch-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 56vh;
+    overflow-y: auto;
+}
+.instance-switch-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    box-sizing: border-box;
+    padding: 9px 12px;
+    border: 1px solid var(--glass-border);
+    border-radius: 8px;
+    background: transparent;
+    color: inherit;
+    font-family: inherit;
+    font-size: 13px;
+    text-align: left;
+    cursor: pointer;
+    transition: border-color 0.18s ease, background-color 0.18s ease;
+}
+.instance-switch-item:hover {
+    border-color: var(--glass-border-hover);
+}
+.instance-switch-item.is-active {
+    border-color: var(--primary-color-accent, var(--el-color-primary));
+    background: color-mix(in srgb, var(--primary-color, var(--el-color-primary)) 10%, transparent);
+    color: var(--primary-color-accent, var(--el-color-primary));
+}
+.instance-switch-icon {
+    width: 12px;
+    flex: 0 0 auto;
+    font-size: 11px;
+    opacity: 0.75;
+}
+.instance-switch-seq {
+    flex: 0 0 auto;
+    min-width: 18px;
+    font-size: 11px;
+    font-weight: 600;
+    opacity: 0.65;
+}
+.instance-switch-name {
+    flex: 0 0 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 500;
+}
+.instance-switch-note {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 11px;
+    opacity: 0.55;
+}
+.instance-switch-check {
+    width: 12px;
+    flex: 0 0 auto;
+    margin-left: auto;
+}
+.instance-switch-empty {
+    padding: 16px 0;
+    text-align: center;
+    font-size: 12px;
+    opacity: 0.6;
+}
+.instance-switch-footer {
+    margin-top: 12px;
+    text-align: right;
+}
+.instance-switch-manage {
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--primary-color-accent, var(--el-color-primary));
+    font-family: inherit;
+    font-size: 12px;
+    text-decoration: underline;
+    cursor: pointer;
+}
+
+/* E：标签管理模式下的空态 / 列表区高度对齐 */
+.tag-mode-active .main-container {
+    justify-content: flex-start;
+}
+
+/* D：滚动哨兵（不可见、不占位，仅用于触发 IntersectionObserver） */
+.list-sentinel {
+    width: 100%;
+    height: 1px;
+    flex: 0 0 auto;
+    pointer-events: none;
+}
+
+/* A11：「加载更多」上的剩余条数 */
+.load-more-count {
+    margin-left: 4px;
+    opacity: 0.75;
+    font-size: 11px;
+}
+
+/* D23：目录导航下拉的「当前 / 全局」切换（样式与「排序」下拉顶行单选组一致） */
+.dir-scope-wrapper {
+    padding: 0 12px;
+    text-align: center;
+}
+.dir-search-wrapper {
+    padding: 0 12px 6px;
+}
+.dir-search-icon {
+    width: 12px;
+    opacity: 0.6;
+}
+.dir-empty {
+    padding: 8px 16px 10px;
+    font-size: 12px;
+    opacity: 0.6;
+    text-align: center;
+}
+.dir-dropdown-menu {
+    max-height: 60vh;
+    overflow-y: auto;
+}
+/* v3.0.0（R8）：悬停展开的目录树 —— 当前路径的祖先目录淡色高亮，形成「已展开路径」的视觉引导 */
+.dir-dropdown-menu .el-dropdown-menu__item.is-ancestor .dir-item {
+    color: var(--primary-color-accent);
+    opacity: 0.75;
+    font-weight: 500;
+}
+
+/*
+ * v3.0.0（R6）：移动端第二行工具栏的按钮间距收紧 ——
+ * 每个按钮左右外边距各减 2px，即相邻按钮间距 8px → 4px（三处 gap 统一）。
+ * 必须写在 scoped 块末尾：前面的 8px 定义带 [data-v-*] 属性，特异性更高，
+ * 放到下面的非 scoped 块里会被压过去（实测 gap 仍是 8px）。
+ */
+@media (max-width: 768px) {
+    .breadcrumb-container {
+        gap: 4px;
+    }
+
+    .breadcrumb-scroll-area {
+        gap: 4px;
+    }
+
+    .breadcrumb-right-group {
+        gap: 4px;
+    }
+
+    /*
+     * v3.0.0（R11c）：第二行与顶行 / 文件区的间距 ——
+     *   · 顶行：占位容器上移 20px（抵消顶栏占位高度的 +12px 余量与主区 padding-top 8px），
+     *     加上第二行自身的 margin-top 8px → 与顶栏背框下沿的视觉间距恰为 8px；
+     *   · 文件区：.content / .list-view 的 margin-top: 15px 归零，
+     *     间距由第二行自身的 margin-bottom 10px 提供。
+     */
+    .breadcrumb-sticky-wrap {
+        margin-top: -20px;
+    }
+
+    /*
+     * v3.0.0（R14）：回收站模式下取消这 -20px ——
+     * 回收站提示条（trash-banner）取代了顶行的视觉间距，再上移就会与提示条叠在一起
+     * （移动端「提示区和第二行重叠」的根因）。
+     */
+    .trash-banner + .breadcrumb-sticky-wrap {
+        margin-top: 0;
+    }
+
+    .content,
+    .list-view {
+        margin-top: 0;
+    }
+
+    /*
+     * v3.0.0（R14）：文件加载区横向手势交给页面 JS（左右滑动切换展示模式）——
+     * touch-action: pan-y 屏蔽浏览器自带的横向手势（含屏幕边缘滑动返回的伸缩动画），
+     * 纵向滚动照常。与灯箱里 .mv-stage 的处理同源。
+     */
+    .content,
+    .list-view {
+        touch-action: pan-y;
+    }
+}
+</style>
+
+<style>
+/*
+ * ============================================================================
+ * v3.0.0：本页对共享顶栏组件（AdminHeader / DashboardTabs）的「限定作用域」增强
+ * ----------------------------------------------------------------------------
+ * 这些 DOM 属于共享组件，本页不修改它们；所有规则都挂在 `.dashboard-page-v3`
+ * （本页根节点上的标记类）之下，离开本页后选择器不再命中。
+ * ============================================================================
+ */
+
+/*
+ * A2：桌面端顶栏 9 个按钮（筛选 / 标签管理 / 刷新 / 回收站 / 声音 / 链接格式 / 夜间 / 语言 / 退出）
+ * 统一为同一套尺寸（--admin-header-action-size 32px）与同一套间距（6px）——
+ * 工具栏与右侧工具组之间的 16px 也一并收成 6px，让「声音 → 链接格式 → 夜间」连续同距。
+ */
+.dashboard-page-v3 .admin-header-content .admin-header-tools {
+    gap: 6px;
+}
+
+/*
+ * v3.0.0（R11b）：页面回滚、顶栏与第二行进入「吸附态」时，两行的玻璃透明效果全部去掉 ——
+ * 背景改为完全不透明（不透明色贴近常态玻璃的观感），并关闭背景模糊，
+ * 避免下方文件卡片/文字从背框里透出来。滚回顶部复位后自动恢复玻璃质感。
+ * 桌面 / 平板（>768px）不吸附，is-toolbar-stuck 不会出现，样式不受影响。
+ */
+.dashboard-page-v3.is-toolbar-stuck .admin-header-content::before,
+.dashboard-page-v3.is-toolbar-stuck .breadcrumb-container {
+    background: var(--toolbar-solid-bg, #FAFAFB);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+}
+
+@media (max-width: 1023px) {
+    /* 移动端：左侧「页面切换」固定，中间按钮条横向滑动，右侧「更多菜单」固定 */
+    .dashboard-page-v3 .admin-header-content > .tabs {
+        margin-right: 0;
+    }
+    .dashboard-page-v3 .admin-header-content .search-actions .mobile-search-trigger {
+        margin-left: 0 !important;
+    }
+    .dashboard-page-v3 .admin-header-content .search-actions .filter-trigger {
+        margin-left: 0 !important;
+        margin-right: 0 !important;
+    }
+    .dashboard-page-v3 .admin-header-content .search-actions .dashboard-header-buttons {
+        margin-left: 0 !important;
+        gap: 6px;
+    }
+}
+
+/* D5：页面切换下拉列表尾部注入的「切换实例」条目（Teleport 进来，需在本页补样式） */
+/* v3.0.0：已切换实例时，「切换实例」条目图标位置显示实例创建序号（与图标同尺寸对齐） */
+.admin-page-instance-option .admin-page-instance-seq {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
+    box-sizing: border-box;
+    border-radius: 999px;
+    background: var(--el-color-primary, #409eff);
+    color: #fff;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 16px;
+}
+/*
+ * v3.0.0（R18）：页面切换恢复为下拉（原样式），「切换实例」作为下拉尾部的一条 .page-option
+ * 由插槽注入 —— 它仍然位于 .dashboard-page-v3 之下，选择器前缀一并加回。
+ */
+.dashboard-page-v3 .page-option-sep {
+    flex: 0 0 auto;
+    height: 1px;
+    margin: 6px 4px;
+    background: var(--el-border-color-lighter);
+    opacity: 0.9;
+}
+
+.dashboard-page-v3 .admin-page-instance-option {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    width: 100%;
+    box-sizing: border-box;
+    height: var(--page-option-height, 37px);
+    padding: 0 12px;
+    border: none;
+    border-radius: 10px;
+    background: transparent;
+    color: var(--admin-container-color);
+    font-family: inherit;
+    font-size: var(--page-option-font-size, 15px);
+    font-weight: 600;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: color 0.16s ease;
+}
+
+.dashboard-page-v3 .admin-page-instance-option:hover {
+    color: var(--tabs-switcher-accent-color, var(--primary-color-accent));
+}
+
+.dashboard-page-v3 .admin-page-instance-icon {
+    width: 16px;
+    color: var(--tabs-switcher-accent-color, var(--primary-color-accent));
+}
+
+/* 图标位显示实例创建序号时，尺寸与图标对齐 */
+.admin-page-instance-option .admin-page-instance-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+@media (max-width: 768px) {
+    .dashboard-page-v3 .admin-page-instance-option {
+        gap: 6px;
+        padding: 0 10px;
+        font-size: var(--page-option-font-size, 12px);
+    }
+    .dashboard-page-v3 .admin-page-instance-icon {
+        width: 15px;
+    }
+}
+
+/* 下拉背景板高度：多注入了一条「切换实例」+ 分隔线，这里补上对应高度 */
+.dashboard-page-v3 .page-switcher-sheet::before {
+    height: calc(
+        var(--page-menu-top) + (var(--page-menu-count) + 1) * var(--page-option-height) + 13px +
+            var(--page-sheet-padding)
+    ) !important;
+}
+
+/* D6：当前不是默认实例时，在「页面切换」按钮名称后显示实例序号（②、③…） */
+.dashboard-page-v3.has-instance-badge .page-option.is-current .page-switcher-title::after {
+    content: var(--instance-seq, "");
+    margin-left: 4px;
+    font-size: 0.72em;
+    font-weight: 700;
+    line-height: 1;
+    color: var(--tabs-switcher-accent-color, var(--primary-color-accent));
+    vertical-align: 1px;
+}
+
+/*
+ * v3.0.0（第三轮）：移动端「页面切换」按钮宽度本来就紧（名称还会被截成省略号），
+ * 序号跟在名称后面会把按钮撑爆 / 显示不全 → 改成悬浮在按钮图标右上角的小角标，
+ * 完全不占用标题文字宽度。桌面端仍保持「名称后」的写法不变。
+ */
+@media (max-width: 768px) {
+    .dashboard-page-v3.has-instance-badge .page-option.is-current {
+        position: relative;
+    }
+
+    .dashboard-page-v3.has-instance-badge .page-option.is-current .page-switcher-title::after {
+        content: none;
+    }
+
+    .dashboard-page-v3.has-instance-badge .page-option.is-current::after {
+        content: var(--instance-seq, "");
+        position: absolute;
+        z-index: 2;
+        /* 图标占位：padding-left 10px + 图标宽 15px → 角标压在图标右肩上 */
+        left: 15px;
+        top: 1px;
+        min-width: 13px;
+        height: 13px;
+        padding: 0 2px;
+        box-sizing: border-box;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 999px;
+        font-size: 9px;
+        font-weight: 700;
+        line-height: 1;
+        color: #fff;
+        background: var(--tabs-switcher-accent-color, var(--primary-color-accent, #2563EB));
+        box-shadow: 0 0 0 1.5px var(--tabs-switcher-current-bg, var(--toolbar-button-bg-color, #fff));
+        pointer-events: none;
+    }
+}
 </style>

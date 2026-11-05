@@ -1,5 +1,14 @@
 <template>
     <div class="tabs">
+        <!--
+            v3.0.0（R18）：恢复 origin 的下拉样式（当前页按钮 + 展开的背景板 + 悬停高亮条），
+            不再使用居中弹窗。只重做了「点击命中」这一层：
+              · 菜单项除了 click，还会在 pointerdown（按下的瞬间）就执行跳转 ——
+                页面里跑长任务 / 长时间停留后，EP 弹层、列表重渲染可能让
+                「按下」与「抬起」之间元素被替换，浏览器就不会再派发 click，
+                表现就是「怎么点都没反应」。pointerdown 不受影响。
+              · 跳转带 4 秒兜底：路由 push 迟迟不生效就直接 location.assign。
+        -->
         <div
             class="page-switcher"
             :class="{ 'is-open': isPageMenuOpen }"
@@ -7,8 +16,6 @@
             role="navigation"
             @click.stop
             @pointerdown.stop
-            @mouseenter="handlePageSwitcherEnter"
-            @mouseleave="handlePageSwitcherLeave"
         >
             <div class="page-switcher-sheet" role="menu" @click.stop>
                 <button
@@ -17,7 +24,7 @@
                     role="menuitem"
                     aria-current="page"
                     :aria-expanded="isPageMenuOpen"
-                    @click.stop="handlePageOptionClick(activePageOption.name)"
+                    @click.stop="togglePageMenu"
                 >
                     <font-awesome-icon :icon="activePageOption.icon" class="page-option-icon"></font-awesome-icon>
                     <span class="page-switcher-title">{{ $t(activePageOption.label) }}</span>
@@ -26,7 +33,11 @@
                         class="page-switcher-arrow"
                     ></font-awesome-icon>
                 </button>
-                <div class="page-option-list" @mouseleave="clearHoveredPageOption">
+                <div
+                    class="page-option-list"
+                    @mouseleave="clearHoveredPageOption"
+                    @pointerdown="handleListPointerDown"
+                >
                     <span
                         class="page-option-highlight"
                         :class="{ 'is-visible': isPageOptionHighlightVisible }"
@@ -39,12 +50,19 @@
                         class="page-option"
                         type="button"
                         role="menuitem"
+                        :data-page="option.name"
                         @mouseenter="setHoveredPageOption(index)"
                         @click.stop="handlePageOptionClick(option.name)"
                     >
                         <font-awesome-icon :icon="option.icon" class="page-option-icon"></font-awesome-icon>
                         <span class="page-switcher-title">{{ $t(option.label) }}</span>
                     </button>
+                    <!--
+                        附加条目插槽：文件管理页用它注入「切换实例」。
+                        原来靠 <Teleport defer to=".page-option-list"> 追加，现在改成插槽，
+                        样式仍是下拉里的一条 .page-option，视觉与旧版一致。
+                    -->
+                    <slot name="extra-item" :close="closePageMenu"></slot>
                 </div>
             </div>
         </div>
@@ -52,6 +70,8 @@
 </template>
 
 <script>
+import fetchWithAuth from '@/utils/fetchWithAuth';
+
 export default {
     name: 'DashboardTabs',
     props: {
@@ -64,8 +84,23 @@ export default {
         return {
             isPageMenuOpen: false,
             hoveredPageOptionIndex: 0,
-            isPageOptionHighlightVisible: false
+            isPageOptionHighlightVisible: false,
+            // v3.0.0：本地文件页只对「管理员 + 被授权该渠道的普通用户」可见，
+            // 可见性以后端 /api/localfiles/channels 的实际返回为准（返回空 = 无权/无渠道）
+            hasLocalFiles: false
         }
+    },
+    mounted() {
+        this.hoverCloseTimer = null;
+        document.addEventListener('click', this.handleDocumentClick);
+        document.addEventListener('keydown', this.handleKeydown);
+        this.loadLocalFilesAccess();
+    },
+    watch: {
+        /** 路由切换后（含浏览器前进后退）菜单必须自动收起 */
+        activeTab() {
+            this.closePageMenu();
+        },
     },
     computed: {
         isAdminRole() {
@@ -78,8 +113,13 @@ export default {
             // 「系统管理」仅管理员可见。
             const base = [
                 { name: 'dashboard', icon: 'images', label: 'dashboardTabs.fileManagement' },
-                { name: 'customerConfig', icon: 'user-cog', label: 'dashboardTabs.userManagement' },
             ];
+            // 「本地文件」页：管理员恒显示（页面内会提示「还没有本地文件渠道」）；
+            // 普通用户仅在存在被授权的本地文件渠道时显示
+            if (this.isAdminRole || this.hasLocalFiles) {
+                base.push({ name: 'localFiles', icon: 'folder-tree', label: 'dashboardTabs.localFiles' });
+            }
+            base.push({ name: 'customerConfig', icon: 'user-cog', label: 'dashboardTabs.userManagement' });
             if (this.isAdminRole) {
                 base.push({ name: 'systemConfig', icon: 'cogs', label: 'dashboardTabs.systemSettings' });
             }
@@ -94,51 +134,78 @@ export default {
         }
     },
     methods: {
+        /** 探测本地文件页可见性：接口只返回当前账户可见且已启用的渠道 */
+        async loadLocalFilesAccess() {
+            try {
+                const res = await fetchWithAuth('/api/localfiles/channels');
+                const json = await res.json().catch(() => ({}));
+                const list = json && json.success && Array.isArray(json.data) ? json.data : [];
+                this.hasLocalFiles = list.length > 0;
+            } catch (e) {
+                this.hasLocalFiles = false;
+            }
+        },
         handleDocumentClick(event) {
             if (this.$el?.contains(event.target)) {
                 return;
             }
             this.closePageMenu();
         },
-        isTouchViewport() {
-            return window.matchMedia('(hover: none), (pointer: coarse)').matches;
-        },
-        handlePageOptionClick(tab) {
-            const touch = this.isTouchViewport();
-            // 触屏设备：第一次点击先展开菜单，第二次点击才进入目标页
-            if (touch && !this.isPageMenuOpen) {
-                if (tab === this.activeTab) {
-                    this.togglePageMenu();
-                } else {
-                    this.openPageMenu();
-                }
-                return;
-            }
-            // 点击的是当前页：只负责开合菜单
-            if (tab === this.activeTab) {
-                if (touch) {
-                    this.togglePageMenu();
-                } else {
-                    this.openPageMenu();
-                }
-                return;
-            }
-            // 切换分类：无论菜单处于什么状态都直接跳转（此前依赖菜单状态，
-            // 偶发菜单已关闭时点击被吞掉、表现 为「点了没反应」，刷新后才恢复）
-            this.closePageMenu();
-            const target = tab ? `/${tab}` : '/';
-            if (this.$route.path === target) return;
-            this.$router.push(target).catch(() => { /* 重复导航等场景忽略 */ });
-        },
-        handlePageSwitcherEnter() {
-            if (!this.isTouchViewport()) {
-                this.openPageMenu();
-            }
-        },
-        handlePageSwitcherLeave() {
-            if (!this.isTouchViewport()) {
+        handleKeydown(event) {
+            if (event.key === 'Escape' && this.isPageMenuOpen) {
                 this.closePageMenu();
             }
+        },
+        /**
+         * 菜单项「按下即跳转」（v3.0.0 R18）。
+         *
+         * 老问题的成因：click 需要「按下」和「抬起」落在同一个元素上才会派发。
+         * 后台顶栏会随筛选 / 批量操作 / 图片加载不断重渲染，页面跑长任务时
+         * 主线程还会被占住 —— 这期间元素被替换或事件被丢掉，click 就永远不来了，
+         * 表现就是「下拉里怎么点都没反应，只有切换实例（另一个弹窗）有反应」。
+         * pointerdown 在按下的那一帧就派发，不受后续重渲染影响。
+         */
+        handleListPointerDown(event) {
+            // 只处理主键 / 触摸
+            if (event && typeof event.button === 'number' && event.button !== 0) return;
+            const target = event && event.target;
+            const item = target && target.closest ? target.closest('.page-option[data-page]') : null;
+            if (!item) return;
+            event.preventDefault();
+            event.stopPropagation();
+            this.navigateToPage(item.getAttribute('data-page'));
+        },
+        /** 点击兜底（键盘 Enter / 空格、以及设备不派发 pointerdown 的极端情况） */
+        handlePageOptionClick(tab) {
+            this.navigateToPage(tab);
+        },
+        navigateToPage(tab) {
+            const now = Date.now();
+            // pointerdown 与 click 会先后触发同一目标，这里做去重
+            if (this._navAt && now - this._navAt < 900 && this._navTarget === tab) return;
+            this._navAt = now;
+            this._navTarget = tab;
+
+            const target = tab ? `/${tab}` : '/';
+            this.closePageMenu();
+            if (this.$route.path === target) return;
+            this.setHoveredPageOption(0);
+
+            // 兜底：路由 push 4 秒内既没成功也没让路径变化 → 整页跳转，保证「点了就一定换页」
+            let settled = false;
+            const fallback = window.setTimeout(() => {
+                if (settled) return;
+                if (this.$route.path === target) return;
+                window.location.assign(target);
+            }, 4000);
+            const done = () => {
+                settled = true;
+                window.clearTimeout(fallback);
+            };
+            this.$router.push(target).then(done).catch(() => {
+                done();
+                if (this.$route.path !== target) window.location.assign(target);
+            });
         },
         setHoveredPageOption(index) {
             this.hoveredPageOptionIndex = index;
@@ -152,17 +219,24 @@ export default {
         },
         togglePageMenu() {
             this.isPageMenuOpen = !this.isPageMenuOpen;
+            if (!this.isPageMenuOpen) this.clearHoveredPageOption();
+        },
+        cancelHoverClose() {
+            if (this.hoverCloseTimer) {
+                clearTimeout(this.hoverCloseTimer);
+                this.hoverCloseTimer = null;
+            }
         },
         closePageMenu() {
+            this.cancelHoverClose();
             this.isPageMenuOpen = false;
             this.clearHoveredPageOption();
         }
     },
-    mounted() {
-        document.addEventListener('click', this.handleDocumentClick);
-    },
     beforeUnmount() {
+        this.cancelHoverClose();
         document.removeEventListener('click', this.handleDocumentClick);
+        document.removeEventListener('keydown', this.handleKeydown);
     }
 }
 </script>
@@ -188,6 +262,7 @@ export default {
     overflow: visible;
 }
 
+/* 菜单展开时必须压住顶栏其它按钮 / 页面内容，否则点击会落到下面那层 */
 .page-switcher.is-open {
     z-index: 1200;
 }
@@ -269,6 +344,8 @@ export default {
     font-family: inherit;
     white-space: nowrap;
     cursor: pointer;
+    /* 触屏上避免 300ms 双指缩放等待，按下即刻响应 */
+    touch-action: manipulation;
 }
 
 .page-option-list {

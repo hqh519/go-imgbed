@@ -52,18 +52,37 @@ export function estimateFfmpegSeconds(input: { sizeBytes: number; durationSec?: 
 }
 
 /**
+ * 资源闸门阈值（v3.0.0 第十三轮：由后台「影音压缩/转码控制」三项配置驱动，缺省沿用历史硬编码值）。
+ */
+export interface MediaGuardOptions {
+  /** load1 负载倍率上限：load1 > 核数 × 该值 → 跳过；0 = 不按负载检测 */
+  loadFactor?: number;
+  /** 可用内存下限（MB）：低于该值 → 跳过；0 = 不按内存检测 */
+  ramFreeMB?: number;
+  /** 总开关（由 upload.service 读取后台配置后传入）：false = 完全不做资源检测 */
+  enabled?: boolean;
+}
+
+/**
  * 整机资源闸门：负载过高 / 可用内存过低时不做重编码 ——
  * 上传与网页响应优先，压缩转码只是「锦上添花」。
  */
-export function mediaResourceGuard(): { ok: boolean; reason?: string } {
+export function mediaResourceGuard(opts?: MediaGuardOptions): { ok: boolean; reason?: string } {
   const cores = cpuCores();
   if (cores < 2) return { ok: false, reason: `CPU 核心数过少（${cores} 核），跳过重编码以保证上传与网页响应` };
+  const loadFactor = Number(opts?.loadFactor);
+  const lf = Number.isFinite(loadFactor) && loadFactor >= 0 ? loadFactor : 1.5;
   const load1 = loadavg()[0] || 0;
-  if (load1 > cores * 1.5) {
-    return { ok: false, reason: `系统负载过高（load1=${load1.toFixed(2)}，共 ${cores} 核），跳过重编码` };
+  if (lf > 0 && load1 > cores * lf) {
+    return {
+      ok: false,
+      reason: `系统负载过高（load1=${load1.toFixed(2)} > ${lf} × ${cores} 核 = ${(cores * lf).toFixed(1)}），跳过重编码`,
+    };
   }
   const freeMB = Math.round(freemem() / 1024 / 1024);
-  if (freeMB < 256) return { ok: false, reason: `可用内存不足（${freeMB}MB），跳过重编码` };
+  const ramLimit = Number(opts?.ramFreeMB);
+  const rm = Number.isFinite(ramLimit) && ramLimit >= 0 ? ramLimit : 256;
+  if (rm > 0 && freeMB < rm) return { ok: false, reason: `可用内存不足（${freeMB}MB < ${rm}MB），跳过重编码` };
   return { ok: true };
 }
 
@@ -81,6 +100,8 @@ export interface PostProcessOptions {
    */
   compressMaxSeconds?: number;
   transcodeMaxSeconds?: number;
+  /** v3.0.0 第十三轮：资源闸门阈值（后台「影音压缩/转码控制」三项配置） */
+  guard?: MediaGuardOptions;
 }
 
 export interface PostProcessResult extends FileCompressResult {
@@ -146,7 +167,8 @@ export async function postProcessMediaFile(
   const transcodeUnlimited = rawTranscodeMax === 0;
   const compressMax = Math.max(30, Number.isFinite(rawCompressMax) && rawCompressMax > 0 ? rawCompressMax : MEDIA_MAX_SECONDS);
   const transcodeMax = Math.max(30, Number.isFinite(rawTranscodeMax) && rawTranscodeMax > 0 ? rawTranscodeMax : MEDIA_MAX_SECONDS);
-  const guard = mediaResourceGuard();
+  // v3.0.0 第十三轮：闸门总开关由后台配置控制；关闭时完全不做资源检测
+  const guard = opts.guard?.enabled === false ? { ok: true as const } : mediaResourceGuard(opts.guard);
   if (!guard.ok) return skip(guard.reason || '系统资源不足，跳过压缩与转码');
 
   const kind: 'video' | 'audio' = isVideo ? 'video' : 'audio';
