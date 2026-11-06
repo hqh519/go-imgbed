@@ -1,4 +1,4 @@
-基于 MarSeventh 大佬开发的 ![CloudFlare-ImgBed](https://github.com/MarSeventh/CloudFlare-ImgBed) 基础上改造的 Docker 版在线图床
+基于 MarSeventh 大佬开发的 https://github.com/MarSeventh/CloudFlare-ImgBed 基础上改造的 Docker 版在线图床
 ---
 因个人需求原因，移除了 CloudFlare-ImgBed 原有的存储渠道，改成了一些常用存储渠道，有EasyImages、LskyPro、immich、MinIO、Cloudflare R2、S3、腾讯云、阿里云、WebDAV、Web自定义接口
 
@@ -9,5 +9,6 @@
 ---
 
 【版本说明】
+**最新版本已转为 https://github.com/hqh519/go-hub **
 
 **v2.0以下的版本使用的是 SQLite，v2.0.0及以上版本改为了 PostgreSQL**
