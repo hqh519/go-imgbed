@@ -1,4 +1,5 @@
-基于 MarSeventh 大佬开发的 https://github.com/MarSeventh/CloudFlare-ImgBed 基础上改造的 Docker 版在线图床
+**基于 MarSeventh 大佬开发的 （[CloudFlare-ImgBed](https://github.com/MarSeventh/CloudFlare-ImgBed)） 基础上改造的 Docker 版在线图床**
+
 ---
 因个人需求原因，移除了 CloudFlare-ImgBed 原有的存储渠道，改成了一些常用存储渠道，有EasyImages、LskyPro、immich、MinIO、Cloudflare R2、S3、腾讯云、阿里云、WebDAV、Web自定义接口
 
