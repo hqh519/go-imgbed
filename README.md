@@ -9,6 +9,6 @@
 ---
 
 【版本说明】
-**最新版本已转为 https://github.com/hqh519/go-hub **
+**最新版本已转为 https://github.com/hqh519/go-hub**
 
 **v2.0以下的版本使用的是 SQLite，v2.0.0及以上版本改为了 PostgreSQL**
